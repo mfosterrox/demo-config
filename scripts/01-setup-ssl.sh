@@ -127,6 +127,31 @@ else
     log "Check certificate status with: oc describe certificate rhacs-central-tls -n $NAMESPACE"
 fi
 
+log ""
+log "========================================================="
+log "VERIFICATION"
+log "========================================================="
+
+# Verify Certificate resource
+log "Verifying Certificate resource in $NAMESPACE namespace..."
+if oc get certificate rhacs-central-tls -n $NAMESPACE &>/dev/null; then
+    success "Certificate CR exists in $NAMESPACE"
+    oc get certificate rhacs-central-tls -n $NAMESPACE
+else
+    error "Certificate CR not found in $NAMESPACE"
+fi
+
+log ""
+
+# Verify Secret resource
+log "Verifying TLS Secret in $NAMESPACE namespace..."
+if oc get secret rhacs-central-tls-secret -n $NAMESPACE &>/dev/null; then
+    success "TLS Secret exists in $NAMESPACE"
+    oc get secret rhacs-central-tls-secret -n $NAMESPACE
+else
+    error "TLS Secret not found in $NAMESPACE"
+fi
+
 success "SSL Certificate Setup completed!"
 log "========================================================="
 
