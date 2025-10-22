@@ -162,7 +162,7 @@ else
     SCAN_IMAGE="quay.io/mfoster/frontend:latest"
     log "Scanning image: $SCAN_IMAGE"
     
-    if $ROXCTL_CMD image scan --force --insecure-skip-tls-verify "$SCAN_IMAGE"; then
+    if $ROXCTL_CMD image scan --image "$SCAN_IMAGE" --force-refresh --insecure-skip-tls-verify; then
         log "✓ Security scan completed for $SCAN_IMAGE"
     else
         warning "Security scan failed for $SCAN_IMAGE"
