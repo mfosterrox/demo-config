@@ -145,11 +145,28 @@ log "Running roxctl security scan on specific image..."
 
 # Check if roxctl is available
 if ! command -v roxctl &>/dev/null; then
-    warning "roxctl not found, downloading..."
+    log "roxctl not found, installing to system location..."
+    
+    # Download roxctl to temporary location first
     curl -L -f -o /tmp/roxctl "https://mirror.openshift.com/pub/rhacs/assets/4.8.3/bin/Linux/roxctl"
-    chmod +x /tmp/roxctl
-    ROXCTL_CMD="/tmp/roxctl"
+    
+    if [ $? -eq 0 ]; then
+        # Move to system-wide location
+        sudo mv /tmp/roxctl /usr/local/bin/roxctl
+        sudo chmod +x /usr/local/bin/roxctl
+        
+        # Verify installation
+        if command -v roxctl &>/dev/null; then
+            log "✓ roxctl installed successfully to /usr/local/bin/roxctl"
+            ROXCTL_CMD="roxctl"
+        else
+            error "Failed to install roxctl to system location"
+        fi
+    else
+        error "Failed to download roxctl"
+    fi
 else
+    log "roxctl already available in system PATH"
     ROXCTL_CMD="roxctl"
 fi
 
@@ -161,16 +178,14 @@ else
     # Scan specific image
     SCAN_IMAGE="quay.io/mfoster/frontend:latest"
     log "Scanning image: $SCAN_IMAGE"
-    
-    if $ROXCTL_CMD image scan --image "$SCAN_IMAGE" --force-refresh --insecure-skip-tls-verify; then
+    if $ROXCTL_CMD --insecure-skip-tls-verify -e "$ROX_ENDPOINT:443" image scan --image "$SCAN_IMAGE" --force; then
         log "✓ Security scan completed for $SCAN_IMAGE"
     else
         warning "Security scan failed for $SCAN_IMAGE"
     fi
 fi
 
-# Clean up temporary files
-[ "$ROXCTL_CMD" = "/tmp/roxctl" ] && rm -f /tmp/roxctl
+# roxctl is now installed permanently to /usr/local/bin/roxctl
 
 # Final status
 log "Application deployment completed!"

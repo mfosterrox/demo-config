@@ -87,11 +87,28 @@ log "API token created successfully"
 
 # Download roxctl if not available
 if ! command -v roxctl &>/dev/null; then
-    log "Downloading roxctl CLI..."
+    log "roxctl not found, installing to system location..."
+    
+    # Download roxctl to temporary location first
     curl -L -f -o /tmp/roxctl "https://mirror.openshift.com/pub/rhacs/assets/4.8.3/bin/Linux/roxctl"
-    chmod +x /tmp/roxctl
-    ROXCTL_CMD="/tmp/roxctl"
+    
+    if [ $? -eq 0 ]; then
+        # Move to system-wide location
+        sudo mv /tmp/roxctl /usr/local/bin/roxctl
+        sudo chmod +x /usr/local/bin/roxctl
+        
+        # Verify installation
+        if command -v roxctl &>/dev/null; then
+            log "✓ roxctl installed successfully to /usr/local/bin/roxctl"
+            ROXCTL_CMD="roxctl"
+        else
+            error "Failed to install roxctl to system location"
+        fi
+    else
+        error "Failed to download roxctl"
+    fi
 else
+    log "roxctl already available in system PATH"
     ROXCTL_CMD="roxctl"
 fi
 
@@ -290,7 +307,7 @@ fi
 
 # Clean up temporary files
 rm -f cluster_init_bundle.yaml
-[ "$ROXCTL_CMD" = "/tmp/roxctl" ] && rm -f /tmp/roxctl
+# roxctl is now installed permanently to /usr/local/bin/roxctl
 
 log "RHACS same-cluster configuration completed successfully!"
 log "========================================================="
