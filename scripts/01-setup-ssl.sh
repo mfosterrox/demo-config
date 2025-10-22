@@ -107,25 +107,43 @@ else
     error "Failed to create Certificate resource"
 fi
 
-# Wait for certificate to be ready
-log "Waiting for certificate to be issued..."
-oc wait --for=condition=Ready certificate/rhacs-central-tls -n $NAMESPACE --timeout=300s
+# Wait for certificate to be ready (READY = True)
+log "Waiting for certificate to be issued and reach READY status..."
+log "This may take a few minutes while cert-manager processes the request..."
 
-if [ $? -eq 0 ]; then
-    success "Certificate issued successfully"
-    
-    # Verify the secret was created
-    if oc get secret rhacs-central-tls-secret -n $NAMESPACE &>/dev/null; then
-        success "TLS secret 'rhacs-central-tls-secret' created successfully"
-        log "Certificate details:"
-        oc describe certificate rhacs-central-tls -n $NAMESPACE | grep -A 5 "Status:"
-    else
-        warning "Certificate created but secret not found yet"
-    fi
-else
-    warning "Certificate creation timed out or failed"
-    log "Check certificate status with: oc describe certificate rhacs-central-tls -n $NAMESPACE"
+if ! oc wait --for=condition=Ready certificate/rhacs-central-tls -n $NAMESPACE --timeout=600s; then
+    error "Certificate creation timed out or failed. Check certificate status with: oc describe certificate rhacs-central-tls -n $NAMESPACE"
 fi
+
+success "Certificate reached READY=True status"
+
+# Wait for the TLS secret to be created with correct type
+log "Waiting for TLS secret to be created..."
+MAX_SECRET_WAIT=60
+SECRET_WAIT_COUNT=0
+while true; do
+    if [ $SECRET_WAIT_COUNT -ge $MAX_SECRET_WAIT ]; then
+        error "TLS secret not created after ${MAX_SECRET_WAIT} seconds"
+    fi
+    
+    # Check if secret exists and has correct type
+    if oc get secret rhacs-central-tls-secret -n $NAMESPACE -o jsonpath='{.type}' 2>/dev/null | grep -q "kubernetes.io/tls"; then
+        # Verify it has data
+        DATA_COUNT=$(oc get secret rhacs-central-tls-secret -n $NAMESPACE -o jsonpath='{.data}' 2>/dev/null | grep -o "tls.crt\|tls.key" | wc -l)
+        if [ "$DATA_COUNT" -ge 2 ]; then
+            success "TLS secret created successfully with certificate data"
+            break
+        fi
+    fi
+    
+    log "Waiting for TLS secret... ($((SECRET_WAIT_COUNT+1))/${MAX_SECRET_WAIT}s)"
+    sleep 1
+    SECRET_WAIT_COUNT=$((SECRET_WAIT_COUNT+1))
+done
+
+# Display certificate details
+log "Certificate details:"
+oc describe certificate rhacs-central-tls -n $NAMESPACE | grep -A 10 "Status:"
 
 log ""
 log "========================================================="
