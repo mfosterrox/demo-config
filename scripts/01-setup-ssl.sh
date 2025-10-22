@@ -30,7 +30,7 @@ log "Starting SSL Certificate Setup..."
 log "========================================================="
 
 # Define namespace
-NAMESPACE="rhacs-operator"
+NAMESPACE="tssc-acs"
 
 # Check if OpenShift CLI is available
 if ! command -v oc &>/dev/null; then
