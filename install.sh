@@ -64,8 +64,9 @@ main() {
     log "Starting Demo Config Setup..."
     
     # Clone the repository if running from curl
-    if [ -z "${BASH_SOURCE[0]}" ] || [[ "${BASH_SOURCE[0]}" == *"/dev/fd/"* ]]; then
-        log "Running from curl, cloning repository..."
+    # Check if we're running from curl by looking for the scripts directory
+    if [ ! -d "scripts" ] || [ ! -f "scripts/01-rhacs-setup.sh" ]; then
+        log "Scripts not found locally, cloning repository..."
         REPO_DIR="$HOME/demo-config"
         if [ -d "$REPO_DIR" ]; then
             log "Repository already exists, updating..."
