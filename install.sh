@@ -72,8 +72,39 @@ trigger_compliance_scan() {
 main() {
     log "Starting Demo Config Setup..."
     
-    # Get script directory
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    # Clone the repository if running from curl
+    if [ -z "${BASH_SOURCE[0]}" ] || [[ "${BASH_SOURCE[0]}" == *"/dev/fd/"* ]]; then
+        log "Running from curl, cloning repository..."
+        REPO_DIR="$HOME/demo-config"
+        if [ -d "$REPO_DIR" ]; then
+            log "Repository already exists, updating..."
+            cd "$REPO_DIR"
+            git pull
+        else
+            log "Cloning repository..."
+            git clone https://github.com/mfosterrox/demo-config.git "$REPO_DIR"
+            cd "$REPO_DIR"
+        fi
+        SCRIPT_DIR="$REPO_DIR"
+    else
+        # Get script directory when running locally
+        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    fi
+    
+    log "Using script directory: $SCRIPT_DIR"
+    
+    # Install tools
+    install_tools
+    
+    # Setup aliases
+    setup_aliases
+    
+    # Verify scripts exist
+    for script in "01-rhacs-setup.sh" "02-compliance-operator-install.sh" "03-deploy-applications.sh" "04-setup-co-scan-schedule.sh" "05-trigger-compliance-scan.sh"; do
+        if [ ! -f "$SCRIPT_DIR/scripts/$script" ]; then
+            error "Required script not found: $SCRIPT_DIR/scripts/$script"
+        fi
+    done
     
     # Run setup scripts in order
     setup_rhacs
@@ -110,14 +141,14 @@ main() {
         if [ -n "$ADMIN_PASSWORD" ]; then
             log "Password:     $ADMIN_PASSWORD"
         else
-            log "Password:     (Check RHACS Central secret)"
+            ADMIN_PASSWORD=$(oc get secret central-htpasswd -n tssc-acs -o jsonpath='{.data.password}' 2>/dev/null | base64 -d 2>/dev/null)
+            log "Password:     $ADMIN_PASSWORD"
         fi
     else
         log "Password:     (Check RHACS Central secret)"
     fi
     
     log "========================================================="
-    log "Have a nice day! 🍻"
 }
 
 # Run main function
