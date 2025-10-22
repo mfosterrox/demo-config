@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Demo Config - Simple Setup Script
-# Download and run with: curl -fsSL https://raw.githubusercontent.com/your-username/demo-config/main/install.sh | bash
+# Download and run with: curl -fsSL https://raw.githubusercontent.com/mfosterrox/demo-config/main/install.sh | bash
 
 set -e
 
@@ -28,15 +28,6 @@ error() {
     echo -e "${RED}[ERROR]${NC} $1"
     exit 1
 }
-
-# Add to shell config
-if [[ "$SHELL" == *"zsh"* ]]; then
-    echo "source $aliases_file" >> "$HOME/.zshrc"
-    log "Added aliases to ~/.zshrc"
-elif [[ "$SHELL" == *"bash"* ]]; then
-    echo "source $aliases_file" >> "$HOME/.bashrc"
-    log "Added aliases to ~/.bashrc"
-fi
 
 # Run RHACS setup script (Step 1)
 setup_rhacs() {
@@ -92,12 +83,6 @@ main() {
     fi
     
     log "Using script directory: $SCRIPT_DIR"
-    
-    # Install tools
-    install_tools
-    
-    # Setup aliases
-    setup_aliases
     
     # Verify scripts exist
     for script in "01-rhacs-setup.sh" "02-compliance-operator-install.sh" "03-deploy-applications.sh" "04-setup-co-scan-schedule.sh" "05-trigger-compliance-scan.sh"; do
