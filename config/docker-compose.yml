@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  demo-app:
+    image: nginx:alpine
+    container_name: demo-config-app
+    ports:
+      - "8080:80"
+    volumes:
+      - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
+    restart: unless-stopped
+    networks:
+      - demo-network
+
+  demo-db:
+    image: postgres:13-alpine
+    container_name: demo-config-db
+    environment:
+      POSTGRES_DB: demo_db
+      POSTGRES_USER: demo_user
+      POSTGRES_PASSWORD: demo_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - demo_db_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - demo-network
+
+volumes:
+  demo_db_data:
+
+networks:
+  demo-network:
+    driver: bridge
