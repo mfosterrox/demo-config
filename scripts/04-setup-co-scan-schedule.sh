@@ -19,7 +19,20 @@ error() {
 }
 
 # Source environment variables
-[ -f ~/.bashrc ] && source ~/.bashrc || log "~/.bashrc not found, proceeding with current environment"
+if [ -f ~/.bashrc ]; then
+    # Clean up malformed source commands in bashrc before sourcing
+    if grep -q "^source $" ~/.bashrc; then
+        log "Cleaning up malformed source commands in ~/.bashrc..."
+        sed -i '/^source $/d' ~/.bashrc
+    fi
+    
+    # Source bashrc with error handling
+    if ! source ~/.bashrc 2>/dev/null; then
+        log "Error loading ~/.bashrc, proceeding with current environment"
+    fi
+else
+    log "~/.bashrc not found, proceeding with current environment"
+fi
 
 # Validate environment variables
 [ -z "$ROX_ENDPOINT" ] && error "ROX_ENDPOINT not set. Please set it in ~/.bashrc"

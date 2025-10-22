@@ -58,8 +58,18 @@ log "TUTORIAL_HOME set to: $TUTORIAL_HOME"
 # Load environment variables from ~/.bashrc
 log "Loading environment variables from ~/.bashrc..."
 if [ -f ~/.bashrc ]; then
-    source ~/.bashrc
-    log "Environment variables loaded"
+    # Clean up malformed source commands in bashrc before sourcing
+    if grep -q "^source $" ~/.bashrc; then
+        log "Cleaning up malformed source commands in ~/.bashrc..."
+        sed -i '/^source $/d' ~/.bashrc
+    fi
+    
+    # Source bashrc with error handling
+    if source ~/.bashrc 2>/dev/null; then
+        log "Environment variables loaded"
+    else
+        warning "Error loading ~/.bashrc, proceeding with current environment"
+    fi
 else
     warning "~/.bashrc not found"
 fi

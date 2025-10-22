@@ -26,8 +26,17 @@ error() {
 # Source environment variables
 if [ -f ~/.bashrc ]; then
     log "Sourcing ~/.bashrc..."
+    
+    # Clean up malformed source commands in bashrc before sourcing
+    if grep -q "^source $" ~/.bashrc; then
+        log "Cleaning up malformed source commands in ~/.bashrc..."
+        sed -i '/^source $/d' ~/.bashrc
+    fi
+    
     set +u  # Temporarily disable unbound variable checking
-    source ~/.bashrc
+    if ! source ~/.bashrc 2>/dev/null; then
+        log "Error loading ~/.bashrc, proceeding with current environment"
+    fi
     set -u  # Re-enable unbound variable checking
 else
     log "~/.bashrc not found, proceeding with current environment"
