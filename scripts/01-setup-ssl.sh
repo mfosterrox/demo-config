@@ -170,6 +170,45 @@ else
     error "TLS Secret not found in $NAMESPACE"
 fi
 
+log ""
+log "========================================================="
+log "PATCHING RHACS CENTRAL TLS CERTIFICATE"
+log "========================================================="
+
+# Check if central-default-tls-cert secret exists
+log "Checking for central-default-tls-cert secret..."
+if ! oc get secret central-default-tls-cert -n $NAMESPACE &>/dev/null; then
+    warning "central-default-tls-cert secret not found in $NAMESPACE"
+    warning "This may be expected if RHACS Central hasn't created it yet"
+    warning "You may need to run this patch manually later"
+else
+    log "Patching central-default-tls-cert with new TLS certificate..."
+    
+    # Extract the certificate and key from our new secret
+    TLS_CERT=$(oc get secret rhacs-central-tls-secret -o jsonpath='{.data.tls\.crt}' -n $NAMESPACE)
+    TLS_KEY=$(oc get secret rhacs-central-tls-secret -o jsonpath='{.data.tls\.key}' -n $NAMESPACE)
+    
+    if [ -z "$TLS_CERT" ] || [ -z "$TLS_KEY" ]; then
+        error "Failed to extract certificate or key from rhacs-central-tls-secret"
+    fi
+    
+    # Patch the central-default-tls-cert secret
+    if oc patch secret central-default-tls-cert -p "{\"data\":{\"tls.crt\":\"$TLS_CERT\",\"tls.key\":\"$TLS_KEY\"}}" -n $NAMESPACE; then
+        success "Successfully patched central-default-tls-cert with new certificate"
+    else
+        error "Failed to patch central-default-tls-cert secret"
+    fi
+    
+    # Verify the patch
+    log "Verifying patched certificate..."
+    PATCHED_CERT=$(oc get secret central-default-tls-cert -o jsonpath='{.data.tls\.crt}' -n $NAMESPACE)
+    if [ "$PATCHED_CERT" = "$TLS_CERT" ]; then
+        success "Certificate patch verified successfully"
+    else
+        warning "Certificate patch verification failed - certificates don't match"
+    fi
+fi
+
 success "SSL Certificate Setup completed!"
 log "========================================================="
 
