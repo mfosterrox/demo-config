@@ -42,14 +42,6 @@ if ! oc whoami &>/dev/null; then
     error "Not logged in to OpenShift. Please login first using 'oc login'"
 fi
 
-# Check if cert-manager is installed
-log "Checking if cert-manager is installed..."
-if ! oc get crd certificates.cert-manager.io &>/dev/null; then
-    warning "cert-manager CRDs not found. Please install cert-manager first."
-    warning "Skipping SSL certificate setup..."
-    exit 0
-fi
-
 # Check if the ClusterIssuer exists
 log "Checking for ClusterIssuer 'zerossl-production-ec2'..."
 if ! oc get clusterissuer zerossl-production-ec2 &>/dev/null; then
@@ -109,7 +101,7 @@ fi
 
 # Wait for certificate to be ready (READY = True)
 log "Waiting for certificate to be issued and reach READY status..."
-log "This may take a few minutes while cert-manager processes the request..."
+log "This may take a few minutes while ZeroSSL processes the request..."
 
 if ! oc wait --for=condition=Ready certificate/rhacs-central-tls -n $NAMESPACE --timeout=600s; then
     error "Certificate creation timed out or failed. Check certificate status with: oc describe certificate rhacs-central-tls -n $NAMESPACE"
@@ -175,40 +167,137 @@ log "========================================================="
 log "PATCHING RHACS CENTRAL TLS CERTIFICATE"
 log "========================================================="
 
-# Check if central-default-tls-cert secret exists
-log "Checking for central-default-tls-cert secret..."
-if ! oc get secret central-default-tls-cert -n $NAMESPACE &>/dev/null; then
-    warning "central-default-tls-cert secret not found in $NAMESPACE"
-    warning "This may be expected if RHACS Central hasn't created it yet"
-    warning "You may need to run this patch manually later"
+# Wait for central-tls secret to exist
+log "Waiting for central-tls secret to be created by RHACS..."
+MAX_CENTRAL_WAIT=120
+CENTRAL_WAIT_COUNT=0
+while ! oc get secret central-tls -n $NAMESPACE &>/dev/null; do
+    if [ $CENTRAL_WAIT_COUNT -ge $MAX_CENTRAL_WAIT ]; then
+        error "central-tls secret not found in $NAMESPACE after ${MAX_CENTRAL_WAIT} seconds"
+    fi
+    log "Waiting for central-tls... ($((CENTRAL_WAIT_COUNT+1))/${MAX_CENTRAL_WAIT}s)"
+    sleep 1
+    CENTRAL_WAIT_COUNT=$((CENTRAL_WAIT_COUNT+1))
+done
+
+success "central-tls secret found"
+
+# Extract the certificate and key from our new secret
+log "Extracting certificate and key from rhacs-central-tls-secret..."
+TLS_CERT=$(oc get secret rhacs-central-tls-secret -o jsonpath='{.data.tls\.crt}' -n $NAMESPACE)
+TLS_KEY=$(oc get secret rhacs-central-tls-secret -o jsonpath='{.data.tls\.key}' -n $NAMESPACE)
+
+if [ -z "$TLS_CERT" ] || [ -z "$TLS_KEY" ]; then
+    error "Failed to extract certificate or key from rhacs-central-tls-secret"
+fi
+
+# Patch the central-tls secret
+log "Patching central-tls with new TLS certificate..."
+if oc patch secret central-tls -p "{\"data\":{\"tls.crt\":\"$TLS_CERT\",\"tls.key\":\"$TLS_KEY\"}}" -n $NAMESPACE; then
+    success "Successfully patched central-tls with new certificate"
 else
-    log "Patching central-default-tls-cert with new TLS certificate..."
-    
-    # Extract the certificate and key from our new secret
-    TLS_CERT=$(oc get secret rhacs-central-tls-secret -o jsonpath='{.data.tls\.crt}' -n $NAMESPACE)
-    TLS_KEY=$(oc get secret rhacs-central-tls-secret -o jsonpath='{.data.tls\.key}' -n $NAMESPACE)
-    
-    if [ -z "$TLS_CERT" ] || [ -z "$TLS_KEY" ]; then
-        error "Failed to extract certificate or key from rhacs-central-tls-secret"
-    fi
-    
-    # Patch the central-default-tls-cert secret
-    if oc patch secret central-default-tls-cert -p "{\"data\":{\"tls.crt\":\"$TLS_CERT\",\"tls.key\":\"$TLS_KEY\"}}" -n $NAMESPACE; then
-        success "Successfully patched central-default-tls-cert with new certificate"
-    else
-        error "Failed to patch central-default-tls-cert secret"
-    fi
-    
-    # Verify the patch
-    log "Verifying patched certificate..."
-    PATCHED_CERT=$(oc get secret central-default-tls-cert -o jsonpath='{.data.tls\.crt}' -n $NAMESPACE)
-    if [ "$PATCHED_CERT" = "$TLS_CERT" ]; then
-        success "Certificate patch verified successfully"
-    else
-        warning "Certificate patch verification failed - certificates don't match"
-    fi
+    error "Failed to patch central-tls secret"
+fi
+
+# Verify the patch
+log "Verifying patched certificate..."
+PATCHED_CERT=$(oc get secret central-tls -o jsonpath='{.data.tls\.crt}' -n $NAMESPACE)
+if [ "$PATCHED_CERT" = "$TLS_CERT" ]; then
+    success "Certificate patch verified successfully"
+else
+    warning "Certificate patch verification failed - certificates don't match"
+fi
+
+# Patch the route to use our certificate secret
+log "Configuring route to use rhacs-central-tls-secret..."
+if oc patch route central -n $NAMESPACE -p '{"spec":{"tls":{"termination":"edge","insecureEdgeTerminationPolicy":"Redirect"}}}'; then
+    success "Route configured for edge TLS termination"
+else
+    error "Failed to configure route for TLS"
+fi
+
+# Extract certificate and key from our secret (base64 encoded)
+ROUTE_CERT=$(oc get secret rhacs-central-tls-secret -n $NAMESPACE -o jsonpath='{.data.tls\.crt}')
+ROUTE_KEY=$(oc get secret rhacs-central-tls-secret -n $NAMESPACE -o jsonpath='{.data.tls\.key}')
+
+# Decode certificate and key
+log "Decoding certificate and key..."
+DECODED_CERT=$(echo "$ROUTE_CERT" | base64 -d)
+DECODED_KEY=$(echo "$ROUTE_KEY" | base64 -d)
+
+# Create a temporary YAML file for the route update
+ROUTE_YAML=$(mktemp)
+cat > "$ROUTE_YAML" << EOF
+spec:
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+    certificate: |
+$(echo "$DECODED_CERT" | sed 's/^/      /')
+    key: |
+$(echo "$DECODED_KEY" | sed 's/^/      /')
+EOF
+
+# Apply the route update
+log "Patching route with ZeroSSL certificate..."
+if oc patch route central -n $NAMESPACE --patch-file="$ROUTE_YAML"; then
+    success "Route patched with ZeroSSL certificate"
+else
+    error "Failed to patch route with certificate"
+fi
+
+# Clean up temporary file
+rm -f "$ROUTE_YAML"
+
+# Wait for route to be ready
+log "Waiting for route to be ready..."
+sleep 10
+
+# Verify route configuration
+log "Verifying route TLS configuration..."
+ROUTE_TLS=$(oc get route central -n $NAMESPACE -o jsonpath='{.spec.tls.termination}')
+if [ "$ROUTE_TLS" = "edge" ]; then
+    success "Route TLS termination verified"
+else
+    warning "Route TLS termination not properly configured"
+fi
+
+# Verify certificate is embedded in route
+log "Verifying certificate is embedded in route..."
+ROUTE_CERT_CHECK=$(oc get route central -n $NAMESPACE -o jsonpath='{.spec.tls.certificate}')
+if [ -n "$ROUTE_CERT_CHECK" ]; then
+    success "Certificate found in route configuration"
+else
+    warning "Certificate not found in route - may be using default"
+fi
+
+# Test certificate validity
+log "Testing certificate validity..."
+if curl -s --connect-timeout 10 "https://$CENTRAL_DNS" >/dev/null; then
+    success "HTTPS connection successful"
+else
+    warning "HTTPS connection test failed"
 fi
 
 success "SSL Certificate Setup completed!"
 log "========================================================="
+
+# Display RHACS access information
+log ""
+log "========================================================="
+log "RHACS ACCESS INFORMATION"
+log "========================================================="
+
+# Get admin password
+ADMIN_PASSWORD=$(oc get secret central-htpasswd -n $NAMESPACE -o jsonpath='{.data.password}' | base64 -d)
+
+if [ -z "$ADMIN_PASSWORD" ]; then
+    warning "Could not retrieve admin password"
+else
+    log "RHACS UI:     https://$CENTRAL_DNS"
+    log "---------------------------------------------------------"
+    log "User:         admin"
+    log "Password:     $ADMIN_PASSWORD"
+    log "---------------------------------------------------------"
+fi
 
