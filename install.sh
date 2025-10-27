@@ -29,40 +29,40 @@ error() {
     exit 1
 }
 
-# Run RHACS setup script (Step 1)
-setup_rhacs() {
-    log "Running RHACS secured cluster setup..."
-    bash "${SCRIPT_DIR}/scripts/01-rhacs-setup.sh"
-}
-
-# Install Red Hat Compliance Operator (Step 2)
-install_compliance_operator() {
-    log "Installing Red Hat Compliance Operator..."
-    bash "${SCRIPT_DIR}/scripts/02-compliance-operator-install.sh"
-}
-
-# Deploy applications to OpenShift cluster (Step 3)
-deploy_applications() {
-    log "Deploying applications to OpenShift cluster..."
-    bash "${SCRIPT_DIR}/scripts/03-deploy-applications.sh"
-}
-
-# Setup compliance scan schedule (Step 4)
-setup_compliance_scan_schedule() {
-    log "Setting up compliance scan schedule..."
-    bash "${SCRIPT_DIR}/scripts/04-setup-co-scan-schedule.sh"
-}
-
-# Trigger compliance scan (Step 5)
-trigger_compliance_scan() {
-    log "Triggering compliance scan..."
-    bash "${SCRIPT_DIR}/scripts/05-trigger-compliance-scan.sh"
-}
-
-# Setup SSL certificates (Step 6 - LAST)
+# Setup SSL certificates (Step 1)
 setup_ssl() {
     log "Setting up SSL certificates..."
-    bash "${SCRIPT_DIR}/scripts/06-setup-ssl.sh"
+    bash "${SCRIPT_DIR}/scripts/01-setup-ssl.sh"
+}
+
+# Run RHACS setup script (Step 2)
+setup_rhacs() {
+    log "Running RHACS secured cluster setup..."
+    bash "${SCRIPT_DIR}/scripts/02-rhacs-setup.sh"
+}
+
+# Install Red Hat Compliance Operator (Step 3)
+install_compliance_operator() {
+    log "Installing Red Hat Compliance Operator..."
+    bash "${SCRIPT_DIR}/scripts/03-compliance-operator-install.sh"
+}
+
+# Deploy applications to OpenShift cluster (Step 4)
+deploy_applications() {
+    log "Deploying applications to OpenShift cluster..."
+    bash "${SCRIPT_DIR}/scripts/04-deploy-applications.sh"
+}
+
+# Setup compliance scan schedule (Step 5)
+setup_compliance_scan_schedule() {
+    log "Setting up compliance scan schedule..."
+    bash "${SCRIPT_DIR}/scripts/05-setup-co-scan-schedule.sh"
+}
+
+# Trigger compliance scan (Step 6)
+trigger_compliance_scan() {
+    log "Triggering compliance scan..."
+    bash "${SCRIPT_DIR}/scripts/06-trigger-compliance-scan.sh"
 }
 
 # Main function
@@ -71,7 +71,7 @@ main() {
     
     # Clone the repository if running from curl
     # Check if we're running from curl by looking for the scripts directory
-    if [ ! -d "scripts" ] || [ ! -f "scripts/01-rhacs-setup.sh" ]; then
+    if [ ! -d "scripts" ] || [ ! -f "scripts/02-rhacs-setup.sh" ]; then
         log "Scripts not found locally, cloning repository..."
         REPO_DIR="$HOME/demo-config"
         if [ -d "$REPO_DIR" ]; then
@@ -91,29 +91,29 @@ main() {
     
     log "Using script directory: $SCRIPT_DIR"
     
-    # Verify scripts exist
-    for script in "01-rhacs-setup.sh" "02-compliance-operator-install.sh" "03-deploy-applications.sh" "04-setup-co-scan-schedule.sh" "05-trigger-compliance-scan.sh" "06-setup-ssl.sh"; do
+    # Verify scripts exist (check for OLD script names from GitHub repo)
+    for script in "01-setup-ssl.sh" "02-rhacs-setup.sh" "03-compliance-operator-install.sh" "04-deploy-applications.sh" "05-setup-co-scan-schedule.sh" "06-trigger-compliance-scan.sh"; do
         if [ ! -f "$SCRIPT_DIR/scripts/$script" ]; then
             error "Required script not found: $SCRIPT_DIR/scripts/$script"
         fi
     done
     
     # Run setup scripts in order
+    setup_ssl
     setup_rhacs
     install_compliance_operator
     deploy_applications
     setup_compliance_scan_schedule
     trigger_compliance_scan
-    setup_ssl
     
     success "Demo Config setup completed successfully!"
     log "All scripts have been executed in order:"
-    log "  1. RHACS secured cluster setup"
-    log "  2. Red Hat Compliance Operator installation"
-    log "  3. Application deployment"
-    log "  4. Compliance scan schedule setup"
-    log "  5. Compliance scan trigger"
-    log "  6. SSL certificate setup (with ZeroSSL)"
+    log "  1. SSL certificate setup"
+    log "  2. RHACS secured cluster setup"
+    log "  3. Red Hat Compliance Operator installation"
+    log "  4. Application deployment"
+    log "  5. Compliance scan schedule setup"
+    log "  6. Compliance scan trigger"
     
     # Display RHACS access information
     log ""
