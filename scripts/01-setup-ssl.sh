@@ -155,17 +155,28 @@ fi
 DECODED_CERT=$(echo "$ROUTE_CERT" | base64 -d)
 DECODED_KEY=$(echo "$ROUTE_KEY" | base64 -d)
 
-# Create route manifest with TLS and HTTP->HTTPS redirect
-log "Creating route manifest with TLS and HTTP->HTTPS redirect..."
-ROUTE_FILE=$(mktemp)
-cat > "$ROUTE_FILE" << 'ROUTEOF'
+# Create temporary files with decoded cert and key
+CERT_FILE=$(mktemp)
+KEY_FILE=$(mktemp)
+echo "$DECODED_CERT" > "$CERT_FILE"
+echo "$DECODED_KEY" > "$KEY_FILE"
+
+# Delete existing route if it exists
+log "Preparing route for reconfiguration..."
+oc delete route central -n $NAMESPACE --ignore-not-found=true
+sleep 2
+
+# Create route using oc apply with re-encrypt termination
+log "Creating route with re-encrypt TLS termination..."
+log "  (RHACS requires HTTPS on backend port 8443)"
+cat <<YAMEOF | oc apply -f -
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
   name: central
-  namespace: NAMESPACE_REPLACE
+  namespace: $NAMESPACE
 spec:
-  host: HOST_REPLACE
+  host: $CENTRAL_DNS
   port:
     targetPort: https
   to:
@@ -173,43 +184,24 @@ spec:
     name: central
     weight: 100
   tls:
-    termination: edge
+    termination: reencrypt
     insecureEdgeTerminationPolicy: Redirect
     certificate: |
-CERT_REPLACE
+$(sed 's/^/      /' "$CERT_FILE")
     key: |
-KEY_REPLACE
-ROUTEOF
+$(sed 's/^/      /' "$KEY_FILE")
+    destinationCACertificate: |
+$(sed 's/^/      /' "$CERT_FILE")
+YAMEOF
 
-# Replace placeholders
-sed -i "s|NAMESPACE_REPLACE|$NAMESPACE|g" "$ROUTE_FILE"
-sed -i "s|HOST_REPLACE|$CENTRAL_DNS|g" "$ROUTE_FILE"
-
-# Properly indent and insert certificate
-CERT_LINES=$(printf '%s\n' "$DECODED_CERT" | sed 's/[\/&]/\\&/g' | sed 's/^/      /')
-KEY_LINES=$(printf '%s\n' "$DECODED_KEY" | sed 's/[\/&]/\\&/g' | sed 's/^/      /')
-
-# Use temporary marker substitution
-sed -i "/^CERT_REPLACE$/c\\
-$CERT_LINES" "$ROUTE_FILE"
-
-sed -i "/^KEY_REPLACE$/c\\
-$KEY_LINES" "$ROUTE_FILE"
-
-# Remove existing route if it exists
-log "Preparing route for reconfiguration..."
-oc delete route central -n $NAMESPACE --ignore-not-found=true
-sleep 2
-
-# Apply the new route
-log "Applying route with ZeroSSL certificate..."
-if oc apply -f "$ROUTE_FILE"; then
-    success "Route created with TLS certificate and HTTP->HTTPS redirect"
+if [ $? -eq 0 ]; then
+    success "Route created with re-encrypt TLS termination"
 else
     error "Failed to create route"
 fi
 
-rm -f "$ROUTE_FILE"
+# Clean up temp files
+rm -f "$CERT_FILE" "$KEY_FILE"
 
 # Wait for route to be established
 log "Waiting for route to be established..."
@@ -218,17 +210,17 @@ sleep 10
 # Verify route configuration
 log "Verifying route TLS configuration..."
 ROUTE_TLS=$(oc get route central -n $NAMESPACE -o jsonpath='{.spec.tls.termination}' 2>/dev/null)
-if [ "$ROUTE_TLS" = "edge" ]; then
-    success "Route TLS termination verified"
+if [ "$ROUTE_TLS" = "reencrypt" ]; then
+    success "Route TLS termination verified: reencrypt"
 else
-    warning "Route TLS termination not properly configured"
+    warning "Route TLS termination: $ROUTE_TLS (expected: reencrypt)"
 fi
 
 REDIRECT_POLICY=$(oc get route central -n $NAMESPACE -o jsonpath='{.spec.tls.insecureEdgeTerminationPolicy}' 2>/dev/null)
 if [ "$REDIRECT_POLICY" = "Redirect" ]; then
     success "HTTP->HTTPS redirect policy verified"
 else
-    warning "HTTP->HTTPS redirect policy not properly configured"
+    warning "HTTP->HTTPS redirect policy: $REDIRECT_POLICY"
 fi
 
 success "SSL Certificate Setup completed!"
