@@ -112,15 +112,16 @@ else
     ROXCTL_CMD="roxctl"
 fi
 
-# Test roxctl connectivity using external endpoint
+# Test roxctl connectivity using external endpoint with -e flag
 log "Testing roxctl connectivity..."
-if ! $ROXCTL_CMD central whoami --insecure-skip-tls-verify >/dev/null 2>&1; then
-    error "roxctl authentication failed"
+if ! $ROXCTL_CMD central whoami -e "$ROX_ENDPOINT" --insecure-skip-tls-verify >/dev/null 2>&1; then
+    error "roxctl authentication failed for endpoint: $ROX_ENDPOINT"
 fi
 
-# Generate init bundle using external endpoint
+# Generate init bundle using external endpoint with -e flag
 log "Generating init bundle for cluster: $CLUSTER_NAME"
 if $ROXCTL_CMD central init-bundles generate $CLUSTER_NAME \
+  -e "$ROX_ENDPOINT" \
   --output-secrets cluster_init_bundle.yaml --insecure-skip-tls-verify 2>&1 | grep -q "AlreadyExists"; then
     log "Init bundle already exists, proceeding with existing configuration..."
     # Check if secured cluster services already exist
