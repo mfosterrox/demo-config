@@ -112,8 +112,20 @@ else
     ROXCTL_CMD="roxctl"
 fi
 
+# Login to RHACS Central with roxctl
+log "Logging into RHACS Central with roxctl..."
+if ! echo "$ADMIN_PASSWORD" | $ROXCTL_CMD central login \
+  -e "$ROX_ENDPOINT" \
+  --username admin \
+  --password-stdin \
+  --insecure-skip-tls-verify >/dev/null 2>&1; then
+    error "Failed to login to RHACS Central"
+fi
+log "✓ Successfully logged into RHACS Central"
+
+
 # Test roxctl connectivity using external endpoint with -e flag
-log "Testing roxctl connectivity..."
+log "✓ roxctl authentication verified"
 if ! $ROXCTL_CMD central whoami -e "$ROX_ENDPOINT" --insecure-skip-tls-verify >/dev/null 2>&1; then
     error "roxctl authentication failed for endpoint: $ROX_ENDPOINT"
 fi
