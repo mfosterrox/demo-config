@@ -142,8 +142,8 @@ log "========================================================="
 log "CONFIGURING OPENSHIFT ROUTE WITH TLS"
 log "========================================================="
 
-# Extract certificate and key for route configuration
-log "Extracting certificate and key from rhacs-central-tls-secret..."
+# Extract ZeroSSL certificate and key for client-facing side
+log "Extracting ZeroSSL certificate and key from rhacs-central-tls-secret..."
 ROUTE_CERT=$(oc get secret rhacs-central-tls-secret -n $NAMESPACE -o jsonpath='{.data.tls\.crt}')
 ROUTE_KEY=$(oc get secret rhacs-central-tls-secret -n $NAMESPACE -o jsonpath='{.data.tls\.key}')
 
@@ -151,15 +151,46 @@ if [ -z "$ROUTE_CERT" ] || [ -z "$ROUTE_KEY" ]; then
     error "Failed to extract certificate or key from secret"
 fi
 
-# Decode certificate and key
+# Decode ZeroSSL certificate and key
 DECODED_CERT=$(echo "$ROUTE_CERT" | base64 -d)
 DECODED_KEY=$(echo "$ROUTE_KEY" | base64 -d)
 
-# Create temporary files with decoded cert and key
+# Wait for central-tls secret to exist (created by RHACS)
+log "Waiting for RHACS central-tls secret..."
+MAX_WAIT=60
+WAIT_COUNT=0
+while ! oc get secret central-tls -n $NAMESPACE &>/dev/null; do
+    if [ $WAIT_COUNT -ge $MAX_WAIT ]; then
+        error "central-tls secret not found after ${MAX_WAIT} seconds"
+    fi
+    log "Waiting for central-tls secret... ($((WAIT_COUNT+1))/${MAX_WAIT}s)"
+    sleep 1
+    WAIT_COUNT=$((WAIT_COUNT+1))
+done
+
+# Extract RHACS backend CA certificate (uses ca.pem not ca.crt)
+log "Extracting RHACS backend CA certificate..."
+RHACS_BACKEND_CA=$(oc get secret central-tls -n $NAMESPACE -o jsonpath='{.data.ca\.pem}' 2>/dev/null | base64 -d 2>/dev/null)
+
+if [ -z "$RHACS_BACKEND_CA" ]; then
+    warning "Could not extract ca.pem from central-tls secret"
+    log "Attempting to use cert.pem as fallback..."
+    RHACS_BACKEND_CA=$(oc get secret central-tls -n $NAMESPACE -o jsonpath='{.data.cert\.pem}' | base64 -d)
+fi
+
+if [ -z "$RHACS_BACKEND_CA" ]; then
+    error "Failed to extract RHACS backend CA certificate"
+fi
+
+success "RHACS backend CA certificate extracted ($(echo "$RHACS_BACKEND_CA" | wc -c) bytes)"
+
+# Create temporary files with decoded certs and keys
 CERT_FILE=$(mktemp)
 KEY_FILE=$(mktemp)
+BACKEND_CA_FILE=$(mktemp)
 echo "$DECODED_CERT" > "$CERT_FILE"
 echo "$DECODED_KEY" > "$KEY_FILE"
+echo "$RHACS_BACKEND_CA" > "$BACKEND_CA_FILE"
 
 # Delete existing route if it exists
 log "Preparing route for reconfiguration..."
@@ -168,7 +199,8 @@ sleep 2
 
 # Create route using oc apply with re-encrypt termination
 log "Creating route with re-encrypt TLS termination..."
-log "  (RHACS requires HTTPS on backend port 8443)"
+log "  Client side: ZeroSSL certificate (trusted by browsers)"
+log "  Backend side: RHACS CA certificate (for backend verification)"
 cat <<YAMEOF | oc apply -f -
 apiVersion: route.openshift.io/v1
 kind: Route
@@ -191,7 +223,7 @@ $(sed 's/^/      /' "$CERT_FILE")
     key: |
 $(sed 's/^/      /' "$KEY_FILE")
     destinationCACertificate: |
-$(sed 's/^/      /' "$CERT_FILE")
+$(sed 's/^/      /' "$BACKEND_CA_FILE")
 YAMEOF
 
 if [ $? -eq 0 ]; then
@@ -201,7 +233,7 @@ else
 fi
 
 # Clean up temp files
-rm -f "$CERT_FILE" "$KEY_FILE"
+rm -f "$CERT_FILE" "$KEY_FILE" "$BACKEND_CA_FILE"
 
 # Wait for route to be established
 log "Waiting for route to be established..."
@@ -221,6 +253,14 @@ if [ "$REDIRECT_POLICY" = "Redirect" ]; then
     success "HTTP->HTTPS redirect policy verified"
 else
     warning "HTTP->HTTPS redirect policy: $REDIRECT_POLICY"
+fi
+
+# Verify destinationCACertificate is set
+DEST_CA_SIZE=$(oc get route central -n $NAMESPACE -o jsonpath='{.spec.tls.destinationCACertificate}' | wc -c)
+if [ "$DEST_CA_SIZE" -gt 100 ]; then
+    success "Backend CA certificate configured ($DEST_CA_SIZE bytes)"
+else
+    warning "Backend CA certificate may not be properly configured"
 fi
 
 success "SSL Certificate Setup completed!"
@@ -246,4 +286,7 @@ else
 fi
 
 log "---------------------------------------------------------"
+log ""
+log "Note: It may take 5-10 seconds for the certificate to propagate."
+log "If you see a browser warning, try a hard refresh (Ctrl+Shift+R)"
 
