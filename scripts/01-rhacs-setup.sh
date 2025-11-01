@@ -112,16 +112,17 @@ else
     ROXCTL_CMD="roxctl"
 fi
 
-# Login to RHACS Central with roxctl
+# Login to RHACS Central with roxctl (optional - API token will be used)
 log "Logging into RHACS Central with roxctl..."
-if ! echo "$ADMIN_PASSWORD" | $ROXCTL_CMD central login \
+if echo "$ADMIN_PASSWORD" | $ROXCTL_CMD central login \
   -e "$ROX_ENDPOINT" \
   --username admin \
   --password-stdin \
   --insecure-skip-tls-verify >/dev/null 2>&1; then
-    error "Failed to login to RHACS Central"
+    log "✓ Successfully logged into RHACS Central"
+else
+    warning "Password-based login failed, will use API token authentication instead"
 fi
-log "✓ Successfully logged into RHACS Central"
 
 
 # Test roxctl connectivity using external endpoint with -e flag
@@ -304,14 +305,16 @@ ROXAPI_TOKEN=$(curl -k -X POST \
 if [ -n "$ROXAPI_TOKEN" ]; then
     log "✓ roxapi token generated successfully"
     
-    # Save token and endpoint to bashrc
-    log "Saving ROX_API_TOKEN and ROX_ENDPOINT to ~/.bashrc..."
+    # Save token, endpoint, and admin password to bashrc
+    log "Saving ROX_API_TOKEN, ROX_ENDPOINT, and ADMIN_PASSWORD to ~/.bashrc..."
     echo "export ROX_API_TOKEN=\"$ROXAPI_TOKEN\"" >> ~/.bashrc
     echo "export ROX_ENDPOINT=\"$ROX_ENDPOINT\"" >> ~/.bashrc
+    echo "export ADMIN_PASSWORD=\"$ADMIN_PASSWORD\"" >> ~/.bashrc
     
     # Export for current session
     export ROX_API_TOKEN="$ROXAPI_TOKEN"
     export ROX_ENDPOINT="$ROX_ENDPOINT"
+    export ADMIN_PASSWORD="$ADMIN_PASSWORD"
     
     log "✓ Environment variables saved to ~/.bashrc"
 else
