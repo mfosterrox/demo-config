@@ -40,6 +40,21 @@ if ! oc whoami &>/dev/null; then
     error "OpenShift CLI not connected. Please login first."
 fi
 
+# Ensure RHACS operator subscription is set to stable channel
+log "Configuring RHACS operator subscription channel..."
+if oc get subscription rhacs-operator -n rhacs-operator &>/dev/null; then
+    CURRENT_CHANNEL=$(oc get subscription rhacs-operator -n rhacs-operator -o jsonpath='{.spec.channel}')
+    if [ "$CURRENT_CHANNEL" != "stable" ]; then
+        log "Updating RHACS operator channel from '$CURRENT_CHANNEL' to 'stable'..."
+        oc patch subscription rhacs-operator -n rhacs-operator --type='merge' -p '{"spec":{"channel":"stable"}}'
+        log "✓ RHACS operator channel updated to stable"
+    else
+        log "✓ RHACS operator already on stable channel"
+    fi
+else
+    warning "RHACS operator subscription not found in rhacs-operator namespace"
+fi
+
 # Check if Central is running
 if ! oc get deployment central -n $NAMESPACE &>/dev/null; then
     error "RHACS Central not found in namespace $NAMESPACE"
