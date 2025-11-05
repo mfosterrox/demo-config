@@ -79,12 +79,15 @@ fi
 
 log "Using Central endpoint: $ROX_ENDPOINT"
 
+# Ensure ROX_ENDPOINT has https:// prefix for curl commands
+ROX_API_ENDPOINT="https://$ROX_ENDPOINT"
+
 # Get current configuration
 log "Fetching current RHACS configuration..."
-CURRENT_CONFIG=$(curl -k -s "$ROX_ENDPOINT/v1/config" -H "Authorization: Bearer $ROX_API_TOKEN" 2>/dev/null)
+CURRENT_CONFIG=$(curl -k -s "$ROX_API_ENDPOINT/v1/config" -H "Authorization: Bearer $ROX_API_TOKEN" 2>/dev/null)
 
-if [ -z "$CURRENT_CONFIG" ]; then
-    error "Failed to fetch current configuration"
+if [ -z "$CURRENT_CONFIG" ] || echo "$CURRENT_CONFIG" | grep -q "error"; then
+    error "Failed to fetch current configuration. Check that Central is accessible and the API token is valid."
 fi
 
 log "✓ Current configuration retrieved"
@@ -117,7 +120,7 @@ fi
 
 # Apply the updated configuration
 log "Applying updated metrics configuration..."
-UPDATE_RESPONSE=$(echo "$UPDATED_CONFIG" | curl -k -s -X PUT "$ROX_ENDPOINT/v1/config" \
+UPDATE_RESPONSE=$(echo "$UPDATED_CONFIG" | curl -k -s -X PUT "$ROX_API_ENDPOINT/v1/config" \
   -H "Authorization: Bearer $ROX_API_TOKEN" \
   -H "Content-Type: application/json" \
   --data-binary @- 2>/dev/null)
@@ -138,7 +141,7 @@ GATHERING_CONFIG=$(echo "$CURRENT_CONFIG" | jq '
 ' 2>/dev/null)
 
 if [ -n "$GATHERING_CONFIG" ]; then
-    echo "$GATHERING_CONFIG" | curl -k -s -X PUT "$ROX_ENDPOINT/v1/config" \
+    echo "$GATHERING_CONFIG" | curl -k -s -X PUT "$ROX_API_ENDPOINT/v1/config" \
       -H "Authorization: Bearer $ROX_API_TOKEN" \
       -H "Content-Type: application/json" \
       --data-binary @- >/dev/null 2>&1
@@ -155,7 +158,7 @@ sleep 30
 log "Verifying custom metrics are exposed..."
 
 # Check for custom metrics
-METRICS_OUTPUT=$(curl -k -s "$ROX_ENDPOINT/metrics" \
+METRICS_OUTPUT=$(curl -k -s "$ROX_API_ENDPOINT/metrics" \
   -H "Authorization: Bearer $ROX_API_TOKEN" 2>/dev/null)
 
 if [ -z "$METRICS_OUTPUT" ]; then
