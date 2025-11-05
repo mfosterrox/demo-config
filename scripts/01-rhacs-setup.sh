@@ -125,14 +125,39 @@ oc wait --for=condition=Available deployment/central -n $NAMESPACE --timeout=300
 # Verify Central has process baseline auto-lock enabled
 log "Verifying process baseline auto-lock configuration in Central..."
 CENTRAL_AUTO_LOCK=$(oc get deployment central -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="ROX_AUTO_LOCK_PROCESS_BASELINES")].value}' 2>/dev/null)
+
 if [ -z "$CENTRAL_AUTO_LOCK" ]; then
-    # Check if it's set in the deployment spec
-    CENTRAL_AUTO_LOCK=$(oc get deployment central -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].env}' 2>/dev/null | grep -o 'ROX_AUTO_LOCK_PROCESS_BASELINES' || true)
-    if [ -z "$CENTRAL_AUTO_LOCK" ]; then
-        log "Central uses default auto-lock setting (enabled by default)"
+    # Not explicitly set, using default (which is true/enabled)
+    log "Central uses default auto-lock setting (enabled by default)"
+elif [ "$CENTRAL_AUTO_LOCK" = "false" ]; then
+    # Explicitly disabled, let's enable it
+    warning "Central auto-lock is disabled, enabling it..."
+    
+    # Check if the env var exists in the deployment
+    ENV_EXISTS=$(oc get deployment central -n $NAMESPACE -o json | jq '.spec.template.spec.containers[0].env[] | select(.name=="ROX_AUTO_LOCK_PROCESS_BASELINES")' 2>/dev/null)
+    
+    if [ -n "$ENV_EXISTS" ]; then
+        # Update existing env var
+        oc set env deployment/central -n $NAMESPACE ROX_AUTO_LOCK_PROCESS_BASELINES=true
+    else
+        # Add new env var
+        oc set env deployment/central -n $NAMESPACE ROX_AUTO_LOCK_PROCESS_BASELINES=true
+    fi
+    
+    if [ $? -eq 0 ]; then
+        log "✓ Central auto-lock setting updated to enabled"
+        log "Note: Central will restart to apply this change"
+        
+        # Wait for Central to restart
+        log "Waiting for Central to restart..."
+        sleep 10
+        oc wait --for=condition=Available deployment/central -n $NAMESPACE --timeout=300s
+        log "✓ Central restarted successfully"
+    else
+        warning "Failed to update Central auto-lock setting"
     fi
 else
-    log "Central auto-lock setting: $CENTRAL_AUTO_LOCK"
+    log "✓ Central auto-lock setting: $CENTRAL_AUTO_LOCK (enabled)"
 fi
 
 # Extract admin credentials
@@ -255,7 +280,22 @@ if $ROXCTL_CMD central init-bundles generate $CLUSTER_NAME \
     INIT_BUNDLE_EXISTS=true
     # Check if secured cluster services already exist
     if oc get securedcluster secured-cluster-services -n $NAMESPACE >/dev/null 2>&1; then
-        log "SecuredCluster resource already exists, skipping creation..."
+        log "SecuredCluster resource already exists, checking configuration..."
+        
+        # Check and update auto-lock setting
+        CURRENT_AUTO_LOCK=$(oc get securedcluster secured-cluster-services -n $NAMESPACE -o jsonpath='{.spec.processBaselines.autoLock}' 2>/dev/null)
+        if [ "$CURRENT_AUTO_LOCK" != "Enabled" ]; then
+            log "Updating SecuredCluster to enable process baseline auto-lock..."
+            oc patch securedcluster secured-cluster-services -n $NAMESPACE --type='merge' -p '{"spec":{"processBaselines":{"autoLock":"Enabled"}}}'
+            if [ $? -eq 0 ]; then
+                log "✓ Process baseline auto-lock enabled on existing SecuredCluster"
+            else
+                warning "Failed to update auto-lock setting"
+            fi
+        else
+            log "✓ Process baseline auto-lock already enabled"
+        fi
+        
         SKIP_TO_FINAL_OUTPUT=true
     else
         log "SecuredCluster resource not found, will create it..."
