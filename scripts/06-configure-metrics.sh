@@ -99,6 +99,8 @@ log "Configuring Prometheus metrics..."
 UPDATED_CONFIG=$(echo "$CURRENT_CONFIG" | jq '
   # Set global metrics gathering interval
   .privateConfig.metrics.gatheringIntervalMinutes = 5 |
+  # Enable metrics exposure
+  .publicConfig.telemetry.enabled = true |
   # Enable policy violations metrics (predefined)
   .privateConfig.metrics.policyViolations.gatheringIntervalMinutes = 5 |
   .privateConfig.metrics.policyViolations.predefinedMetrics = [
@@ -146,25 +148,56 @@ log "Waiting for metrics to be generated (30 seconds)..."
 sleep 30
 
 # Verify metrics are being exposed
-log "Verifying custom metrics are exposed..."
+log "Verifying metrics are exposed..."
 
-# Check for custom metrics
+# Check for metrics endpoint
 METRICS_OUTPUT=$(curl -k -s "$ROX_API_ENDPOINT/metrics" \
   -H "Authorization: Bearer $ROX_API_TOKEN" 2>/dev/null)
 
 if [ -z "$METRICS_OUTPUT" ]; then
-    warning "Could not fetch metrics endpoint"
+    warning "Could not fetch metrics endpoint - telemetry may not be enabled or endpoint not accessible"
 else
-    # Check for some common RHACS metrics
-    if echo "$METRICS_OUTPUT" | grep -q "rox_central"; then
-        log "✓ RHACS metrics are being exposed"
-        
-        # Count available metrics
-        METRIC_COUNT=$(echo "$METRICS_OUTPUT" | grep "^rox_" | wc -l)
-        log "✓ Found $METRIC_COUNT RHACS metrics available"
+    log "✓ Metrics endpoint is accessible"
+    
+    # Verify each enabled metric category
+    log "Verifying enabled metrics..."
+    
+    # Check Policy Violation metrics
+    if echo "$METRICS_OUTPUT" | grep -q "rox_central_policy_violation_namespace_severity"; then
+        log "✓ Policy violation namespace/severity metric found"
     else
-        warning "RHACS metrics not found in output"
+        warning "Policy violation namespace/severity metric not found (may need time to generate)"
     fi
+    
+    if echo "$METRICS_OUTPUT" | grep -q "rox_central_policy_violation_deployment_severity"; then
+        log "✓ Policy violation deployment/severity metric found"
+    else
+        warning "Policy violation deployment/severity metric not found (may need time to generate)"
+    fi
+    
+    # Check Image Vulnerability metrics
+    if echo "$METRICS_OUTPUT" | grep -q "rox_central_image_vuln_namespace_severity"; then
+        log "✓ Image vulnerability namespace/severity metric found"
+    else
+        warning "Image vulnerability namespace/severity metric not found (may need time to generate)"
+    fi
+    
+    if echo "$METRICS_OUTPUT" | grep -q "rox_central_image_vuln_deployment_severity"; then
+        log "✓ Image vulnerability deployment/severity metric found"
+    else
+        warning "Image vulnerability deployment/severity metric not found (may need time to generate)"
+    fi
+    
+    # Check Node Vulnerability metrics
+    if echo "$METRICS_OUTPUT" | grep -q "rox_central_node_vuln_node_severity"; then
+        log "✓ Node vulnerability node/severity metric found"
+    else
+        warning "Node vulnerability node/severity metric not found (may need time to generate)"
+    fi
+    
+    # Count total RHACS metrics
+    METRIC_COUNT=$(echo "$METRICS_OUTPUT" | grep "^rox_central" | wc -l)
+    log "✓ Total RHACS metrics available: $METRIC_COUNT"
 fi
 
 # Display configured metrics
