@@ -104,7 +104,7 @@ main() {
     deploy_applications
     setup_compliance_scan_schedule
     trigger_compliance_scan
-    setup_ssl
+    
     
     success "Demo Config setup completed successfully!"
     log "All scripts have been executed in order:"
@@ -113,7 +113,6 @@ main() {
     log "  3. Application deployment"
     log "  4. Compliance scan schedule setup"
     log "  5. Compliance scan trigger"
-    log "  6. SSL certificate setup (with ZeroSSL)"
     
     # Display RHACS access information
     log ""
