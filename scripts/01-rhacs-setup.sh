@@ -92,6 +92,19 @@ if oc get subscription.operators.coreos.com rhacs-operator -n $OPERATOR_NAMESPAC
         FINAL_CSV=$(oc get subscription.operators.coreos.com rhacs-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.currentCSV}')
         log "✓ Channel confirmed: $FINAL_CHANNEL"
         log "✓ Installed CSV: $FINAL_CSV"
+        
+        # Wait for Central to be upgraded and ready after operator upgrade
+        log "Waiting for Central deployment to be upgraded..."
+        sleep 15  # Give operator time to start upgrading Central
+        
+        log "Waiting for Central to be ready after upgrade..."
+        if ! oc wait --for=condition=Available deployment/central -n $NAMESPACE --timeout=600s 2>/dev/null; then
+            warning "Central did not become available within timeout, checking status..."
+            oc get deployment central -n $NAMESPACE
+            oc get pods -n $NAMESPACE -l app=central
+        else
+            log "✓ Central is ready after operator upgrade"
+        fi
     else
         log "✓ RHACS operator already on stable channel"
         log "✓ Installed CSV: $CURRENT_CSV"
@@ -195,29 +208,37 @@ fi
 
 # Generate init bundle using external endpoint with -e flag
 log "Generating init bundle for cluster: $CLUSTER_NAME"
+INIT_BUNDLE_EXISTS=false
 if $ROXCTL_CMD central init-bundles generate $CLUSTER_NAME \
   -e "$ROX_ENDPOINT" \
   --output-secrets cluster_init_bundle.yaml --insecure-skip-tls-verify 2>&1 | grep -q "AlreadyExists"; then
-    log "Init bundle already exists, proceeding with existing configuration..."
+    log "Init bundle already exists in RHACS Central"
+    INIT_BUNDLE_EXISTS=true
     # Check if secured cluster services already exist
     if oc get securedcluster secured-cluster-services -n $NAMESPACE >/dev/null 2>&1; then
         log "SecuredCluster resource already exists, skipping creation..."
         SKIP_TO_FINAL_OUTPUT=true
     else
-        log "Creating SecuredCluster resource..."
+        log "SecuredCluster resource not found, will create it..."
         SKIP_TO_FINAL_OUTPUT=false
     fi
 else
     if [ ! -f cluster_init_bundle.yaml ]; then
         error "Failed to generate init bundle"
     fi
+    log "Init bundle generated successfully"
+    INIT_BUNDLE_EXISTS=false
     SKIP_TO_FINAL_OUTPUT=false
 fi
 
-# Apply init bundle (only if not skipping)
+# Apply init bundle (only if not skipping and bundle was actually generated)
 if [ "$SKIP_TO_FINAL_OUTPUT" = "false" ]; then
-    log "Applying init bundle secrets..."
-    oc apply -f cluster_init_bundle.yaml -n $NAMESPACE
+    if [ "$INIT_BUNDLE_EXISTS" = "false" ]; then
+        log "Applying init bundle secrets..."
+        oc apply -f cluster_init_bundle.yaml -n $NAMESPACE
+    else
+        log "Init bundle secrets already exist, skipping application..."
+    fi
 
     # Create SecuredCluster resource with INTERNAL endpoint
     log "Creating SecuredCluster resource with internal endpoint..."
