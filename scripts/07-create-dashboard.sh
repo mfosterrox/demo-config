@@ -27,8 +27,8 @@ error() {
 }
 
 # Configuration
-DASHBOARD_NAMESPACE="openshift-config-managed"
-DASHBOARD_NAME="rhacs-security-dashboard"
+DASHBOARD_NAMESPACE="openshift-monitoring"
+DASHBOARD_NAME="grafana-dashboard-rhacs-security"
 
 # Check prerequisites
 log "Validating prerequisites..."
@@ -38,7 +38,13 @@ if ! oc whoami &>/dev/null; then
     error "OpenShift CLI not connected. Please login first."
 fi
 
-# Check if we have permissions to create ConfigMaps in openshift-config-managed
+# Check if user-workload monitoring is enabled
+log "Checking if user-workload monitoring is enabled..."
+if ! oc get configmap cluster-monitoring-config -n openshift-monitoring &>/dev/null 2>&1; then
+    warning "Cluster monitoring config not found, it may not be fully configured"
+fi
+
+# Check if we have permissions to create ConfigMaps in openshift-monitoring
 if ! oc auth can-i create configmaps -n $DASHBOARD_NAMESPACE &>/dev/null; then
     error "Insufficient permissions to create ConfigMaps in $DASHBOARD_NAMESPACE namespace"
 fi
@@ -58,10 +64,10 @@ cat <<'EOF' | oc apply -f -
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: rhacs-security-dashboard
-  namespace: openshift-config-managed
+  name: grafana-dashboard-rhacs-security
+  namespace: openshift-monitoring
   labels:
-    console.openshift.io/dashboard: "true"
+    grafana_dashboard: "1"
 data:
   rhacs-security.json: |
     {
@@ -487,18 +493,28 @@ log "========================================================="
 log "RHACS Security Dashboard Setup Complete!"
 log "========================================================="
 log ""
-log "Dashboard Name: RHACS Security Dashboard"
-log "Location: OpenShift Console → Observe → Dashboards"
+log "Dashboard ConfigMap: $DASHBOARD_NAME"
+log "Namespace: $DASHBOARD_NAMESPACE"
 log ""
-log "The dashboard includes:"
+log "The dashboard JSON includes:"
 log "  - Policy Violations by Severity"
 log "  - Image Vulnerabilities by Severity"
 log "  - Node Vulnerabilities by Severity"
 log "  - Critical Policy Violations by Namespace"
 log ""
-log "To access:"
-log "  1. Log into OpenShift Console"
-log "  2. Navigate to Observe → Dashboards"
-log "  3. Select 'RHACS Security Dashboard' from the dropdown"
+log "IMPORTANT: OpenShift Console doesn't auto-discover custom dashboards."
+log "To use this dashboard, you have two options:"
+log ""
+log "Option 1 - Import to Grafana (if available):"
+log "  1. Get Grafana route: oc get route grafana -n openshift-monitoring"
+log "  2. Login to Grafana"
+log "  3. Import dashboard JSON from ConfigMap:"
+log "     oc get configmap $DASHBOARD_NAME -n $DASHBOARD_NAMESPACE -o jsonpath='{.data.rhacs-security\.json}'"
+log ""
+log "Option 2 - Query metrics directly:"
+log "  Use the Observe → Metrics page in OpenShift Console"
+log "  Example queries:"
+log "    sum by (severity) (rox_central_policy_violation_namespace_severity)"
+log "    sum by (severity) (rox_central_image_vuln_namespace_severity)"
 log "========================================================="
 

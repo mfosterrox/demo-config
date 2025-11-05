@@ -122,6 +122,19 @@ fi
 log "Waiting for Central to be ready..."
 oc wait --for=condition=Available deployment/central -n $NAMESPACE --timeout=300s
 
+# Verify Central has process baseline auto-lock enabled
+log "Verifying process baseline auto-lock configuration in Central..."
+CENTRAL_AUTO_LOCK=$(oc get deployment central -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="ROX_AUTO_LOCK_PROCESS_BASELINES")].value}' 2>/dev/null)
+if [ -z "$CENTRAL_AUTO_LOCK" ]; then
+    # Check if it's set in the deployment spec
+    CENTRAL_AUTO_LOCK=$(oc get deployment central -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].env}' 2>/dev/null | grep -o 'ROX_AUTO_LOCK_PROCESS_BASELINES' || true)
+    if [ -z "$CENTRAL_AUTO_LOCK" ]; then
+        log "Central uses default auto-lock setting (enabled by default)"
+    fi
+else
+    log "Central auto-lock setting: $CENTRAL_AUTO_LOCK"
+fi
+
 # Extract admin credentials
 log "Extracting admin credentials..."
 ADMIN_PASSWORD=$(oc get secret central-htpasswd -n $NAMESPACE -o jsonpath='{.data.password}' | base64 -d)
@@ -268,6 +281,7 @@ if [ "$SKIP_TO_FINAL_OUTPUT" = "false" ]; then
 
     # Create SecuredCluster resource with INTERNAL endpoint
     log "Creating SecuredCluster resource with internal endpoint..."
+    log "Configuring process baseline auto-lock: Enabled"
 cat <<EOF | oc apply -f -
 apiVersion: platform.stackrox.io/v1alpha1
 kind: SecuredCluster
@@ -315,7 +329,18 @@ spec:
           cpu: 1000m
           memory: 1500Mi
     scannerComponent: AutoSense
+  processBaselines:
+    autoLock: Enabled
 EOF
+
+    # Verify auto-lock setting was applied
+    sleep 2
+    AUTO_LOCK_STATUS=$(oc get securedcluster secured-cluster-services -n $NAMESPACE -o jsonpath='{.spec.processBaselines.autoLock}' 2>/dev/null)
+    if [ "$AUTO_LOCK_STATUS" = "Enabled" ]; then
+        log "✓ Process baseline auto-lock verified: Enabled"
+    else
+        warning "Process baseline auto-lock setting not found or not Enabled (current: $AUTO_LOCK_STATUS)"
+    fi
 fi
 
 # Wait for deployment (only if not skipping)
