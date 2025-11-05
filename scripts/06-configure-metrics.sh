@@ -99,23 +99,12 @@ log "Configuring Prometheus metrics..."
 UPDATED_CONFIG=$(echo "$CURRENT_CONFIG" | jq '
   # Set global metrics gathering interval
   .privateConfig.metrics.gatheringIntervalMinutes = 5 |
-  # Add custom policy violation metrics
-  .privateConfig.metrics.policyViolations.descriptors += {
-    component_severity: { 
-      labels: [ "Component", "Severity" ] 
-    },
-    cluster_namespace_severity: { 
-      labels: [ "Cluster", "Namespace", "Severity" ] 
-    },
-    policy_severity: { 
-      labels: [ "Policy", "Severity" ] 
-    },
-    deployment_severity: {
-      labels: [ "Deployment", "Severity" ]
-    }
-  } |
-  # Enable policy violations metrics gathering (5 minutes)
+  # Enable policy violations metrics (predefined)
   .privateConfig.metrics.policyViolations.gatheringIntervalMinutes = 5 |
+  .privateConfig.metrics.policyViolations.predefinedMetrics = [
+    "rox_central_policy_violation_namespace_severity",
+    "rox_central_policy_violation_deployment_severity"
+  ] |
   # Enable image vulnerability metrics
   .privateConfig.metrics.imageVulnerabilities.gatheringIntervalMinutes = 5 |
   .privateConfig.metrics.imageVulnerabilities.predefinedMetrics = [
@@ -183,11 +172,9 @@ log "========================================================="
 log "Prometheus metrics configuration completed!"
 log "========================================================="
 log ""
-log "Custom Policy Violation Metrics:"
-log "  - component_severity: Violations by Component and Severity"
-log "  - cluster_namespace_severity: Violations by Cluster, Namespace, and Severity"
-log "  - policy_severity: Violations by Policy and Severity"
-log "  - deployment_severity: Violations by Deployment and Severity"
+log "Enabled Policy Violation Metrics:"
+log "  - rox_central_policy_violation_namespace_severity"
+log "  - rox_central_policy_violation_deployment_severity"
 log ""
 log "Enabled Image Vulnerability Metrics:"
 log "  - rox_central_image_vuln_namespace_severity"
