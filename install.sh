@@ -29,37 +29,31 @@ error() {
     exit 1
 }
 
-# Setup SSL certificates (Step 1)
-setup_ssl() {
-    log "Setting up SSL certificates..."
-    bash "${SCRIPT_DIR}/scripts/06-setup-ssl.sh"
-}
-
-# Run RHACS setup script (Step 2)
+# Run RHACS setup script (Step 1)
 setup_rhacs() {
     log "Running RHACS secured cluster setup..."
     bash "${SCRIPT_DIR}/scripts/01-rhacs-setup.sh"
 }
 
-# Install Red Hat Compliance Operator (Step 3)
+# Install Red Hat Compliance Operator (Step 2)
 install_compliance_operator() {
     log "Installing Red Hat Compliance Operator..."
     bash "${SCRIPT_DIR}/scripts/02-compliance-operator-install.sh"
 }
 
-# Deploy applications to OpenShift cluster (Step 4)
+# Deploy applications to OpenShift cluster (Step 3)
 deploy_applications() {
     log "Deploying applications to OpenShift cluster..."
     bash "${SCRIPT_DIR}/scripts/03-deploy-applications.sh"
 }
 
-# Setup compliance scan schedule (Step 5)
+# Setup compliance scan schedule (Step 4)
 setup_compliance_scan_schedule() {
     log "Setting up compliance scan schedule..."
     bash "${SCRIPT_DIR}/scripts/04-setup-co-scan-schedule.sh"
 }
 
-# Trigger compliance scan (Step 6)
+# Trigger compliance scan (Step 5)
 trigger_compliance_scan() {
     log "Triggering compliance scan..."
     bash "${SCRIPT_DIR}/scripts/05-trigger-compliance-scan.sh"
