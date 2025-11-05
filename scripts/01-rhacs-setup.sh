@@ -69,8 +69,10 @@ log "Extracting admin credentials..."
 ADMIN_PASSWORD=$(oc get secret central-htpasswd -n $NAMESPACE -o jsonpath='{.data.password}' | base64 -d)
 
 # Extract external Central endpoint
-ROX_ENDPOINT=$(oc get route central -n $NAMESPACE -o jsonpath='{.spec.host}'):443
-if [ -z "$ROX_ENDPOINT" ]; then
+ROX_ENDPOINT_HOST=$(oc get route central -n $NAMESPACE -o jsonpath='{.spec.host}')
+# Remove any existing port and add :443
+ROX_ENDPOINT="${ROX_ENDPOINT_HOST%:*}:443"
+if [ -z "$ROX_ENDPOINT_HOST" ]; then
     error "Failed to extract Central endpoint"
 fi
 
