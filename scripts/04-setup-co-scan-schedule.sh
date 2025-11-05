@@ -174,26 +174,6 @@ if [ "$SKIP_CREATION" = "false" ]; then
     fi
 fi
 
-# Trigger a compliance run if we have the ID
-if [ -n "$SCAN_CONFIG_ID" ] && [ "$SCAN_CONFIG_ID" != "null" ]; then
-    log "Triggering compliance scan run with ID: $SCAN_CONFIG_ID"
-    RUN_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X POST \
-        -H "Authorization: Bearer $ROX_API_TOKEN" \
-        -H "Content-Type: application/json" \
-        --data-raw "{\"scanConfigId\": \"$SCAN_CONFIG_ID\"}" \
-        "$ROX_ENDPOINT/v2/compliance/scan/configurations/reports/run" 2>&1)
-    
-    RUN_CURL_EXIT_CODE=$?
-    
-    if [ $RUN_CURL_EXIT_CODE -eq 0 ]; then
-        log "✓ Compliance scan run triggered successfully"
-        log "Run response: $RUN_RESPONSE"
-    else
-        log "Failed to trigger compliance scan run. Exit code: $RUN_CURL_EXIT_CODE"
-        log "Run response: $RUN_RESPONSE"
-    fi
-else
-    log "Cannot trigger compliance run - no valid scan configuration ID found"
-fi
-
 log "Compliance scan schedule setup completed successfully!"
+log "Scan configuration ID: $SCAN_CONFIG_ID"
+log "Note: Run script 05-trigger-compliance-scan.sh to trigger an immediate scan"

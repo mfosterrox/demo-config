@@ -76,8 +76,42 @@ function roxcurl() {
     curl -sk -H "Authorization: Bearer $ROX_API_TOKEN" "$@"
 }
 
-# Get all cluster IDs
-log "Fetching cluster IDs..."
+# Try to trigger using scan configuration first (preferred method)
+log "Checking for 'acs-catch-all' scan configuration..."
+SCAN_CONFIGS=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
+    -H "Authorization: Bearer $ROX_API_TOKEN" \
+    -H "Content-Type: application/json" \
+    "$ROX_ENDPOINT/v2/compliance/scan/configurations" 2>&1)
+
+if [ $? -eq 0 ]; then
+    SCAN_CONFIG_ID=$(echo "$SCAN_CONFIGS" | jq -r '.configurations[] | select(.scanName == "acs-catch-all") | .id' 2>/dev/null)
+    
+    if [ -n "$SCAN_CONFIG_ID" ] && [ "$SCAN_CONFIG_ID" != "null" ]; then
+        log "✓ Found 'acs-catch-all' scan configuration (ID: $SCAN_CONFIG_ID)"
+        log "Triggering compliance scan using scan configuration..."
+        
+        RUN_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X POST \
+            -H "Authorization: Bearer $ROX_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data-raw "{\"scanConfigId\": \"$SCAN_CONFIG_ID\"}" \
+            "$ROX_ENDPOINT/v2/compliance/scan/configurations/reports/run" 2>&1)
+        
+        if [ $? -eq 0 ]; then
+            log "✓ Compliance scan triggered successfully using scan configuration"
+            log "Scan will run according to the configured profiles and schedule"
+            exit 0
+        else
+            warning "Failed to trigger scan using configuration, falling back to legacy method..."
+        fi
+    else
+        log "Scan configuration 'acs-catch-all' not found, using legacy trigger method..."
+    fi
+else
+    log "Could not fetch scan configurations, using legacy trigger method..."
+fi
+
+# Fallback: Get all cluster IDs and trigger legacy compliance runs
+log "Fetching cluster IDs for legacy compliance trigger..."
 cluster_ids=$(roxcurl "$ROX_ENDPOINT/v1/clusters" | jq -r .clusters[].id)
 
 if [ -z "$cluster_ids" ]; then
@@ -86,7 +120,7 @@ fi
 
 log "Found clusters: $cluster_ids"
 
-# Trigger compliance runs for each cluster
+# Trigger compliance runs for each cluster (legacy method)
 for cluster in $cluster_ids; do
     log "Triggering compliance run for cluster $cluster"
     
