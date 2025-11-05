@@ -41,6 +41,35 @@ fi
 
 log "Prerequisites validated successfully"
 
+# Check if Compliance Operator is already installed
+log "Checking if Compliance Operator is already installed..."
+NAMESPACE="openshift-compliance"
+
+if oc get namespace $NAMESPACE &>/dev/null; then
+    log "Namespace $NAMESPACE already exists"
+    
+    # Check for existing subscription
+    if oc get subscription.operators.coreos.com compliance-operator -n $NAMESPACE &>/dev/null; then
+        CURRENT_CSV=$(oc get subscription.operators.coreos.com compliance-operator -n $NAMESPACE -o jsonpath='{.status.currentCSV}' 2>/dev/null)
+        CSV_PHASE=$(oc get csv $CURRENT_CSV -n $NAMESPACE -o jsonpath='{.status.phase}' 2>/dev/null)
+        
+        if [ "$CSV_PHASE" = "Succeeded" ]; then
+            log "✓ Compliance Operator is already installed and running"
+            log "  Installed CSV: $CURRENT_CSV"
+            log "  Status: $CSV_PHASE"
+            log "Skipping installation..."
+            exit 0
+        else
+            log "Compliance Operator subscription exists but CSV is in phase: $CSV_PHASE"
+            log "Continuing with installation to ensure proper setup..."
+        fi
+    else
+        log "Namespace exists but no subscription found, proceeding with installation..."
+    fi
+else
+    log "Compliance Operator not found, proceeding with installation..."
+fi
+
 # Install Red Hat Compliance Operator
 log "Installing Red Hat Compliance Operator..."
 

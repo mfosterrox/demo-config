@@ -178,7 +178,7 @@ else
     # Scan specific image
     SCAN_IMAGE="quay.io/mfoster/frontend:latest"
     log "Scanning image: $SCAN_IMAGE"
-    if $ROXCTL_CMD --insecure-skip-tls-verify -e "$ROX_ENDPOINT:443" image scan --image "$SCAN_IMAGE" --force; then
+    if $ROXCTL_CMD --insecure-skip-tls-verify -e "$ROX_ENDPOINT" image scan --image "$SCAN_IMAGE" --force; then
         log "✓ Security scan completed for $SCAN_IMAGE"
     else
         warning "Security scan failed for $SCAN_IMAGE"
