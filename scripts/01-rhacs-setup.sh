@@ -44,12 +44,56 @@ fi
 log "Configuring RHACS operator subscription channel..."
 if oc get subscription rhacs-operator -n rhacs-operator &>/dev/null; then
     CURRENT_CHANNEL=$(oc get subscription rhacs-operator -n rhacs-operator -o jsonpath='{.spec.channel}')
+    CURRENT_CSV=$(oc get subscription rhacs-operator -n rhacs-operator -o jsonpath='{.status.currentCSV}')
+    log "Current channel: $CURRENT_CHANNEL"
+    log "Current CSV: $CURRENT_CSV"
+    
     if [ "$CURRENT_CHANNEL" != "stable" ]; then
         log "Updating RHACS operator channel from '$CURRENT_CHANNEL' to 'stable'..."
         oc patch subscription rhacs-operator -n rhacs-operator --type='merge' -p '{"spec":{"channel":"stable"}}'
-        log "✓ RHACS operator channel updated to stable"
+        
+        # Wait for the subscription to update
+        log "Waiting for operator upgrade to begin..."
+        sleep 10
+        
+        # Wait for new CSV to be installed (max 5 minutes)
+        TIMEOUT=300
+        ELAPSED=0
+        while [ $ELAPSED -lt $TIMEOUT ]; do
+            NEW_CSV=$(oc get subscription rhacs-operator -n rhacs-operator -o jsonpath='{.status.currentCSV}' 2>/dev/null)
+            INSTALL_PLAN_APPROVED=$(oc get subscription rhacs-operator -n rhacs-operator -o jsonpath='{.status.state}' 2>/dev/null)
+            
+            if [ "$NEW_CSV" != "$CURRENT_CSV" ] && [ -n "$NEW_CSV" ]; then
+                log "New CSV detected: $NEW_CSV"
+                log "Waiting for CSV to reach Succeeded phase..."
+                
+                # Wait for CSV to be ready
+                if oc wait --for=jsonpath='{.status.phase}'=Succeeded csv/$NEW_CSV -n rhacs-operator --timeout=300s 2>/dev/null; then
+                    log "✓ RHACS operator upgraded successfully to $NEW_CSV"
+                    break
+                fi
+            fi
+            
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+            
+            if [ $((ELAPSED % 30)) -eq 0 ]; then
+                log "Still waiting for operator upgrade... (${ELAPSED}s elapsed)"
+            fi
+        done
+        
+        if [ $ELAPSED -ge $TIMEOUT ]; then
+            warning "Operator upgrade did not complete within timeout, but continuing..."
+        fi
+        
+        # Confirm final state
+        FINAL_CHANNEL=$(oc get subscription rhacs-operator -n rhacs-operator -o jsonpath='{.spec.channel}')
+        FINAL_CSV=$(oc get subscription rhacs-operator -n rhacs-operator -o jsonpath='{.status.currentCSV}')
+        log "✓ Channel confirmed: $FINAL_CHANNEL"
+        log "✓ Installed CSV: $FINAL_CSV"
     else
         log "✓ RHACS operator already on stable channel"
+        log "✓ Installed CSV: $CURRENT_CSV"
     fi
 else
     warning "RHACS operator subscription not found in rhacs-operator namespace"
