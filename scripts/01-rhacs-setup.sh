@@ -206,6 +206,32 @@ if ! $ROXCTL_CMD central whoami -e "$ROX_ENDPOINT" --insecure-skip-tls-verify >/
     error "roxctl authentication failed for endpoint: $ROX_ENDPOINT"
 fi
 
+# Clean up any old SecuredCluster resources from previous installations
+log "Checking for old SecuredCluster resources..."
+OLD_SECURED_CLUSTERS=$(oc get securedcluster -n $NAMESPACE -o name 2>/dev/null | grep -v "secured-cluster-services" || true)
+if [ -n "$OLD_SECURED_CLUSTERS" ]; then
+    log "Found old SecuredCluster resources, cleaning up..."
+    for sc in $OLD_SECURED_CLUSTERS; do
+        log "Deleting old resource: $sc"
+        oc delete $sc -n $NAMESPACE --wait=false 2>/dev/null || true
+    done
+    log "Waiting for old resources to be cleaned up..."
+    sleep 15
+    
+    # Clean up any orphaned NetworkPolicies with old Helm release names
+    log "Checking for orphaned NetworkPolicies..."
+    ORPHANED_NETPOLS=$(oc get networkpolicy -n $NAMESPACE -o json 2>/dev/null | \
+        python3 -c "import sys, json; data=json.load(sys.stdin); print('\n'.join([item['metadata']['name'] for item in data.get('items', []) if item['metadata'].get('annotations', {}).get('meta.helm.sh/release-name', '').startswith('stackrox-secured-cluster') or item['metadata'].get('annotations', {}).get('meta.helm.sh/release-name', '') == 'same-cluster-secured-services']))" 2>/dev/null || true)
+    
+    if [ -n "$ORPHANED_NETPOLS" ]; then
+        log "Found orphaned NetworkPolicies, removing Helm annotations..."
+        for netpol in $ORPHANED_NETPOLS; do
+            log "Cleaning up NetworkPolicy: $netpol"
+            oc annotate networkpolicy $netpol -n $NAMESPACE meta.helm.sh/release-name- meta.helm.sh/release-namespace- helm.sh/resource-policy- 2>/dev/null || true
+        done
+    fi
+fi
+
 # Generate init bundle using external endpoint with -e flag
 log "Generating init bundle for cluster: $CLUSTER_NAME"
 INIT_BUNDLE_EXISTS=false
