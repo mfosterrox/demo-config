@@ -42,15 +42,15 @@ fi
 
 # Ensure RHACS operator subscription is set to stable channel
 log "Configuring RHACS operator subscription channel..."
-if oc get subscription rhacs-operator -n rhacs-operator &>/dev/null; then
-    CURRENT_CHANNEL=$(oc get subscription rhacs-operator -n rhacs-operator -o jsonpath='{.spec.channel}')
-    CURRENT_CSV=$(oc get subscription rhacs-operator -n rhacs-operator -o jsonpath='{.status.currentCSV}')
+if oc get subscription rhacs-operator -n $NAMESPACE &>/dev/null; then
+    CURRENT_CHANNEL=$(oc get subscription rhacs-operator -n $NAMESPACE -o jsonpath='{.spec.channel}')
+    CURRENT_CSV=$(oc get subscription rhacs-operator -n $NAMESPACE -o jsonpath='{.status.currentCSV}')
     log "Current channel: $CURRENT_CHANNEL"
     log "Current CSV: $CURRENT_CSV"
     
     if [ "$CURRENT_CHANNEL" != "stable" ]; then
         log "Updating RHACS operator channel from '$CURRENT_CHANNEL' to 'stable'..."
-        oc patch subscription rhacs-operator -n rhacs-operator --type='merge' -p '{"spec":{"channel":"stable"}}'
+        oc patch subscription rhacs-operator -n $NAMESPACE --type='merge' -p '{"spec":{"channel":"stable"}}'
         
         # Wait for the subscription to update
         log "Waiting for operator upgrade to begin..."
@@ -60,15 +60,15 @@ if oc get subscription rhacs-operator -n rhacs-operator &>/dev/null; then
         TIMEOUT=300
         ELAPSED=0
         while [ $ELAPSED -lt $TIMEOUT ]; do
-            NEW_CSV=$(oc get subscription rhacs-operator -n rhacs-operator -o jsonpath='{.status.currentCSV}' 2>/dev/null)
-            INSTALL_PLAN_APPROVED=$(oc get subscription rhacs-operator -n rhacs-operator -o jsonpath='{.status.state}' 2>/dev/null)
+            NEW_CSV=$(oc get subscription rhacs-operator -n $NAMESPACE -o jsonpath='{.status.currentCSV}' 2>/dev/null)
+            INSTALL_PLAN_APPROVED=$(oc get subscription rhacs-operator -n $NAMESPACE -o jsonpath='{.status.state}' 2>/dev/null)
             
             if [ "$NEW_CSV" != "$CURRENT_CSV" ] && [ -n "$NEW_CSV" ]; then
                 log "New CSV detected: $NEW_CSV"
                 log "Waiting for CSV to reach Succeeded phase..."
                 
                 # Wait for CSV to be ready
-                if oc wait --for=jsonpath='{.status.phase}'=Succeeded csv/$NEW_CSV -n rhacs-operator --timeout=300s 2>/dev/null; then
+                if oc wait --for=jsonpath='{.status.phase}'=Succeeded csv/$NEW_CSV -n $NAMESPACE --timeout=300s 2>/dev/null; then
                     log "✓ RHACS operator upgraded successfully to $NEW_CSV"
                     break
                 fi
@@ -87,8 +87,8 @@ if oc get subscription rhacs-operator -n rhacs-operator &>/dev/null; then
         fi
         
         # Confirm final state
-        FINAL_CHANNEL=$(oc get subscription rhacs-operator -n rhacs-operator -o jsonpath='{.spec.channel}')
-        FINAL_CSV=$(oc get subscription rhacs-operator -n rhacs-operator -o jsonpath='{.status.currentCSV}')
+        FINAL_CHANNEL=$(oc get subscription rhacs-operator -n $NAMESPACE -o jsonpath='{.spec.channel}')
+        FINAL_CSV=$(oc get subscription rhacs-operator -n $NAMESPACE -o jsonpath='{.status.currentCSV}')
         log "✓ Channel confirmed: $FINAL_CHANNEL"
         log "✓ Installed CSV: $FINAL_CSV"
     else
@@ -96,7 +96,7 @@ if oc get subscription rhacs-operator -n rhacs-operator &>/dev/null; then
         log "✓ Installed CSV: $CURRENT_CSV"
     fi
 else
-    warning "RHACS operator subscription not found in rhacs-operator namespace"
+    warning "RHACS operator subscription not found in $NAMESPACE namespace"
 fi
 
 # Check if Central is running
