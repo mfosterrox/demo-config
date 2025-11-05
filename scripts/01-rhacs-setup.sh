@@ -466,6 +466,36 @@ if [ "$FAILED_PODS" -gt 0 ]; then
 fi
 fi
 
+# Verify SecuredCluster auto-lock configuration
+log "Verifying SecuredCluster process baseline auto-lock configuration..."
+if oc get securedcluster secured-cluster-services -n $NAMESPACE >/dev/null 2>&1; then
+    SC_AUTO_LOCK=$(oc get securedcluster secured-cluster-services -n $NAMESPACE -o jsonpath='{.spec.processBaselines.autoLock}' 2>/dev/null)
+    
+    if [ "$SC_AUTO_LOCK" = "Enabled" ]; then
+        log "✓ SecuredCluster process baseline auto-lock: Enabled"
+    elif [ -z "$SC_AUTO_LOCK" ]; then
+        warning "SecuredCluster auto-lock not configured (disabled by default)"
+        log "Enabling auto-lock on SecuredCluster..."
+        oc patch securedcluster secured-cluster-services -n $NAMESPACE --type='merge' -p '{"spec":{"processBaselines":{"autoLock":"Enabled"}}}'
+        if [ $? -eq 0 ]; then
+            log "✓ Process baseline auto-lock enabled on SecuredCluster"
+        else
+            warning "Failed to enable auto-lock on SecuredCluster"
+        fi
+    else
+        warning "SecuredCluster auto-lock is set to: $SC_AUTO_LOCK (should be Enabled)"
+        log "Updating auto-lock to Enabled..."
+        oc patch securedcluster secured-cluster-services -n $NAMESPACE --type='merge' -p '{"spec":{"processBaselines":{"autoLock":"Enabled"}}}'
+        if [ $? -eq 0 ]; then
+            log "✓ Process baseline auto-lock updated to Enabled"
+        else
+            warning "Failed to update auto-lock setting"
+        fi
+    fi
+else
+    warning "SecuredCluster resource not found, auto-lock verification skipped"
+fi
+
 # Generate roxapi token and save to bashrc
 log "Generating roxapi token..."
 
