@@ -92,11 +92,14 @@ fi
 
 log "✓ Current configuration retrieved"
 
-# Configure custom Prometheus metrics
-log "Configuring custom Prometheus metrics..."
+# Configure custom Prometheus metrics (all in one update)
+log "Configuring Prometheus metrics..."
 
-# Add custom policy violation metrics with various label combinations
+# Configure everything: custom policy violation metrics, enable predefined metrics, and set gathering intervals
 UPDATED_CONFIG=$(echo "$CURRENT_CONFIG" | jq '
+  # Set global metrics gathering interval
+  .privateConfig.metrics.gatheringIntervalMinutes = 5 |
+  # Add custom policy violation metrics
   .privateConfig.metrics.policyViolations.descriptors += {
     component_severity: { 
       labels: [ "Component", "Severity" ] 
@@ -110,44 +113,43 @@ UPDATED_CONFIG=$(echo "$CURRENT_CONFIG" | jq '
     deployment_severity: {
       labels: [ "Deployment", "Severity" ]
     }
-  } | 
+  } |
+  # Enable policy violations metrics gathering (5 minutes)
+  .privateConfig.metrics.policyViolations.gatheringIntervalMinutes = 5 |
+  # Enable image vulnerability metrics
+  .privateConfig.metrics.imageVulnerabilities.gatheringIntervalMinutes = 5 |
+  .privateConfig.metrics.imageVulnerabilities.predefinedMetrics = [
+    "rox_central_image_vuln_namespace_severity",
+    "rox_central_image_vuln_deployment_severity",
+    "rox_central_image_vuln_cve_severity"
+  ] |
+  # Enable node vulnerability metrics
+  .privateConfig.metrics.nodeVulnerabilities.gatheringIntervalMinutes = 5 |
+  .privateConfig.metrics.nodeVulnerabilities.predefinedMetrics = [
+    "rox_central_node_vuln_node_severity",
+    "rox_central_node_vuln_component_severity",
+    "rox_central_node_vuln_cve_severity"
+  ] |
   { config: . }
 ' 2>/dev/null)
 
 if [ -z "$UPDATED_CONFIG" ]; then
-    error "Failed to create updated configuration"
+    error "Failed to create updated configuration with jq"
 fi
 
-# Apply the updated configuration
-log "Applying updated metrics configuration..."
-UPDATE_RESPONSE=$(echo "$UPDATED_CONFIG" | curl -k -s -X PUT "$ROX_API_ENDPOINT/v1/config" \
+log "Applying comprehensive metrics configuration..."
+UPDATE_RESPONSE=$(echo "$UPDATED_CONFIG" | curl -k -s -w "\n%{http_code}" -X PUT "$ROX_API_ENDPOINT/v1/config" \
   -H "Authorization: Bearer $ROX_API_TOKEN" \
   -H "Content-Type: application/json" \
   --data-binary @- 2>/dev/null)
 
-if [ $? -ne 0 ]; then
-    error "Failed to update configuration"
-fi
+HTTP_CODE=$(echo "$UPDATE_RESPONSE" | tail -n 1)
+RESPONSE_BODY=$(echo "$UPDATE_RESPONSE" | sed '$d')
 
-log "✓ Custom metrics configuration applied successfully"
-
-# Configure metrics gathering period
-log "Configuring metrics gathering period..."
-
-# Set gathering period to 5 minutes (300 seconds)
-GATHERING_CONFIG=$(echo "$CURRENT_CONFIG" | jq '
-  .privateConfig.metrics.gatheringIntervalMinutes = 5 |
-  { config: . }
-' 2>/dev/null)
-
-if [ -n "$GATHERING_CONFIG" ]; then
-    echo "$GATHERING_CONFIG" | curl -k -s -X PUT "$ROX_API_ENDPOINT/v1/config" \
-      -H "Authorization: Bearer $ROX_API_TOKEN" \
-      -H "Content-Type: application/json" \
-      --data-binary @- >/dev/null 2>&1
-    log "✓ Metrics gathering interval set to 5 minutes"
+if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
+    log "✓ Metrics configuration applied successfully (HTTP $HTTP_CODE)"
 else
-    warning "Could not set gathering interval, continuing..."
+    error "Failed to update configuration (HTTP $HTTP_CODE). Response: $RESPONSE_BODY"
 fi
 
 # Wait for metrics to be generated
@@ -176,16 +178,33 @@ else
     fi
 fi
 
-# Display configured custom metrics
-log "Custom metrics configured:"
+# Display configured metrics
+log "========================================================="
+log "Prometheus metrics configuration completed!"
+log "========================================================="
+log ""
+log "Custom Policy Violation Metrics:"
 log "  - component_severity: Violations by Component and Severity"
 log "  - cluster_namespace_severity: Violations by Cluster, Namespace, and Severity"
 log "  - policy_severity: Violations by Policy and Severity"
 log "  - deployment_severity: Violations by Deployment and Severity"
-
-log "========================================================="
-log "Custom Prometheus metrics configuration completed!"
-log "========================================================="
+log ""
+log "Enabled Image Vulnerability Metrics:"
+log "  - rox_central_image_vuln_namespace_severity"
+log "  - rox_central_image_vuln_deployment_severity"
+log "  - rox_central_image_vuln_cve_severity"
+log ""
+log "Enabled Node Vulnerability Metrics:"
+log "  - rox_central_node_vuln_node_severity"
+log "  - rox_central_node_vuln_component_severity"
+log "  - rox_central_node_vuln_cve_severity"
+log ""
+log "Gathering Intervals:"
+log "  - Policy Violations: 5 minutes"
+log "  - Image Vulnerabilities: 5 minutes"
+log "  - Node Vulnerabilities: 5 minutes"
+log ""
+log "---------------------------------------------------------"
 log "Metrics endpoint: https://$ROX_ENDPOINT/metrics"
 log "---------------------------------------------------------"
 log "To view metrics, run:"

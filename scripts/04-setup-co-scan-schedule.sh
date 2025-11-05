@@ -80,12 +80,37 @@ if [ -z "$PRODUCTION_CLUSTER_ID" ] || [ "$PRODUCTION_CLUSTER_ID" = "null" ]; the
 fi
 log "✓ Cluster ID: $PRODUCTION_CLUSTER_ID"
 
-# Create compliance scan configuration
-log "Creating compliance scan configuration 'acs-catch-all'..."
-SCAN_CONFIG_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X POST \
+# Check if acs-catch-all scan configuration already exists
+log "Checking if 'acs-catch-all' scan configuration already exists..."
+EXISTING_CONFIGS=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
     -H "Authorization: Bearer $ROX_API_TOKEN" \
     -H "Content-Type: application/json" \
-    --data-raw "{
+    "$ROX_ENDPOINT/v2/compliance/scan/configurations" 2>&1)
+
+if [ $? -eq 0 ]; then
+    EXISTING_SCAN=$(echo "$EXISTING_CONFIGS" | jq -r '.configurations[] | select(.scanName == "acs-catch-all") | .id' 2>/dev/null)
+    
+    if [ -n "$EXISTING_SCAN" ] && [ "$EXISTING_SCAN" != "null" ]; then
+        log "✓ Scan configuration 'acs-catch-all' already exists (ID: $EXISTING_SCAN)"
+        log "Skipping creation..."
+        SCAN_CONFIG_ID="$EXISTING_SCAN"
+        SKIP_CREATION=true
+    else
+        log "Scan configuration 'acs-catch-all' not found, creating new configuration..."
+        SKIP_CREATION=false
+    fi
+else
+    log "Could not fetch existing configurations, proceeding with creation..."
+    SKIP_CREATION=false
+fi
+
+# Create compliance scan configuration (only if it doesn't exist)
+if [ "$SKIP_CREATION" = "false" ]; then
+    log "Creating compliance scan configuration 'acs-catch-all'..."
+    SCAN_CONFIG_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X POST \
+        -H "Authorization: Bearer $ROX_API_TOKEN" \
+        -H "Content-Type: application/json" \
+        --data-raw "{
         \"scanName\": \"acs-catch-all\",
         \"scanConfig\": {
             \"oneTimeScan\": false,
@@ -115,40 +140,38 @@ SCAN_CONFIG_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X POST \
     }" \
     "$ROX_ENDPOINT/v2/compliance/scan/configurations" 2>&1)
 
-if [ $? -eq 0 ]; then
-    log "✓ Compliance scan configuration created successfully"
-else
-    error "Failed to create compliance scan configuration. Response: $SCAN_CONFIG_RESPONSE"
-fi
-
-# Verify the scan configuration was created and trigger a run
-log "Verifying scan configuration and triggering compliance run..."
-
-# Get the scan configuration ID from the response
-SCAN_CONFIG_ID=$(echo "$SCAN_CONFIG_RESPONSE" | jq -r '.id' 2>/dev/null)
-if [ -z "$SCAN_CONFIG_ID" ] || [ "$SCAN_CONFIG_ID" = "null" ]; then
-    log "Could not extract scan configuration ID from response, trying to get it from configurations list..."
-    
-    # Get scan configurations to find our configuration
-    CONFIGS_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
-        -H "Authorization: Bearer $ROX_API_TOKEN" \
-        -H "Content-Type: application/json" \
-        "$ROX_ENDPOINT/v2/compliance/scan/configurations" 2>&1)
-    
     if [ $? -eq 0 ]; then
-        SCAN_CONFIG_ID=$(echo "$CONFIGS_RESPONSE" | jq -r '.configurations[] | select(.scanName == "acs-catch-all") | .id' 2>/dev/null)
-        if [ -n "$SCAN_CONFIG_ID" ] && [ "$SCAN_CONFIG_ID" != "null" ]; then
-            log "✓ Found scan configuration ID: $SCAN_CONFIG_ID"
+        log "✓ Compliance scan configuration created successfully"
+        
+        # Get the scan configuration ID from the response
+        SCAN_CONFIG_ID=$(echo "$SCAN_CONFIG_RESPONSE" | jq -r '.id' 2>/dev/null)
+        if [ -z "$SCAN_CONFIG_ID" ] || [ "$SCAN_CONFIG_ID" = "null" ]; then
+            log "Could not extract scan configuration ID from response, trying to get it from configurations list..."
+            
+            # Get scan configurations to find our configuration
+            CONFIGS_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
+                -H "Authorization: Bearer $ROX_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                "$ROX_ENDPOINT/v2/compliance/scan/configurations" 2>&1)
+    
+            if [ $? -eq 0 ]; then
+                SCAN_CONFIG_ID=$(echo "$CONFIGS_RESPONSE" | jq -r '.configurations[] | select(.scanName == "acs-catch-all") | .id' 2>/dev/null)
+                if [ -n "$SCAN_CONFIG_ID" ] && [ "$SCAN_CONFIG_ID" != "null" ]; then
+                    log "✓ Found scan configuration ID: $SCAN_CONFIG_ID"
+                else
+                    log "Could not find 'acs-catch-all' configuration in the list"
+                    log "Available configurations:"
+                    echo "$CONFIGS_RESPONSE" | jq -r '.configurations[] | .scanName' 2>/dev/null || log "No configurations found"
+                fi
+            else
+                log "Failed to get scan configurations list"
+            fi
         else
-            log "Could not find 'acs-catch-all' configuration in the list"
-            log "Available configurations:"
-            echo "$CONFIGS_RESPONSE" | jq -r '.configurations[] | .scanName' 2>/dev/null || log "No configurations found"
+            log "✓ Scan configuration ID: $SCAN_CONFIG_ID"
         fi
     else
-        log "Failed to get scan configurations list"
+        error "Failed to create compliance scan configuration. Response: $SCAN_CONFIG_RESPONSE"
     fi
-else
-    log "✓ Scan configuration ID: $SCAN_CONFIG_ID"
 fi
 
 # Trigger a compliance run if we have the ID
