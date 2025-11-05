@@ -43,15 +43,15 @@ fi
 # Ensure RHACS operator subscription is set to stable channel
 log "Configuring RHACS operator subscription channel..."
 OPERATOR_NAMESPACE="rhacs-operator"
-if oc get subscription rhacs-operator -n $OPERATOR_NAMESPACE &>/dev/null; then
-    CURRENT_CHANNEL=$(oc get subscription rhacs-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.spec.channel}')
-    CURRENT_CSV=$(oc get subscription rhacs-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.currentCSV}')
+if oc get subscription.operators.coreos.com rhacs-operator -n $OPERATOR_NAMESPACE &>/dev/null; then
+    CURRENT_CHANNEL=$(oc get subscription.operators.coreos.com rhacs-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.spec.channel}')
+    CURRENT_CSV=$(oc get subscription.operators.coreos.com rhacs-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.currentCSV}')
     log "Current channel: $CURRENT_CHANNEL"
     log "Current CSV: $CURRENT_CSV"
     
     if [ "$CURRENT_CHANNEL" != "stable" ]; then
         log "Updating RHACS operator channel from '$CURRENT_CHANNEL' to 'stable'..."
-        oc patch subscription rhacs-operator -n $OPERATOR_NAMESPACE --type='merge' -p '{"spec":{"channel":"stable"}}'
+        oc patch subscription.operators.coreos.com rhacs-operator -n $OPERATOR_NAMESPACE --type='merge' -p '{"spec":{"channel":"stable"}}'
         
         # Wait for the subscription to update
         log "Waiting for operator upgrade to begin..."
@@ -61,8 +61,8 @@ if oc get subscription rhacs-operator -n $OPERATOR_NAMESPACE &>/dev/null; then
         TIMEOUT=300
         ELAPSED=0
         while [ $ELAPSED -lt $TIMEOUT ]; do
-            NEW_CSV=$(oc get subscription rhacs-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.currentCSV}' 2>/dev/null)
-            INSTALL_PLAN_APPROVED=$(oc get subscription rhacs-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.state}' 2>/dev/null)
+            NEW_CSV=$(oc get subscription.operators.coreos.com rhacs-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.currentCSV}' 2>/dev/null)
+            INSTALL_PLAN_APPROVED=$(oc get subscription.operators.coreos.com rhacs-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.state}' 2>/dev/null)
             
             if [ "$NEW_CSV" != "$CURRENT_CSV" ] && [ -n "$NEW_CSV" ]; then
                 log "New CSV detected: $NEW_CSV"
@@ -88,8 +88,8 @@ if oc get subscription rhacs-operator -n $OPERATOR_NAMESPACE &>/dev/null; then
         fi
         
         # Confirm final state
-        FINAL_CHANNEL=$(oc get subscription rhacs-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.spec.channel}')
-        FINAL_CSV=$(oc get subscription rhacs-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.currentCSV}')
+        FINAL_CHANNEL=$(oc get subscription.operators.coreos.com rhacs-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.spec.channel}')
+        FINAL_CSV=$(oc get subscription.operators.coreos.com rhacs-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.currentCSV}')
         log "✓ Channel confirmed: $FINAL_CHANNEL"
         log "✓ Installed CSV: $FINAL_CSV"
     else
@@ -200,7 +200,7 @@ if $ROXCTL_CMD central init-bundles generate $CLUSTER_NAME \
   --output-secrets cluster_init_bundle.yaml --insecure-skip-tls-verify 2>&1 | grep -q "AlreadyExists"; then
     log "Init bundle already exists, proceeding with existing configuration..."
     # Check if secured cluster services already exist
-    if oc get securedcluster same-cluster-secured-services -n $NAMESPACE >/dev/null 2>&1; then
+    if oc get securedcluster secured-cluster-services -n $NAMESPACE >/dev/null 2>&1; then
         log "SecuredCluster resource already exists, skipping creation..."
         SKIP_TO_FINAL_OUTPUT=true
     else
@@ -225,7 +225,7 @@ cat <<EOF | oc apply -f -
 apiVersion: platform.stackrox.io/v1alpha1
 kind: SecuredCluster
 metadata:
-  name: same-cluster-secured-services
+  name: secured-cluster-services
   namespace: $NAMESPACE
 spec:
   clusterName: "$CLUSTER_NAME"
@@ -387,7 +387,7 @@ fi
 rm -f cluster_init_bundle.yaml
 # roxctl is now installed permanently to /usr/local/bin/roxctl
 
-log "RHACS same-cluster configuration completed successfully!"
+log "RHACS secured cluster configuration completed successfully!"
 log "========================================================="
 log "RHACS UI:     https://$ROX_ENDPOINT"
 log "---------------------------------------------------------"
