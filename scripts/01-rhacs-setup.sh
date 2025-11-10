@@ -27,7 +27,9 @@ error() {
 }
 
 # Configuration variables
-NAMESPACE="tssc-acs"
+DEFAULT_NAMESPACE="tssc-acs"
+FALLBACK_NAMESPACE="rhacs-operator"
+NAMESPACE="$DEFAULT_NAMESPACE"
 CLUSTER_NAME="ads-cluster"
 TOKEN_NAME="setup-script-$(date +%d-%m-%Y_%H-%M-%S)"
 TOKEN_ROLE="Admin"
@@ -38,6 +40,16 @@ log "Validating prerequisites..."
 # Check if oc is available and connected
 if ! oc whoami &>/dev/null; then
     error "OpenShift CLI not connected. Please login first."
+fi
+
+# Resolve RHACS namespace with fallback
+if ! oc get ns "$NAMESPACE" &>/dev/null || ! oc -n "$NAMESPACE" get deployment central &>/dev/null; then
+    if oc get ns "$FALLBACK_NAMESPACE" &>/dev/null && oc -n "$FALLBACK_NAMESPACE" get deployment central &>/dev/null; then
+        NAMESPACE="$FALLBACK_NAMESPACE"
+        log "Default namespace $DEFAULT_NAMESPACE not ready for RHACS; using fallback namespace $NAMESPACE"
+    else
+        warning "RHACS Central deployment not found in $DEFAULT_NAMESPACE or $FALLBACK_NAMESPACE"
+    fi
 fi
 
 # Ensure RHACS operator subscription is set to stable channel
