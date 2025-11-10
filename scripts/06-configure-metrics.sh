@@ -28,7 +28,7 @@ error() {
 
 # Configuration
 DEFAULT_NAMESPACE="tssc-acs"
-FALLBACK_NAMESPACE="rhacs-operator"
+FALLBACK_NAMESPACE="stackrox"
 NAMESPACE="$DEFAULT_NAMESPACE"
 
 # Check prerequisites

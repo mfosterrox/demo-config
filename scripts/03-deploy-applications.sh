@@ -82,7 +82,7 @@ if [ -n "$ROX_ENDPOINT" ]; then
     log "ACS Central Address from environment: $ACS_CENTRAL_ADDRESS"
 else
     if ! oc get ns "$ACS_NAMESPACE" &>/dev/null || ! oc -n "$ACS_NAMESPACE" get route central &>/dev/null; then
-        FALLBACK_NAMESPACE="rhacs-operator"
+        FALLBACK_NAMESPACE="stackrox"
         if oc get ns "$FALLBACK_NAMESPACE" &>/dev/null && oc -n "$FALLBACK_NAMESPACE" get route central &>/dev/null; then
             ACS_NAMESPACE="$FALLBACK_NAMESPACE"
             log "Default namespace tssc-acs does not contain ACS; using fallback namespace $ACS_NAMESPACE"
