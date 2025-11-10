@@ -288,8 +288,7 @@ else
 fi
 
 ROXCTL_AUTH_ARGS=()
-ROXCTL_TOKEN_FILE=""
-
+# Prepare authentication arguments (token-based by default when available)
 # Login to RHACS Central with roxctl (optional - API token will be used)
 if [ -n "$ADMIN_PASSWORD" ]; then
     log "Logging into RHACS Central with roxctl (using admin credentials)..."
@@ -304,17 +303,13 @@ if [ -n "$ADMIN_PASSWORD" ]; then
     fi
 else
     if [ -n "$ROX_API_TOKEN" ]; then
-        log "Preparing token-based authentication for roxctl commands..."
-        ROXCTL_TOKEN_FILE=$(mktemp)
-        echo -n "$ROX_API_TOKEN" > "$ROXCTL_TOKEN_FILE"
-        ROXCTL_AUTH_ARGS=(--token-file "$ROXCTL_TOKEN_FILE")
+        log "Using existing ROX_API_TOKEN from environment for roxctl commands"
+        ROXCTL_AUTH_ARGS=(--token "$ROX_API_TOKEN")
     fi
 fi
 
-if [ -z "$ROXCTL_TOKEN_FILE" ] && [ -n "$ROX_API_TOKEN" ]; then
-    ROXCTL_TOKEN_FILE=$(mktemp)
-    echo -n "$ROX_API_TOKEN" > "$ROXCTL_TOKEN_FILE"
-    ROXCTL_AUTH_ARGS=(--token-file "$ROXCTL_TOKEN_FILE")
+if [ ${#ROXCTL_AUTH_ARGS[@]} -eq 0 ] && [ -n "$ROX_API_TOKEN" ]; then
+    ROXCTL_AUTH_ARGS=(--token "$ROX_API_TOKEN")
 fi
 
 # Test roxctl connectivity using available authentication method
@@ -615,9 +610,6 @@ fi
 
 # Clean up temporary files
 rm -f cluster_init_bundle.yaml
-if [ -n "$ROXCTL_TOKEN_FILE" ] && [ -f "$ROXCTL_TOKEN_FILE" ]; then
-    rm -f "$ROXCTL_TOKEN_FILE"
-fi
 # roxctl is now installed permanently to /usr/local/bin/roxctl
 
 log "RHACS secured cluster configuration completed successfully!"
