@@ -42,6 +42,32 @@ if ! oc whoami &>/dev/null; then
     error "OpenShift CLI not connected. Please login first."
 fi
 
+# Load existing environment variables from ~/.bashrc if available
+if [ -f ~/.bashrc ]; then
+    if grep -q "^source $" ~/.bashrc; then
+        warning "Cleaning up malformed source commands in ~/.bashrc..."
+        sed -i '/^source $/d' ~/.bashrc
+    fi
+    if source ~/.bashrc 2>/dev/null; then
+        log "Loaded environment variables from ~/.bashrc"
+    else
+        warning "Failed to source ~/.bashrc, continuing with current environment"
+    fi
+fi
+
+# Normalize ROX endpoint variables if provided in environment
+if [ -z "$ROX_ENDPOINT" ]; then
+    if [ -n "$ROX_CENTRAL_ADDRESS" ]; then
+        if [[ "$ROX_CENTRAL_ADDRESS" =~ :[0-9]+$ ]]; then
+            ROX_ENDPOINT="$ROX_CENTRAL_ADDRESS"
+        else
+            ROX_ENDPOINT="$ROX_CENTRAL_ADDRESS:443"
+        fi
+        log "Using ROX endpoint from ROX_CENTRAL_ADDRESS: $ROX_ENDPOINT"
+    fi
+fi
+
+
 # Resolve RHACS namespace with fallback
 if ! oc get ns "$NAMESPACE" &>/dev/null || ! oc -n "$NAMESPACE" get deployment central &>/dev/null; then
     if oc get ns "$FALLBACK_NAMESPACE" &>/dev/null && oc -n "$FALLBACK_NAMESPACE" get deployment central &>/dev/null; then
@@ -179,14 +205,29 @@ fi
 
 # Extract admin credentials
 log "Extracting admin credentials..."
-ADMIN_PASSWORD=$(oc get secret central-htpasswd -n $NAMESPACE -o jsonpath='{.data.password}' | base64 -d)
+ADMIN_PASSWORD=""
+ADMIN_PASSWORD_B64=$(oc get secret central-htpasswd -n $NAMESPACE -o jsonpath='{.data.password}' 2>/dev/null || true)
+if [ -n "$ADMIN_PASSWORD_B64" ]; then
+    ADMIN_PASSWORD=$(echo "$ADMIN_PASSWORD_B64" | base64 -d 2>/dev/null || true)
+fi
+
+if [ -n "$ADMIN_PASSWORD" ]; then
+    log "Admin password extracted from secret"
+else
+    if [ -n "$ROX_API_TOKEN" ]; then
+        warning "Admin password not available in secret; will rely on existing ROX_API_TOKEN for API access"
+    else
+        error "Failed to extract admin password and no ROX_API_TOKEN found in environment"
+    fi
+fi
 
 # Extract external Central endpoint
 ROX_ENDPOINT_HOST=$(oc get route central -n $NAMESPACE -o jsonpath='{.spec.host}')
-# Remove any existing port and add :443
-ROX_ENDPOINT="${ROX_ENDPOINT_HOST%:*}:443"
 if [ -z "$ROX_ENDPOINT_HOST" ]; then
     error "Failed to extract Central endpoint"
+fi
+if [ -z "$ROX_ENDPOINT" ]; then
+    ROX_ENDPOINT="$ROX_ENDPOINT_HOST:443"
 fi
 
 log "Central endpoint: $ROX_ENDPOINT"
