@@ -1,9 +1,3 @@
-# Track whether ROX_API_TOKEN was already present
-TOKEN_FROM_ENV=false
-if [ -n "$ROX_API_TOKEN" ]; then
-    TOKEN_FROM_ENV=true
-    log "Found existing ROX_API_TOKEN in environment (from ~/.bashrc)"
-fi
 #!/bin/bash
 # RHACS Secured Cluster Setup Script
 # Creates RHACS secured cluster services
@@ -31,6 +25,24 @@ error() {
     echo -e "${RED}[RHACS-SETUP]${NC} $1"
     exit 1
 }
+
+normalize_rox_endpoint() {
+    local input="$1"
+    input="${input#https://}"
+    input="${input#http://}"
+    input="${input%/}"
+    if [[ "$input" != *:* ]]; then
+        input="${input}:443"
+    fi
+    echo "$input"
+}
+
+# Track whether ROX_API_TOKEN was already present
+TOKEN_FROM_ENV=false
+if [ -n "$ROX_API_TOKEN" ]; then
+    TOKEN_FROM_ENV=true
+    log "Found existing ROX_API_TOKEN in environment (from ~/.bashrc)"
+fi
 
 # Configuration variables
 DEFAULT_NAMESPACE="tssc-acs"
@@ -62,13 +74,13 @@ if [ -f ~/.bashrc ]; then
 fi
 
 # Normalize ROX endpoint variables if provided in environment
+if [ -n "$ROX_ENDPOINT" ]; then
+    ROX_ENDPOINT="$(normalize_rox_endpoint "$ROX_ENDPOINT")"
+fi
+
 if [ -z "$ROX_ENDPOINT" ]; then
     if [ -n "$ROX_CENTRAL_ADDRESS" ]; then
-        if [[ "$ROX_CENTRAL_ADDRESS" =~ :[0-9]+$ ]]; then
-            ROX_ENDPOINT="$ROX_CENTRAL_ADDRESS"
-        else
-            ROX_ENDPOINT="$ROX_CENTRAL_ADDRESS:443"
-        fi
+        ROX_ENDPOINT="$(normalize_rox_endpoint "$ROX_CENTRAL_ADDRESS")"
         log "Using ROX endpoint from ROX_CENTRAL_ADDRESS: $ROX_ENDPOINT"
     fi
 fi
@@ -233,7 +245,9 @@ if [ -z "$ROX_ENDPOINT_HOST" ]; then
     error "Failed to extract Central endpoint"
 fi
 if [ -z "$ROX_ENDPOINT" ]; then
-    ROX_ENDPOINT="$ROX_ENDPOINT_HOST:443"
+    ROX_ENDPOINT="$(normalize_rox_endpoint "$ROX_ENDPOINT_HOST")"
+else
+    ROX_ENDPOINT="$(normalize_rox_endpoint "$ROX_ENDPOINT")"
 fi
 
 log "Central endpoint: $ROX_ENDPOINT"
