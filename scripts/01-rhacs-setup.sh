@@ -1,3 +1,9 @@
+# Track whether ROX_API_TOKEN was already present
+TOKEN_FROM_ENV=false
+if [ -n "$ROX_API_TOKEN" ]; then
+    TOKEN_FROM_ENV=true
+    log "Found existing ROX_API_TOKEN in environment (from ~/.bashrc)"
+fi
 #!/bin/bash
 # RHACS Secured Cluster Setup Script
 # Creates RHACS secured cluster services
@@ -239,21 +245,25 @@ if ! curl -k -s --connect-timeout 10 "https://$ROX_ENDPOINT" >/dev/null; then
 fi
 
 # Create or reuse API token
-if [ -n "$ADMIN_PASSWORD" ]; then
-    log "Creating API token: $TOKEN_NAME"
-    NEW_ROX_API_TOKEN=$(curl -k -X POST \
-      -u "admin:$ADMIN_PASSWORD" \
-      -H "Content-Type: application/json" \
-      --data "{\"name\":\"$TOKEN_NAME\",\"role\":\"$TOKEN_ROLE\"}" \
-      "https://$ROX_ENDPOINT/v1/apitokens/generate" 2>/dev/null | python3 -c "import sys, json; print(json.load(sys.stdin)['token'])" 2>/dev/null)
+if [ "$TOKEN_FROM_ENV" = false ]; then
+    if [ -n "$ADMIN_PASSWORD" ]; then
+        log "Creating API token: $TOKEN_NAME"
+        NEW_ROX_API_TOKEN=$(curl -k -X POST \
+          -u "admin:$ADMIN_PASSWORD" \
+          -H "Content-Type: application/json" \
+          --data "{\"name\":\"$TOKEN_NAME\",\"role\":\"$TOKEN_ROLE\"}" \
+          "https://$ROX_ENDPOINT/v1/apitokens/generate" 2>/dev/null | python3 -c "import sys, json; print(json.load(sys.stdin)['token'])" 2>/dev/null)
 
-    if [ -z "$NEW_ROX_API_TOKEN" ]; then
-        error "Failed to create API token"
+        if [ -z "$NEW_ROX_API_TOKEN" ]; then
+            error "Failed to create API token"
+        fi
+        ROX_API_TOKEN="$NEW_ROX_API_TOKEN"
+        log "API token created successfully"
+    else
+        warning "No existing ROX_API_TOKEN found and admin password unavailable; cannot generate new token"
     fi
-    ROX_API_TOKEN="$NEW_ROX_API_TOKEN"
-    log "API token created successfully"
 else
-    log "Using existing ROX_API_TOKEN from environment"
+    log "Reusing existing ROX_API_TOKEN from environment"
 fi
 
 # Export environment variables for roxctl
@@ -288,6 +298,7 @@ else
 fi
 
 ROXCTL_AUTH_ARGS=()
+ROXCTL_TOKEN_FILE=""
 # Prepare authentication arguments (token-based by default when available)
 # Login to RHACS Central with roxctl (optional - API token will be used)
 if [ -n "$ADMIN_PASSWORD" ]; then
@@ -303,13 +314,15 @@ if [ -n "$ADMIN_PASSWORD" ]; then
     fi
 else
     if [ -n "$ROX_API_TOKEN" ]; then
-        log "Using existing ROX_API_TOKEN from environment for roxctl commands"
-        ROXCTL_AUTH_ARGS=(--token "$ROX_API_TOKEN")
+        log "Preparing token-based authentication for roxctl commands using existing ROX_API_TOKEN"
     fi
 fi
 
 if [ ${#ROXCTL_AUTH_ARGS[@]} -eq 0 ] && [ -n "$ROX_API_TOKEN" ]; then
-    ROXCTL_AUTH_ARGS=(--token "$ROX_API_TOKEN")
+    ROXCTL_TOKEN_FILE=$(mktemp)
+    chmod 600 "$ROXCTL_TOKEN_FILE"
+    echo -n "$ROX_API_TOKEN" > "$ROXCTL_TOKEN_FILE"
+    ROXCTL_AUTH_ARGS=(--token-file "$ROXCTL_TOKEN_FILE")
 fi
 
 # Test roxctl connectivity using available authentication method
@@ -572,7 +585,7 @@ else
 fi
 
 # Generate roxapi token and save to bashrc
-if [ -n "$ADMIN_PASSWORD" ]; then
+if [ -n "$ADMIN_PASSWORD" ] && [ "$TOKEN_FROM_ENV" = false ]; then
     log "Generating roxapi token..."
     
     ROXAPI_TOKEN=$(curl -k -X POST \
@@ -599,6 +612,9 @@ if [ -n "$ADMIN_PASSWORD" ]; then
     else
         warning "Failed to generate roxapi token"
     fi
+elif [ -n "$ADMIN_PASSWORD" ] && [ "$TOKEN_FROM_ENV" = true ]; then
+    log "ROX_API_TOKEN already present; skipping roxapi token regeneration"
+    export ROX_ENDPOINT="$ROX_ENDPOINT"
 else
     if [ -n "$ROX_API_TOKEN" ]; then
         log "Skipping roxapi token generation; using existing ROX_API_TOKEN from environment"
@@ -610,6 +626,9 @@ fi
 
 # Clean up temporary files
 rm -f cluster_init_bundle.yaml
+if [ -n "$ROXCTL_TOKEN_FILE" ] && [ -f "$ROXCTL_TOKEN_FILE" ]; then
+    rm -f "$ROXCTL_TOKEN_FILE"
+fi
 # roxctl is now installed permanently to /usr/local/bin/roxctl
 
 log "RHACS secured cluster configuration completed successfully!"
