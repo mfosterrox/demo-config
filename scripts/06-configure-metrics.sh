@@ -57,7 +57,15 @@ fi
 # Check if ROX_ENDPOINT is set
 if [ -z "$ROX_ENDPOINT" ]; then
     log "ROX_ENDPOINT not set in environment, extracting from route..."
-    ROX_ENDPOINT_HOST=$(oc get route central -n $NAMESPACE -o jsonpath='{.spec.host}')
+    ROX_ENDPOINT_HOST=$(oc get route central -n $NAMESPACE -o jsonpath='{.spec.host}' 2>/dev/null)
+    if [ -z "$ROX_ENDPOINT_HOST" ] && [ "$NAMESPACE" != "$FALLBACK_NAMESPACE" ]; then
+        log "Central route not found in $DEFAULT_NAMESPACE; checking fallback namespace $FALLBACK_NAMESPACE"
+        ROX_ENDPOINT_HOST=$(oc get route central -n $FALLBACK_NAMESPACE -o jsonpath='{.spec.host}' 2>/dev/null)
+        if [ -n "$ROX_ENDPOINT_HOST" ]; then
+            NAMESPACE="$FALLBACK_NAMESPACE"
+            log "Using fallback namespace $NAMESPACE for Central endpoint"
+        fi
+    fi
     ROX_ENDPOINT="${ROX_ENDPOINT_HOST%:*}:443"
     if [ -z "$ROX_ENDPOINT_HOST" ]; then
         error "Failed to extract Central endpoint"
