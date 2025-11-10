@@ -28,7 +28,7 @@ error() {
 
 # Configuration variables
 DEFAULT_NAMESPACE="tssc-acs"
-FALLBACK_NAMESPACE="rhacs-operator"
+FALLBACK_NAMESPACE="stackrox"
 NAMESPACE="$DEFAULT_NAMESPACE"
 CLUSTER_NAME="ads-cluster"
 TOKEN_NAME="setup-script-$(date +%d-%m-%Y_%H-%M-%S)"
@@ -127,7 +127,12 @@ fi
 
 # Check if Central is running
 if ! oc get deployment central -n $NAMESPACE &>/dev/null; then
-    error "RHACS Central not found in namespace $NAMESPACE"
+    if [ "$NAMESPACE" != "$FALLBACK_NAMESPACE" ] && oc -n "$FALLBACK_NAMESPACE" get deployment central &>/dev/null; then
+        NAMESPACE="$FALLBACK_NAMESPACE"
+        log "RHACS Central not found in $DEFAULT_NAMESPACE; switching to fallback namespace $NAMESPACE"
+    else
+        error "RHACS Central not found in namespace $NAMESPACE"
+    fi
 fi
 
 # Wait for Central to be ready
