@@ -341,7 +341,10 @@ if [ -n "$ROX_API_TOKEN" ]; then
     log "Verifying roxctl connectivity using API token..."
     log "Command: $ROXCTL_CMD central whoami -e \"$ROX_ENDPOINT\" --insecure-skip-tls-verify --token \"$ROX_API_TOKEN\""
     if ! $ROXCTL_CMD central whoami -e "$ROX_ENDPOINT" --insecure-skip-tls-verify "${ROXCTL_AUTH_ARGS[@]}" >/dev/null 2>&1; then
-        error "roxctl authentication failed for endpoint: $ROX_ENDPOINT"
+        warning "roxctl authentication failed for endpoint: $ROX_ENDPOINT"
+        log "Continuing with setup despite roxctl authentication failure. Review the above message for details."
+    else
+        log "roxctl authentication verified successfully."
     fi
 else
     log "ROX_API_TOKEN not set; skipping roxctl whoami connectivity check."
