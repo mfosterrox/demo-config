@@ -2,8 +2,6 @@
 # OpenShift Console Dashboard Creation Script
 # Creates a custom dashboard for RHACS metrics in OpenShift Console
 
-set -e
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
@@ -12,6 +10,8 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
+
+SCRIPT_FAILED=false
 
 log() {
     echo -e "${GREEN}[DASHBOARD-SETUP]${NC} $1"
@@ -23,7 +23,7 @@ warning() {
 
 error() {
     echo -e "${RED}[DASHBOARD-SETUP]${NC} $1"
-    exit 1
+    SCRIPT_FAILED=true
 }
 
 # Configuration
@@ -516,5 +516,11 @@ log "  Use the Observe → Metrics page in OpenShift Console"
 log "  Example queries:"
 log "    sum by (severity) (rox_central_policy_violation_namespace_severity)"
 log "    sum by (severity) (rox_central_image_vuln_namespace_severity)"
+
+if [ "$SCRIPT_FAILED" = true ]; then
+    warning "Dashboard creation script completed with errors. Review the log output for details."
+else
+    log "Dashboard creation script completed successfully!"
+fi
 log "========================================================="
 

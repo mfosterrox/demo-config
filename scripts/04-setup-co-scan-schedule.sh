@@ -2,20 +2,25 @@
 # Application Setup API Script for RHACS
 # Fetches cluster ID and creates compliance scan configuration
 
-set -e
-
 # Colors for logging
 RED='\033[0;31m'
 GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
 NC='\033[0m'
+
+SCRIPT_FAILED=false
 
 log() {
     echo -e "${GREEN}[API-SETUP]${NC} $1"
 }
 
+warning() {
+    echo -e "${YELLOW}[API-SETUP]${NC} $1"
+}
+
 error() {
     echo -e "${RED}[API-SETUP]${NC} $1"
-    exit 1
+    SCRIPT_FAILED=true
 }
 
 # Source environment variables
@@ -174,6 +179,10 @@ if [ "$SKIP_CREATION" = "false" ]; then
     fi
 fi
 
-log "Compliance scan schedule setup completed successfully!"
+if [ "$SCRIPT_FAILED" = true ]; then
+    warning "Compliance scan schedule setup completed with errors. Review the log above for more details."
+else
+    log "Compliance scan schedule setup completed successfully!"
+fi
 log "Scan configuration ID: $SCAN_CONFIG_ID"
 log "Note: Run script 05-trigger-compliance-scan.sh to trigger an immediate scan"

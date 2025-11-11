@@ -2,8 +2,6 @@
 # RHACS Custom Metrics Configuration Script
 # Configures custom Prometheus metrics via RHACS API
 
-set -e
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
@@ -12,6 +10,8 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
+
+SCRIPT_FAILED=false
 
 log() {
     echo -e "${GREEN}[METRICS-CONFIG]${NC} $1"
@@ -23,7 +23,7 @@ warning() {
 
 error() {
     echo -e "${RED}[METRICS-CONFIG]${NC} $1"
-    exit 1
+    SCRIPT_FAILED=true
 }
 
 # Configuration
@@ -222,7 +222,11 @@ fi
 
 # Display configured metrics
 log "========================================================="
-log "Prometheus metrics configuration completed!"
+if [ "$SCRIPT_FAILED" = true ]; then
+    warning "Prometheus metrics configuration completed with errors. Review the output above."
+else
+    log "Prometheus metrics configuration completed!"
+fi
 log "========================================================="
 log ""
 log "Enabled Policy Violation Metrics:"

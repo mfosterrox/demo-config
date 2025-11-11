@@ -10,6 +10,8 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+SCRIPT_FAILED=false
+
 log() {
     echo -e "${GREEN}[COMPLIANCE-SCAN]${NC} $1"
 }
@@ -20,7 +22,7 @@ warning() {
 
 error() {
     echo -e "${RED}[COMPLIANCE-SCAN]${NC} $1"
-    exit 1
+    SCRIPT_FAILED=true
 }
 
 # Source environment variables
@@ -169,4 +171,8 @@ for cluster in $cluster_ids; do
     done
 done
 
-log "✓ All compliance scans completed successfully!"
+if [ "$SCRIPT_FAILED" = true ]; then
+    warning "Compliance scan trigger completed with errors. Review log output for details."
+else
+    log "✓ All compliance scans completed successfully!"
+fi

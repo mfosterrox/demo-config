@@ -2,8 +2,6 @@
 # Red Hat Compliance Operator Installation Script
 # Installs the Red Hat Compliance Operator using all defaults
 
-set -e
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
@@ -12,6 +10,8 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
+
+SCRIPT_FAILED=false
 
 log() {
     echo -e "${GREEN}[COMPLIANCE-OP]${NC} $1"
@@ -23,7 +23,7 @@ warning() {
 
 error() {
     echo -e "${RED}[COMPLIANCE-OP]${NC} $1"
-    exit 1
+    SCRIPT_FAILED=true
 }
 
 # Prerequisites validation
@@ -149,7 +149,11 @@ log "Checking ClusterServiceVersion..."
 oc get csv -n openshift-compliance -l operators.coreos.com/compliance-operator.openshift-compliance
 
 # Display operator status
-log "Compliance Operator installation completed successfully!"
+if [ "$SCRIPT_FAILED" = true ]; then
+    warning "Compliance Operator installation finished with errors. Review the log above for specifics."
+else
+    log "Compliance Operator installation completed successfully!"
+fi
 log "========================================================="
 log "Namespace: openshift-compliance"
 log "Operator: compliance-operator"

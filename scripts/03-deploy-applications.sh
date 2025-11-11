@@ -2,8 +2,6 @@
 # Application Deployment Script
 # Deploys applications to OpenShift cluster and runs security scans
 
-set -e
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
@@ -12,6 +10,8 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
+
+SCRIPT_FAILED=false
 
 log() {
     echo -e "${GREEN}[APP-DEPLOY]${NC} $1"
@@ -23,7 +23,7 @@ warning() {
 
 error() {
     echo -e "${RED}[APP-DEPLOY]${NC} $1"
-    exit 1
+    SCRIPT_FAILED=true
 }
 
 # Configuration
@@ -205,7 +205,11 @@ fi
 # roxctl is now installed permanently to /usr/local/bin/roxctl
 
 # Final status
-log "Application deployment completed!"
+if [ "$SCRIPT_FAILED" = true ]; then
+    warning "Application deployment finished with errors. Review the log for issues."
+else
+    log "Application deployment completed!"
+fi
 log "========================================================="
 log "Deployments with label $DEMO_LABEL:"
 kubectl get deployments -l "$DEMO_LABEL" -A
