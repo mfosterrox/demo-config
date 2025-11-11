@@ -333,16 +333,18 @@ else
 fi
 
 if [ ${#ROXCTL_AUTH_ARGS[@]} -eq 0 ] && [ -n "$ROX_API_TOKEN" ]; then
-    ROXCTL_TOKEN_FILE=$(mktemp)
-    chmod 600 "$ROXCTL_TOKEN_FILE"
-    echo -n "$ROX_API_TOKEN" > "$ROXCTL_TOKEN_FILE"
-    ROXCTL_AUTH_ARGS=(--token-file "$ROXCTL_TOKEN_FILE")
+    ROXCTL_AUTH_ARGS=(--token "$ROX_API_TOKEN")
 fi
 
 # Test roxctl connectivity using available authentication method
-log "Verifying roxctl connectivity..."
-if ! $ROXCTL_CMD central whoami -e "$ROX_ENDPOINT" --insecure-skip-tls-verify "${ROXCTL_AUTH_ARGS[@]}" >/dev/null 2>&1; then
-    error "roxctl authentication failed for endpoint: $ROX_ENDPOINT"
+if [ -n "$ROX_API_TOKEN" ]; then
+    log "Verifying roxctl connectivity using API token..."
+    log "Command: $ROXCTL_CMD central whoami -e \"$ROX_ENDPOINT\" --insecure-skip-tls-verify --token \"$ROX_API_TOKEN\""
+    if ! $ROXCTL_CMD central whoami -e "$ROX_ENDPOINT" --insecure-skip-tls-verify "${ROXCTL_AUTH_ARGS[@]}" >/dev/null 2>&1; then
+        error "roxctl authentication failed for endpoint: $ROX_ENDPOINT"
+    fi
+else
+    log "ROX_API_TOKEN not set; skipping roxctl whoami connectivity check."
 fi
 
 # Clean up any old SecuredCluster resources from previous installations
@@ -371,45 +373,41 @@ if [ -n "$OLD_SECURED_CLUSTERS" ]; then
     fi
 fi
 
-# Generate init bundle using external endpoint with -e flag
-log "Generating init bundle for cluster: $CLUSTER_NAME"
+SKIP_TO_FINAL_OUTPUT=false
 INIT_BUNDLE_EXISTS=false
-if $ROXCTL_CMD central init-bundles generate $CLUSTER_NAME \
-  -e "$ROX_ENDPOINT" \
-  "${ROXCTL_AUTH_ARGS[@]}" \
-  --output-secrets cluster_init_bundle.yaml --insecure-skip-tls-verify 2>&1 | grep -q "AlreadyExists"; then
-    log "Init bundle already exists in RHACS Central"
-    INIT_BUNDLE_EXISTS=true
-    # Check if secured cluster services already exist
-    if oc get securedcluster secured-cluster-services -n $NAMESPACE >/dev/null 2>&1; then
-        log "SecuredCluster resource already exists, checking configuration..."
-        
-        # Check and update auto-lock setting
-        CURRENT_AUTO_LOCK=$(oc get securedcluster secured-cluster-services -n $NAMESPACE -o jsonpath='{.spec.processBaselines.autoLock}' 2>/dev/null)
-        if [ "$CURRENT_AUTO_LOCK" != "Enabled" ]; then
-            log "Updating SecuredCluster to enable process baseline auto-lock..."
-            oc patch securedcluster secured-cluster-services -n $NAMESPACE --type='merge' -p '{"spec":{"processBaselines":{"autoLock":"Enabled"}}}'
-            if [ $? -eq 0 ]; then
-                log "✓ Process baseline auto-lock enabled on existing SecuredCluster"
-            else
-                warning "Failed to update auto-lock setting"
-            fi
+
+if oc get securedcluster secured-cluster-services -n $NAMESPACE >/dev/null 2>&1; then
+    log "SecuredCluster resource secured-cluster-services already exists; skipping init bundle generation and SecuredCluster installation."
+    SKIP_TO_FINAL_OUTPUT=true
+
+    CURRENT_AUTO_LOCK=$(oc get securedcluster secured-cluster-services -n $NAMESPACE -o jsonpath='{.spec.processBaselines.autoLock}' 2>/dev/null)
+    if [ "$CURRENT_AUTO_LOCK" != "Enabled" ]; then
+        log "Updating SecuredCluster to enable process baseline auto-lock..."
+        oc patch securedcluster secured-cluster-services -n $NAMESPACE --type='merge' -p '{"spec":{"processBaselines":{"autoLock":"Enabled"}}}'
+        if [ $? -eq 0 ]; then
+            log "✓ Process baseline auto-lock enabled on existing SecuredCluster"
         else
-            log "✓ Process baseline auto-lock already enabled"
+            warning "Failed to update auto-lock setting"
         fi
-        
-        SKIP_TO_FINAL_OUTPUT=true
     else
-        log "SecuredCluster resource not found, will create it..."
-        SKIP_TO_FINAL_OUTPUT=false
+        log "✓ Process baseline auto-lock already enabled"
     fi
 else
-    if [ ! -f cluster_init_bundle.yaml ]; then
-        error "Failed to generate init bundle"
+    # Generate init bundle using external endpoint with -e flag
+    log "Generating init bundle for cluster: $CLUSTER_NAME"
+    if $ROXCTL_CMD central init-bundles generate $CLUSTER_NAME \
+      -e "$ROX_ENDPOINT" \
+      "${ROXCTL_AUTH_ARGS[@]}" \
+      --output-secrets cluster_init_bundle.yaml --insecure-skip-tls-verify 2>&1 | grep -q "AlreadyExists"; then
+        log "Init bundle already exists in RHACS Central"
+        INIT_BUNDLE_EXISTS=true
+    else
+        if [ ! -f cluster_init_bundle.yaml ]; then
+            error "Failed to generate init bundle"
+        fi
+        log "Init bundle generated successfully"
+        INIT_BUNDLE_EXISTS=false
     fi
-    log "Init bundle generated successfully"
-    INIT_BUNDLE_EXISTS=false
-    SKIP_TO_FINAL_OUTPUT=false
 fi
 
 # Apply init bundle (only if not skipping and bundle was actually generated)
