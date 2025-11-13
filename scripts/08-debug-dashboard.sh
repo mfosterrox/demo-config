@@ -167,21 +167,22 @@ if [ "$DASHBOARD_NAMESPACE" = "$COO_NAMESPACE" ]; then
         GRAFANA_FOUND=false
     fi
 else
-    # Standard monitoring checks
+    # Standard OpenShift monitoring checks
     log ""
-    log "5. Checking Grafana deployment..."
-    GRAFANA_FOUND=false
-    if oc get deployment grafana -n openshift-monitoring &>/dev/null 2>&1; then
-        log "✓ Grafana deployment found in openshift-monitoring"
-        GRAFANA_FOUND=true
-        GRAFANA_NS="openshift-monitoring"
+    log "5. Checking OpenShift monitoring-plugin deployment..."
+    MONITORING_PLUGIN_FOUND=false
+    if oc get deployment monitoring-plugin -n openshift-monitoring &>/dev/null 2>&1; then
+        log "✓ monitoring-plugin deployment found (discovers dashboards for OpenShift Console)"
+        MONITORING_PLUGIN_FOUND=true
+        MONITORING_NS="openshift-monitoring"
     else
-        warning "✗ Grafana deployment not found"
+        warning "✗ monitoring-plugin deployment not found"
+        log "This is required for dashboard discovery in OpenShift Console"
     fi
 fi
 
-# 6. Check Grafana pods
-if [ "$GRAFANA_FOUND" = true ]; then
+# 6. Check monitoring pods
+if [ "$DASHBOARD_NAMESPACE" = "$COO_NAMESPACE" ] && [ "$GRAFANA_FOUND" = true ]; then
     log ""
     log "6. Checking Grafana pods..."
     GRAFANA_PODS=$(oc get pods -n $GRAFANA_NS -l app=grafana 2>/dev/null || \
@@ -193,21 +194,32 @@ if [ "$GRAFANA_FOUND" = true ]; then
     else
         warning "✗ No Grafana pods found"
     fi
+elif [ "$MONITORING_PLUGIN_FOUND" = true ]; then
+    log ""
+    log "6. Checking monitoring-plugin pods..."
+    MONITORING_PODS=$(oc get pods -n $MONITORING_NS -l app=monitoring-plugin 2>/dev/null || \
+                      oc get pods -n $MONITORING_NS | grep monitoring-plugin 2>/dev/null)
+    if [ -n "$MONITORING_PODS" ]; then
+        echo "$MONITORING_PODS"
+        log "✓ monitoring-plugin pods found"
+    else
+        warning "✗ No monitoring-plugin pods found"
+    fi
 fi
 
-# 7. List all dashboards Grafana should see
+# 7. List all dashboards that should be discovered
 log ""
 log "7. Listing all dashboards in namespace..."
 if [ "$DASHBOARD_NAMESPACE" = "$COO_NAMESPACE" ]; then
-    log "Dashboards with grafana-custom-dashboard label:"
+    log "Dashboards with grafana-custom-dashboard label (COO):"
     oc get configmap -n $DASHBOARD_NAMESPACE -l grafana-custom-dashboard 2>/dev/null | head -10
 else
-    log "Dashboards with grafana_dashboard label:"
+    log "Dashboards with grafana_dashboard label (monitoring-plugin):"
     oc get configmap -n $DASHBOARD_NAMESPACE -l grafana_dashboard 2>/dev/null | head -10
 fi
 
-# 8. Check Grafana logs
-if [ "$GRAFANA_FOUND" = true ]; then
+# 8. Check monitoring logs
+if [ "$DASHBOARD_NAMESPACE" = "$COO_NAMESPACE" ] && [ "$GRAFANA_FOUND" = true ]; then
     log ""
     log "8. Checking Grafana logs for dashboard-related messages..."
     log "Recent logs (last 50 lines):"
@@ -216,19 +228,30 @@ if [ "$GRAFANA_FOUND" = true ]; then
     else
         log "No dashboard-related log entries found (this may be normal)"
     fi
+elif [ "$MONITORING_PLUGIN_FOUND" = true ]; then
+    log ""
+    log "8. Checking monitoring-plugin logs for dashboard-related messages..."
+    log "Recent logs (last 50 lines):"
+    if oc logs -n $MONITORING_NS -l app=monitoring-plugin --tail=50 2>/dev/null | grep -i -E "dashboard|configmap|error" | tail -10; then
+        log "Found dashboard-related log entries"
+    else
+        log "No dashboard-related log entries found (this may be normal)"
+    fi
 fi
 
-# 9. Check Grafana route
+# 9. Check routes (for COO only, monitoring-plugin doesn't expose routes)
 log ""
-log "9. Checking Grafana route..."
-if oc get route grafana -n $DASHBOARD_NAMESPACE &>/dev/null 2>&1; then
-    GRAFANA_ROUTE=$(oc get route grafana -n $DASHBOARD_NAMESPACE -o jsonpath='{.spec.host}' 2>/dev/null)
-    log "✓ Grafana route: https://$GRAFANA_ROUTE"
-elif oc get route grafana -n openshift-monitoring &>/dev/null 2>&1; then
-    GRAFANA_ROUTE=$(oc get route grafana -n openshift-monitoring -o jsonpath='{.spec.host}' 2>/dev/null)
-    log "✓ Grafana route: https://$GRAFANA_ROUTE"
+log "9. Checking routes..."
+if [ "$DASHBOARD_NAMESPACE" = "$COO_NAMESPACE" ]; then
+    if oc get route grafana -n $DASHBOARD_NAMESPACE &>/dev/null 2>&1; then
+        GRAFANA_ROUTE=$(oc get route grafana -n $DASHBOARD_NAMESPACE -o jsonpath='{.spec.host}' 2>/dev/null)
+        log "✓ Grafana route: https://$GRAFANA_ROUTE"
+    else
+        warning "✗ No Grafana route found"
+    fi
 else
-    warning "✗ No Grafana route found"
+    log "monitoring-plugin integrates with OpenShift Console (no separate route)"
+    log "Dashboards are accessed via: OpenShift Console → Observe → Dashboards"
 fi
 
 # 10. Recommendations
@@ -275,22 +298,39 @@ if [ "$DASHBOARD_NAMESPACE" = "$COO_NAMESPACE" ]; then
     log "   oc get multiclusterobservability -n $COO_NAMESPACE"
     log "   oc describe multiclusterobservability -n $COO_NAMESPACE"
 else
-    log "Standard OpenShift Monitoring Dashboard:"
+    log "Standard OpenShift Monitoring Dashboard (monitoring-plugin):"
     log ""
-    log "If dashboard is not appearing:"
+    log "Dashboard Discovery Requirements:"
+    log "1. ConfigMap must be in: openshift-monitoring namespace"
+    log "2. Label required: grafana_dashboard: \"1\""
+    log "3. Valid JSON in data.rhacs-security.json"
     log ""
-    log "1. Restart Grafana to force dashboard reload:"
-    if [ "$GRAFANA_FOUND" = true ]; then
-        log "   oc rollout restart deployment grafana -n $GRAFANA_NS"
+    log "If dashboard is not appearing in OpenShift Console:"
+    log ""
+    log "1. Verify ConfigMap is in openshift-monitoring namespace:"
+    log "   oc get configmap $DASHBOARD_NAME -n openshift-monitoring"
+    log ""
+    log "2. Ensure correct label is present:"
+    log "   oc label configmap $DASHBOARD_NAME -n openshift-monitoring grafana_dashboard=1 --overwrite"
+    log ""
+    log "3. Restart monitoring-plugin to force dashboard reload:"
+    if [ "$MONITORING_PLUGIN_FOUND" = true ]; then
+        log "   oc rollout restart deployment monitoring-plugin -n openshift-monitoring"
+    else
+        log "   (monitoring-plugin not found - may need to check cluster monitoring setup)"
     fi
     log ""
-    log "2. Wait 1-2 minutes after restart for dashboard discovery"
+    log "4. Check monitoring-plugin logs:"
+    log "   oc logs -n openshift-monitoring -l app=monitoring-plugin --tail=100 | grep -i dashboard"
     log ""
-    log "3. Check OpenShift Console → Observe → Dashboards"
-    log "   The dashboard should appear in the list if properly configured"
+    log "5. Wait 1-2 minutes after restart for dashboard discovery"
     log ""
-    log "4. Verify user-workload monitoring is enabled:"
-    log "   oc get configmap cluster-monitoring-config -n openshift-monitoring"
+    log "6. Check OpenShift Console → Observe → Dashboards"
+    log "   Navigate to: OpenShift Console → Observe → Dashboards"
+    log "   The dashboard should appear in the dropdown list"
+    log ""
+    log "7. List all dashboards monitoring-plugin can see:"
+    log "   oc get configmap -n openshift-monitoring -l grafana_dashboard"
 fi
 
 log ""

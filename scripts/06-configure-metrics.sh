@@ -168,18 +168,44 @@ log "Waiting for metrics to be generated (30 seconds)..."
 sleep 30
 
 # Verify metrics are being exposed
-log "Verifying metrics are exposed..."
+log "Verifying metrics are exposed and can be scraped..."
 
 # Check for metrics endpoint
 METRICS_OUTPUT=$(curl -k -s "$ROX_API_ENDPOINT/metrics" \
   -H "Authorization: Bearer $ROX_API_TOKEN" 2>/dev/null)
 
+# Verify metrics endpoint is accessible and contains RHACS metrics
+log "Testing metrics endpoint accessibility..."
 if [ -z "$METRICS_OUTPUT" ]; then
     warning "Could not fetch metrics endpoint - telemetry may not be enabled or endpoint not accessible"
 else
     log "✓ Metrics endpoint is accessible"
     
+    # Verify specific metric exists to confirm metrics are enabled and scrapable
+    log "Verifying metrics are enabled and scrapable..."
+    TEST_METRIC="rox_central_policy_violation_namespace_severity"
+    METRIC_CHECK=$(curl -k -s "$ROX_API_ENDPOINT/metrics" \
+      -H "Authorization: Bearer $ROX_API_TOKEN" 2>/dev/null | grep "$TEST_METRIC" | head -1)
+    
+    if [ -n "$METRIC_CHECK" ]; then
+        log "✓ Metrics verification successful - metric '$TEST_METRIC' found"
+        log "Sample metric output:"
+        echo "$METRIC_CHECK" | head -1 | sed 's/^/  /'
+    else
+        warning "Metric '$TEST_METRIC' not found - metrics may still be generating"
+        log "Checking for any RHACS metrics..."
+        ANY_METRIC=$(curl -k -s "$ROX_API_ENDPOINT/metrics" \
+          -H "Authorization: Bearer $ROX_API_TOKEN" 2>/dev/null | grep "^rox_central" | head -1)
+        if [ -n "$ANY_METRIC" ]; then
+            log "✓ Found RHACS metrics (metrics are enabled):"
+            echo "$ANY_METRIC" | sed 's/^/  /'
+        else
+            warning "No RHACS metrics found - verify metrics configuration"
+        fi
+    fi
+    
     # Verify each enabled metric category
+    log ""
     log "Verifying enabled metrics..."
     
     # Check Policy Violation metrics

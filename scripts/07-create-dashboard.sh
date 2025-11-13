@@ -52,9 +52,9 @@ fi
 
 # Check if user-workload monitoring is enabled (for standard OpenShift monitoring)
 if [ "$DASHBOARD_NAMESPACE" = "$MONITORING_NAMESPACE" ]; then
-    log "Checking if user-workload monitoring is enabled..."
-    if ! oc get configmap cluster-monitoring-config -n openshift-monitoring &>/dev/null 2>&1; then
-        warning "Cluster monitoring config not found, it may not be fully configured"
+log "Checking if user-workload monitoring is enabled..."
+if ! oc get configmap cluster-monitoring-config -n openshift-monitoring &>/dev/null 2>&1; then
+    warning "Cluster monitoring config not found, it may not be fully configured"
     fi
 fi
 
@@ -946,16 +946,26 @@ if oc get configmap $DASHBOARD_NAME -n $DASHBOARD_NAMESPACE &>/dev/null 2>&1; th
         warning "Dashboard JSON validation failed - JSON may be malformed"
     fi
     
-    # Check Grafana configuration
-    log "Checking Grafana configuration..."
-    if oc get deployment grafana -n $DASHBOARD_NAMESPACE &>/dev/null 2>&1; then
-        log "✓ Grafana deployment found in $DASHBOARD_NAMESPACE"
-        log "Grafana pods:"
-        oc get pods -n $DASHBOARD_NAMESPACE -l app=grafana 2>/dev/null || oc get pods -n $DASHBOARD_NAMESPACE | grep grafana || log "No Grafana pods found"
+    # Check monitoring configuration
+    if [ "$DASHBOARD_NAMESPACE" = "$COO_NAMESPACE" ]; then
+        log "Checking COO Grafana configuration..."
+        if oc get deployment grafana -n $DASHBOARD_NAMESPACE &>/dev/null 2>&1; then
+            log "✓ Grafana deployment found in $DASHBOARD_NAMESPACE"
+            log "Grafana pods:"
+            oc get pods -n $DASHBOARD_NAMESPACE -l app=grafana 2>/dev/null || oc get pods -n $DASHBOARD_NAMESPACE | grep grafana || log "No Grafana pods found"
+        else
+            warning "Grafana deployment not found in $DASHBOARD_NAMESPACE namespace"
+        fi
     else
-        warning "Grafana deployment not found in $DASHBOARD_NAMESPACE namespace"
-        log "Checking for Grafana in other namespaces..."
-        oc get deployment grafana -A 2>/dev/null | head -5 || log "Grafana not found in any namespace"
+        log "Checking OpenShift monitoring-plugin configuration..."
+        if oc get deployment monitoring-plugin -n $DASHBOARD_NAMESPACE &>/dev/null 2>&1; then
+            log "✓ monitoring-plugin deployment found (discovers dashboards for OpenShift Console)"
+            log "monitoring-plugin pods:"
+            oc get pods -n $DASHBOARD_NAMESPACE -l app=monitoring-plugin 2>/dev/null || oc get pods -n $DASHBOARD_NAMESPACE | grep monitoring-plugin || log "No monitoring-plugin pods found"
+        else
+            warning "monitoring-plugin deployment not found in $DASHBOARD_NAMESPACE namespace"
+            log "This may affect dashboard discovery in OpenShift Console"
+        fi
     fi
 else
     error "Dashboard ConfigMap not found after creation"
@@ -984,14 +994,14 @@ if [ "$DASHBOARD_NAMESPACE" = "$COO_NAMESPACE" ]; then
     log "Cluster Observability Operator detected - dashboard will be automatically discovered"
     log "Access Grafana through the COO Grafana instance in namespace $COO_NAMESPACE"
 else
-    log "IMPORTANT: OpenShift Console doesn't auto-discover custom dashboards."
-    log "To use this dashboard, you have two options:"
-    log ""
-    log "Option 1 - Import to Grafana (if available):"
-    log "  1. Get Grafana route: oc get route grafana -n openshift-monitoring"
-    log "  2. Login to Grafana"
-    log "  3. Import dashboard JSON from ConfigMap:"
-    log "     oc get configmap $DASHBOARD_NAME -n $DASHBOARD_NAMESPACE -o jsonpath='{.data.rhacs-security\.json}'"
+log "IMPORTANT: OpenShift Console doesn't auto-discover custom dashboards."
+log "To use this dashboard, you have two options:"
+log ""
+log "Option 1 - Import to Grafana (if available):"
+log "  1. Get Grafana route: oc get route grafana -n openshift-monitoring"
+log "  2. Login to Grafana"
+log "  3. Import dashboard JSON from ConfigMap:"
+log "     oc get configmap $DASHBOARD_NAME -n $DASHBOARD_NAMESPACE -o jsonpath='{.data.rhacs-security\.json}'"
 fi
 log ""
 log "Option 2 - Query metrics directly:"
@@ -1041,18 +1051,27 @@ else
     log ""
     log "1. Verify ConfigMap exists and has correct labels:"
     log "   oc get configmap $DASHBOARD_NAME -n $DASHBOARD_NAMESPACE -o yaml"
+    log "   Should have label: grafana_dashboard: \"1\""
     log ""
-    log "2. Check Grafana logs for dashboard discovery:"
-    log "   oc logs -n openshift-monitoring -l app.kubernetes.io/name=grafana --tail=100 | grep -i dashboard"
+    log "2. Ensure label is present (fix if missing):"
+    log "   oc label configmap $DASHBOARD_NAME -n $DASHBOARD_NAMESPACE grafana_dashboard=1 --overwrite"
     log ""
-    log "3. List all dashboards Grafana can see:"
+    log "3. List all dashboards monitoring-plugin can see:"
     log "   oc get configmap -n $DASHBOARD_NAMESPACE -l grafana_dashboard"
     log ""
-    log "4. Restart Grafana to force dashboard reload:"
-    log "   oc rollout restart deployment grafana -n openshift-monitoring"
+    log "4. Restart monitoring-plugin to force dashboard reload:"
+    log "   oc rollout restart deployment monitoring-plugin -n openshift-monitoring"
     log ""
-    log "5. Verify dashboard JSON is valid:"
+    log "5. Check monitoring-plugin logs for dashboard discovery:"
+    log "   oc logs -n openshift-monitoring -l app=monitoring-plugin --tail=100 | grep -i dashboard"
+    log ""
+    log "6. Verify dashboard JSON is valid:"
     log "   oc get configmap $DASHBOARD_NAME -n $DASHBOARD_NAMESPACE -o jsonpath='{.data.rhacs-security\.json}' | python3 -m json.tool"
+    log ""
+    log "7. Wait 1-2 minutes after restart for dashboard discovery"
+    log ""
+    log "8. Check OpenShift Console → Observe → Dashboards"
+    log "   Dashboard should appear in the dropdown list"
 fi
 
 log ""
