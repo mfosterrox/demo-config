@@ -193,12 +193,22 @@ if [ -z "$ROX_ENDPOINT" ] || [ -z "$ROX_API_TOKEN" ]; then
 else
     # Scan specific image
     SCAN_IMAGE="quay.io/mfoster/frontend:latest"
-    log "Scanning image: $SCAN_IMAGE"
-    SCAN_OUTPUT_FORMAT="table"
-    if $ROXCTL_CMD --insecure-skip-tls-verify -e "$ROX_ENDPOINT" image scan --image "$SCAN_IMAGE" --force --output "$SCAN_OUTPUT_FORMAT"; then
+    SCAN_TIMEOUT=30  # 30 seconds timeout
+    log "Scanning image: $SCAN_IMAGE (timeout: ${SCAN_TIMEOUT}s)"
+    SCAN_OUTPUT_FORMAT="json"
+    log "Running command: timeout $SCAN_TIMEOUT $ROXCTL_CMD --insecure-skip-tls-verify -e \"$ROX_ENDPOINT\" image scan --image \"$SCAN_IMAGE\" --force --output \"$SCAN_OUTPUT_FORMAT\""
+    SCAN_OUTPUT=$(timeout $SCAN_TIMEOUT $ROXCTL_CMD --insecure-skip-tls-verify -e "$ROX_ENDPOINT" image scan --image "$SCAN_IMAGE" --force --output "$SCAN_OUTPUT_FORMAT" 2>&1)
+    SCAN_EXIT_CODE=$?
+    log "Scan output:"
+    echo "$SCAN_OUTPUT"
+    if [ $SCAN_EXIT_CODE -eq 0 ]; then
         log "✓ Security scan completed for $SCAN_IMAGE"
     else
-        warning "Security scan failed for $SCAN_IMAGE"
+        if [ $SCAN_EXIT_CODE -eq 124 ]; then
+            warning "Security scan timed out after ${SCAN_TIMEOUT}s for $SCAN_IMAGE"
+        else
+            warning "Security scan failed for $SCAN_IMAGE (exit code: $SCAN_EXIT_CODE)"
+        fi
     fi
 fi
 
