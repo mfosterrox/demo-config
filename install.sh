@@ -59,17 +59,6 @@ trigger_compliance_scan() {
     bash "${SCRIPT_DIR}/scripts/05-trigger-compliance-scan.sh"
 }
 
-# Configure custom Prometheus metrics (Step 6)
-configure_metrics() {
-    log "Configuring custom Prometheus metrics..."
-    bash "${SCRIPT_DIR}/scripts/06-configure-metrics.sh"
-}
-
-# Create OpenShift dashboard (Step 7)
-create_dashboard() {
-    log "Creating RHACS Security Dashboard in OpenShift Console..."
-    bash "${SCRIPT_DIR}/scripts/07-create-dashboard.sh"
-}
 
 # Main function
 main() {
@@ -97,8 +86,8 @@ main() {
     
     log "Using script directory: $SCRIPT_DIR"
     
-    # Verify scripts exist (check for OLD script names from GitHub repo)
-    for script in "01-rhacs-setup.sh" "02-compliance-operator-install.sh" "03-deploy-applications.sh" "04-setup-co-scan-schedule.sh" "05-trigger-compliance-scan.sh" "06-configure-metrics.sh" "07-create-dashboard.sh" ; do
+    # Verify scripts exist
+    for script in "01-rhacs-setup.sh" "02-compliance-operator-install.sh" "03-deploy-applications.sh" "04-setup-co-scan-schedule.sh" "05-trigger-compliance-scan.sh" ; do
         if [ ! -f "$SCRIPT_DIR/scripts/$script" ]; then
             error "Required script not found: $SCRIPT_DIR/scripts/$script"
         fi
@@ -110,8 +99,6 @@ main() {
     deploy_applications
     setup_compliance_scan_schedule
     trigger_compliance_scan
-    configure_metrics
-    create_dashboard
     
     
     success "Demo Config setup completed successfully!"
@@ -121,8 +108,6 @@ main() {
     log "  3. Application deployment"
     log "  4. Compliance scan schedule setup"
     log "  5. Compliance scan trigger"
-    log "  6. Custom Prometheus metrics configuration"
-    log "  7. OpenShift Console dashboard creation"
     
     # Display RHACS access information
     log ""
