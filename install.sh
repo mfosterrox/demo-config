@@ -35,25 +35,31 @@ setup_rhacs() {
     bash "${SCRIPT_DIR}/scripts/01-rhacs-setup.sh"
 }
 
-# Install Red Hat Compliance Operator (Step 2)
+# Configure RHACS TLS/HTTPS (Step 2)
+configure_rhacs_tls() {
+    log "Configuring RHACS TLS/HTTPS route..."
+    bash "${SCRIPT_DIR}/scripts/06-configure-rhacs-tls.sh"
+}
+
+# Install Red Hat Compliance Operator (Step 3)
 install_compliance_operator() {
     log "Installing Red Hat Compliance Operator..."
     bash "${SCRIPT_DIR}/scripts/02-compliance-operator-install.sh"
 }
 
-# Deploy applications to OpenShift cluster (Step 3)
+# Deploy applications to OpenShift cluster (Step 4)
 deploy_applications() {
     log "Deploying applications to OpenShift cluster..."
     bash "${SCRIPT_DIR}/scripts/03-deploy-applications.sh"
 }
 
-# Setup compliance scan schedule (Step 4)
+# Setup compliance scan schedule (Step 5)
 setup_compliance_scan_schedule() {
     log "Setting up compliance scan schedule..."
     bash "${SCRIPT_DIR}/scripts/04-setup-co-scan-schedule.sh"
 }
 
-# Trigger compliance scan (Step 5)
+# Trigger compliance scan (Step 6)
 trigger_compliance_scan() {
     log "Triggering compliance scan..."
     bash "${SCRIPT_DIR}/scripts/05-trigger-compliance-scan.sh"
@@ -87,7 +93,7 @@ main() {
     log "Using script directory: $SCRIPT_DIR"
     
     # Verify scripts exist
-    for script in "01-rhacs-setup.sh" "02-compliance-operator-install.sh" "03-deploy-applications.sh" "04-setup-co-scan-schedule.sh" "05-trigger-compliance-scan.sh" ; do
+    for script in "01-rhacs-setup.sh" "06-configure-rhacs-tls.sh" "02-compliance-operator-install.sh" "03-deploy-applications.sh" "04-setup-co-scan-schedule.sh" "05-trigger-compliance-scan.sh" ; do
         if [ ! -f "$SCRIPT_DIR/scripts/$script" ]; then
             error "Required script not found: $SCRIPT_DIR/scripts/$script"
         fi
@@ -95,6 +101,7 @@ main() {
     
     # Run setup scripts in order
     setup_rhacs
+    configure_rhacs_tls
     install_compliance_operator
     deploy_applications
     setup_compliance_scan_schedule
@@ -104,10 +111,11 @@ main() {
     success "Demo Config setup completed successfully!"
     log "All scripts have been executed in order:"
     log "  1. RHACS secured cluster setup"
-    log "  2. Red Hat Compliance Operator installation"
-    log "  3. Application deployment"
-    log "  4. Compliance scan schedule setup"
-    log "  5. Compliance scan trigger"
+    log "  2. RHACS TLS/HTTPS route configuration"
+    log "  3. Red Hat Compliance Operator installation"
+    log "  4. Application deployment"
+    log "  5. Compliance scan schedule setup"
+    log "  6. Compliance scan trigger"
     
     # Display RHACS access information
     log ""
