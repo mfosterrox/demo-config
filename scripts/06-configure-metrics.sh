@@ -104,30 +104,61 @@ ROX_API_ENDPOINT="https://$ROX_ENDPOINT"
 
 # Get current configuration
 log "Fetching current RHACS configuration..."
-CURRENT_CONFIG=$(curl -k -s "$ROX_API_ENDPOINT/v1/config" -H "Authorization: Bearer $ROX_API_TOKEN" 2>/dev/null)
+CURRENT_CONFIG=$(curl -k -s "$ROX_API_ENDPOINT/v1/config" -H "Authorization: Bearer $ROX_API_TOKEN" 2>&1)
+CURL_EXIT_CODE=$?
+
+if [ $CURL_EXIT_CODE -ne 0 ]; then
+    error "Failed to fetch current configuration (curl exit code: $CURL_EXIT_CODE)"
+    log "Response: $CURRENT_CONFIG"
+fi
 
 if [ -z "$CURRENT_CONFIG" ] || echo "$CURRENT_CONFIG" | grep -q "error"; then
     error "Failed to fetch current configuration. Check that Central is accessible and the API token is valid."
+    log "Response preview: ${CURRENT_CONFIG:0:500}"
 fi
 
 log "✓ Current configuration retrieved"
 
+# Debug: Check config structure
+log "Checking configuration structure..."
+if echo "$CURRENT_CONFIG" | jq -e '.config.privateConfig.metrics' >/dev/null 2>&1; then
+    log "✓ Config structure has privateConfig.metrics"
+elif echo "$CURRENT_CONFIG" | jq -e '.privateConfig.metrics' >/dev/null 2>&1; then
+    log "✓ Config structure has privateConfig.metrics (direct)"
+else
+    warning "Config structure may be different than expected"
+    log "Available top-level keys:"
+    echo "$CURRENT_CONFIG" | jq -r 'keys[]' 2>/dev/null | head -10 || log "Could not parse config structure"
+fi
+
 # Configure custom Prometheus metrics (all in one update)
 log "Configuring Prometheus metrics..."
 
+# Try to extract config if wrapped in { config: ... }
+CONFIG_TO_UPDATE="$CURRENT_CONFIG"
+if echo "$CURRENT_CONFIG" | jq -e '.config' >/dev/null 2>&1; then
+    log "Config is wrapped in 'config' object, extracting..."
+    CONFIG_TO_UPDATE=$(echo "$CURRENT_CONFIG" | jq '.config')
+fi
+
 # Configure everything: custom policy violation metrics, enable predefined metrics, and set gathering intervals
-UPDATED_CONFIG=$(echo "$CURRENT_CONFIG" | jq '
+UPDATED_CONFIG=$(echo "$CONFIG_TO_UPDATE" | jq '
+  # Ensure privateConfig.metrics exists
+  if .privateConfig.metrics == null then .privateConfig.metrics = {} else . end |
   # Set global metrics gathering interval
   .privateConfig.metrics.gatheringIntervalMinutes = 5 |
   # Enable metrics exposure
+  if .publicConfig == null then .publicConfig = {} else . end |
   .publicConfig.telemetry.enabled = true |
   # Enable policy violations metrics (predefined)
+  if .privateConfig.metrics.policyViolations == null then .privateConfig.metrics.policyViolations = {} else . end |
   .privateConfig.metrics.policyViolations.gatheringIntervalMinutes = 5 |
   .privateConfig.metrics.policyViolations.predefinedMetrics = [
     "rox_central_policy_violation_namespace_severity",
     "rox_central_policy_violation_deployment_severity"
   ] |
   # Enable image vulnerability metrics
+  if .privateConfig.metrics.imageVulnerabilities == null then .privateConfig.metrics.imageVulnerabilities = {} else . end |
   .privateConfig.metrics.imageVulnerabilities.gatheringIntervalMinutes = 5 |
   .privateConfig.metrics.imageVulnerabilities.predefinedMetrics = [
     "rox_central_image_vuln_namespace_severity",
@@ -135,32 +166,55 @@ UPDATED_CONFIG=$(echo "$CURRENT_CONFIG" | jq '
     "rox_central_image_vuln_cve_severity"
   ] |
   # Enable node vulnerability metrics
+  if .privateConfig.metrics.nodeVulnerabilities == null then .privateConfig.metrics.nodeVulnerabilities = {} else . end |
   .privateConfig.metrics.nodeVulnerabilities.gatheringIntervalMinutes = 5 |
   .privateConfig.metrics.nodeVulnerabilities.predefinedMetrics = [
     "rox_central_node_vuln_node_severity",
     "rox_central_node_vuln_component_severity",
     "rox_central_node_vuln_cve_severity"
-  ] |
-  { config: . }
-' 2>/dev/null)
+  ]
+' 2>&1)
 
-if [ -z "$UPDATED_CONFIG" ]; then
-    error "Failed to create updated configuration with jq"
+JQ_EXIT_CODE=$?
+if [ $JQ_EXIT_CODE -ne 0 ] || [ -z "$UPDATED_CONFIG" ]; then
+    error "Failed to create updated configuration with jq (exit code: $JQ_EXIT_CODE)"
+    log "jq error output: $UPDATED_CONFIG"
+    log "Attempting to show config structure..."
+    echo "$CONFIG_TO_UPDATE" | jq '.privateConfig.metrics' 2>/dev/null || echo "$CONFIG_TO_UPDATE" | jq '.' | head -50
+fi
+
+# Wrap in config object if original was wrapped
+if echo "$CURRENT_CONFIG" | jq -e '.config' >/dev/null 2>&1; then
+    UPDATED_CONFIG=$(echo "$UPDATED_CONFIG" | jq '{ config: . }')
 fi
 
 log "Applying comprehensive metrics configuration..."
+log "Sending PUT request to $ROX_API_ENDPOINT/v1/config"
+
 UPDATE_RESPONSE=$(echo "$UPDATED_CONFIG" | curl -k -s -w "\n%{http_code}" -X PUT "$ROX_API_ENDPOINT/v1/config" \
   -H "Authorization: Bearer $ROX_API_TOKEN" \
   -H "Content-Type: application/json" \
-  --data-binary @- 2>/dev/null)
+  --data-binary @- 2>&1)
 
 HTTP_CODE=$(echo "$UPDATE_RESPONSE" | tail -n 1)
 RESPONSE_BODY=$(echo "$UPDATE_RESPONSE" | sed '$d')
 
+log "API Response HTTP Code: $HTTP_CODE"
+if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "204" ]; then
+    log "API Response Body:"
+    echo "$RESPONSE_BODY" | head -20
+fi
+
 if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
     log "✓ Metrics configuration applied successfully (HTTP $HTTP_CODE)"
 else
-    error "Failed to update configuration (HTTP $HTTP_CODE). Response: $RESPONSE_BODY"
+    error "Failed to update configuration (HTTP $HTTP_CODE)"
+    log "Full response:"
+    echo "$RESPONSE_BODY"
+    log ""
+    log "Troubleshooting:"
+    log "1. Verify API token has Admin role: curl -k -s \"$ROX_API_ENDPOINT/v1/me\" -H \"Authorization: Bearer \$ROX_API_TOKEN\" | jq ."
+    log "2. Check config endpoint: curl -k -s \"$ROX_API_ENDPOINT/v1/config\" -H \"Authorization: Bearer \$ROX_API_TOKEN\" | jq '.config.privateConfig.metrics'"
 fi
 
 # Wait for metrics to be generated
