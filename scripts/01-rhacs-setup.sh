@@ -45,9 +45,7 @@ if [ -n "$ROX_API_TOKEN" ]; then
 fi
 
 # Configuration variables
-DEFAULT_NAMESPACE="tssc-acs"
-FALLBACK_NAMESPACE="stackrox"
-NAMESPACE="$DEFAULT_NAMESPACE"
+NAMESPACE="tssc-acs"
 CLUSTER_NAME="ads-cluster"
 TOKEN_NAME="setup-script-$(date +%d-%m-%Y_%H-%M-%S)"
 TOKEN_ROLE="Admin"
@@ -86,14 +84,9 @@ if [ -z "$ROX_ENDPOINT" ]; then
 fi
 
 
-# Resolve RHACS namespace with fallback
-if ! oc get ns "$NAMESPACE" &>/dev/null || ! oc -n "$NAMESPACE" get deployment central &>/dev/null; then
-    if oc get ns "$FALLBACK_NAMESPACE" &>/dev/null && oc -n "$FALLBACK_NAMESPACE" get deployment central &>/dev/null; then
-        NAMESPACE="$FALLBACK_NAMESPACE"
-        log "Default namespace $DEFAULT_NAMESPACE not ready for RHACS; using fallback namespace $NAMESPACE"
-    else
-        warning "RHACS Central deployment not found in $DEFAULT_NAMESPACE or $FALLBACK_NAMESPACE"
-    fi
+# Verify RHACS namespace exists
+if ! oc get ns "$NAMESPACE" &>/dev/null; then
+    error "Namespace '$NAMESPACE' not found"
 fi
 
 # Ensure RHACS operator subscription is set to stable channel
@@ -171,12 +164,7 @@ fi
 
 # Check if Central is running
 if ! oc get deployment central -n $NAMESPACE &>/dev/null; then
-    if [ "$NAMESPACE" != "$FALLBACK_NAMESPACE" ] && oc -n "$FALLBACK_NAMESPACE" get deployment central &>/dev/null; then
-        NAMESPACE="$FALLBACK_NAMESPACE"
-        log "RHACS Central not found in $DEFAULT_NAMESPACE; switching to fallback namespace $NAMESPACE"
-    else
-        error "RHACS Central not found in namespace $NAMESPACE"
-    fi
+    error "RHACS Central deployment not found in namespace $NAMESPACE"
 fi
 
 # Wait for Central to be ready

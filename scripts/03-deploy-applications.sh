@@ -77,18 +77,19 @@ fi
 # Get ACS Central Address from environment or oc command
 log "Getting ACS Central Address..."
 ACS_NAMESPACE="tssc-acs"
+
 if [ -n "$ROX_ENDPOINT" ]; then
     ACS_CENTRAL_ADDRESS="$ROX_ENDPOINT"
     log "ACS Central Address from environment: $ACS_CENTRAL_ADDRESS"
 else
-    if ! oc get ns "$ACS_NAMESPACE" &>/dev/null || ! oc -n "$ACS_NAMESPACE" get route central &>/dev/null; then
-        FALLBACK_NAMESPACE="stackrox"
-        if oc get ns "$FALLBACK_NAMESPACE" &>/dev/null && oc -n "$FALLBACK_NAMESPACE" get route central &>/dev/null; then
-            ACS_NAMESPACE="$FALLBACK_NAMESPACE"
-            log "Default namespace tssc-acs does not contain ACS; using fallback namespace $ACS_NAMESPACE"
-        else
-            warning "ACS route 'central' not found in tssc-acs or rhacs-operator namespaces"
-        fi
+    if ! oc get ns "$ACS_NAMESPACE" &>/dev/null; then
+        error "Namespace '$ACS_NAMESPACE' not found"
+        exit 1
+    fi
+
+    if ! oc -n "$ACS_NAMESPACE" get route central &>/dev/null; then
+        error "ACS route 'central' not found in namespace '$ACS_NAMESPACE'"
+        exit 1
     fi
 
     ACS_CENTRAL_ADDRESS=$(oc -n "$ACS_NAMESPACE" get route central -o jsonpath='{.spec.host}{":443"}{"\n"}' 2>/dev/null || true)
@@ -96,7 +97,8 @@ else
     if [ -n "$ACS_CENTRAL_ADDRESS" ]; then
         log "ACS Central Address from oc command (namespace: $ACS_NAMESPACE): $ACS_CENTRAL_ADDRESS"
     else
-        warning "Unable to determine ACS Central Address via oc command"
+        error "Unable to determine ACS Central Address via oc command"
+        exit 1
     fi
 fi
 

@@ -40,22 +40,21 @@ fi
 log "✓ OpenShift CLI connected"
 
 # Configuration variables
-DEFAULT_NAMESPACE="tssc-acs"
-FALLBACK_NAMESPACE="stackrox"
+NAMESPACE="tssc-acs"
 ROUTE_NAME="central"
-NAMESPACE=""
 
-# Determine namespace
-if oc get ns "$DEFAULT_NAMESPACE" &>/dev/null && oc -n "$DEFAULT_NAMESPACE" get route "$ROUTE_NAME" &>/dev/null; then
-    NAMESPACE="$DEFAULT_NAMESPACE"
-    log "Using namespace: $NAMESPACE"
-elif oc get ns "$FALLBACK_NAMESPACE" &>/dev/null && oc -n "$FALLBACK_NAMESPACE" get route "$ROUTE_NAME" &>/dev/null; then
-    NAMESPACE="$FALLBACK_NAMESPACE"
-    log "Using namespace: $NAMESPACE"
-else
-    error "RHACS route '$ROUTE_NAME' not found in $DEFAULT_NAMESPACE or $FALLBACK_NAMESPACE"
+# Verify namespace and route exist
+if ! oc get ns "$NAMESPACE" &>/dev/null; then
+    error "Namespace '$NAMESPACE' not found"
     exit 1
 fi
+
+if ! oc -n "$NAMESPACE" get route "$ROUTE_NAME" &>/dev/null; then
+    error "RHACS route '$ROUTE_NAME' not found in namespace '$NAMESPACE'"
+    exit 1
+fi
+
+log "Using namespace: $NAMESPACE"
 
 # Check current route configuration
 log "Checking current route configuration..."
@@ -94,6 +93,17 @@ configure_edge_tls_default() {
         log "  Termination: edge"
         log "  Insecure policy: Redirect (HTTP -> HTTPS)"
         log "  Certificate: Default router certificate"
+        log ""
+        warning "⚠️  IMPORTANT: The default router certificate is likely self-signed"
+        warning "   Browsers will show a certificate warning (NET::ERR_CERT_AUTHORITY_INVALID)"
+        warning "   This is normal for development/testing environments"
+        log ""
+        log "To resolve the certificate warning, you have these options:"
+        log "  1. Accept the certificate in your browser (click 'Advanced' -> 'Proceed')"
+        log "  2. Use a custom trusted certificate (run with --custom-cert option)"
+        log "  3. Configure Let's Encrypt certificate using cert-manager"
+        log ""
+        log "For production, use option 2 or 3 with a trusted certificate authority."
     else
         error "Failed to configure TLS"
         return 1
@@ -284,6 +294,27 @@ if [ -n "$UPDATED_TLS" ] && [ "$UPDATED_TLS" != "null" ]; then
     log "  Insecure policy: $INSECURE_POLICY"
     log "  Host: $CURRENT_HOST"
     log ""
+    
+    # Check certificate status
+    log "Checking certificate status..."
+    CERT_CHECK=$(echo | openssl s_client -connect "$CURRENT_HOST:443" -servername "$CURRENT_HOST" 2>/dev/null | openssl x509 -noout -subject -issuer 2>/dev/null)
+    
+    if [ -n "$CERT_CHECK" ]; then
+        CERT_SUBJECT=$(echo "$CERT_CHECK" | grep "subject=" | sed 's/subject=//')
+        CERT_ISSUER=$(echo "$CERT_CHECK" | grep "issuer=" | sed 's/issuer=//')
+        log "  Certificate Subject: $CERT_SUBJECT"
+        log "  Certificate Issuer: $CERT_ISSUER"
+        
+        # Check if certificate is self-signed
+        if echo "$CERT_SUBJECT" | grep -q "$CERT_ISSUER"; then
+            warning "  ⚠️  Certificate appears to be self-signed"
+            warning "  Browser will show security warning"
+        fi
+    else
+        log "  Could not retrieve certificate details (may need to accept certificate first)"
+    fi
+    
+    log ""
     log "========================================================="
     log "RHACS HTTPS Configuration Complete"
     log "========================================================="
@@ -291,6 +322,14 @@ if [ -n "$UPDATED_TLS" ] && [ "$UPDATED_TLS" != "null" ]; then
     if [ "$INSECURE_POLICY" = "Redirect" ]; then
         log "HTTP URL: http://$CURRENT_HOST (redirects to HTTPS)"
     fi
+    log ""
+    log "⚠️  If you see a certificate warning in your browser:"
+    log "   1. Click 'Advanced' button"
+    log "   2. Click 'Proceed to [hostname] (unsafe)'"
+    log "   3. This is safe for development/testing environments"
+    log ""
+    log "For production, use a trusted certificate:"
+    log "   ./scripts/06-configure-rhacs-tls.sh --custom-cert /path/to/cert.crt /path/to/key.key"
     log "========================================================="
 else
     warning "TLS configuration may not have been applied correctly"
