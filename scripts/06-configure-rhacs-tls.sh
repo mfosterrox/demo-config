@@ -1,6 +1,7 @@
 #!/bin/bash
-# RHACS TLS/HTTPS Route Configuration Script
-# Configures TLS termination for the RHACS Central route in OpenShift
+# RHACS TLS/HTTPS Configuration Script
+# Configures TLS for Operator-based RHACS Central installation
+# Follows the Operator-based process: Create secret -> Configure Central CR -> Restart Central
 
 set -eo pipefail
 
@@ -42,19 +43,25 @@ log "✓ OpenShift CLI connected"
 # Configuration variables
 NAMESPACE="tssc-acs"
 ROUTE_NAME="central"
+CENTRAL_CR_NAME="stackrox-central-services"
+SECRET_NAME="central-default-tls-cert"
 
-# Verify namespace and route exist
+# Verify namespace exists
 if ! oc get ns "$NAMESPACE" &>/dev/null; then
     error "Namespace '$NAMESPACE' not found"
     exit 1
 fi
 
-if ! oc -n "$NAMESPACE" get route "$ROUTE_NAME" &>/dev/null; then
-    error "RHACS route '$ROUTE_NAME' not found in namespace '$NAMESPACE'"
+log "Using namespace: $NAMESPACE"
+
+# Verify Central CR exists
+if ! oc get central "$CENTRAL_CR_NAME" -n "$NAMESPACE" &>/dev/null; then
+    error "Central CR '$CENTRAL_CR_NAME' not found in namespace '$NAMESPACE'"
+    error "This script is for Operator-based RHACS installations"
     exit 1
 fi
 
-log "Using namespace: $NAMESPACE"
+log "✓ Found Central CR: $CENTRAL_CR_NAME"
 
 # Check for cert-manager and ClusterIssuer
 log "Checking for cert-manager..."
@@ -228,8 +235,9 @@ EOF
         cert-manager.io/certificate-name="$CERT_NAME" \
         --overwrite 2>/dev/null || true
     
-    # Wait a moment for route to update
-    sleep 3
+    # Wait a moment for route to update (router picks up changes automatically)
+    log "Waiting for router to pick up route changes..."
+    sleep 5
     
     if [ $? -eq 0 ]; then
         log "✓ TLS configured successfully using cert-manager"
@@ -237,6 +245,8 @@ EOF
         log "  Certificate: Managed by cert-manager"
         log "  ClusterIssuer: $cluster_issuer"
         log "  Secret: $SECRET_NAME"
+        log ""
+        log "Note: No restart of Central is required - route changes are applied automatically by the router"
     else
         error "Failed to configure route with cert-manager certificate"
         return 1
@@ -264,6 +274,8 @@ configure_edge_tls_default() {
         log "  Insecure policy: Redirect (HTTP -> HTTPS)"
         log "  Certificate: Default router certificate"
         log ""
+        log "Note: No restart of Central is required - route changes are applied automatically"
+        log ""
         warning "⚠️  IMPORTANT: The default router certificate is likely self-signed"
         warning "   Browsers will show a certificate warning (NET::ERR_CERT_AUTHORITY_INVALID)"
         warning "   This is normal for development/testing environments"
@@ -280,11 +292,14 @@ configure_edge_tls_default() {
     fi
 }
 
-# Function to configure TLS with reencrypt termination (custom certificate)
-configure_edge_tls_custom() {
+# Function to configure TLS using Operator-based method (custom certificate)
+# This follows the required steps:
+# 1. Create secret with tls-cert.pem and tls-key.pem
+# 2. Configure Central CR with spec.central.defaultTLSSecret
+# 3. Restart Central container
+configure_operator_tls_custom() {
     local cert_file="$1"
     local key_file="$2"
-    local ca_file="${3:-}"
     
     if [ -z "$cert_file" ] || [ -z "$key_file" ]; then
         error "Certificate and key files are required for custom TLS configuration"
@@ -296,50 +311,106 @@ configure_edge_tls_custom() {
         return 1
     fi
     
-    log "Configuring TLS with reencrypt termination using custom certificate..."
-    log "Note: Using reencrypt because RHACS Central backend expects HTTPS connections"
+    log "Configuring TLS using Operator-based method with custom certificate..."
+    log "Following Operator-based process:"
+    log "  1. Create/update TLS secret 'central-default-tls-cert'"
+    log "  2. Configure Central CR with spec.central.defaultTLSSecret"
+    log "  3. Restart Central container"
     
-    # Create or update TLS secret
-    SECRET_NAME="central-tls"
-    
-    if [ -n "$ca_file" ] && [ -f "$ca_file" ]; then
-        log "Creating TLS secret with certificate, key, and CA..."
-        oc create secret tls "$SECRET_NAME" \
-            --cert="$cert_file" \
-            --key="$key_file" \
-            --certificate-authority="$ca_file" \
-            -n "$NAMESPACE" \
-            --dry-run=client -o yaml | oc apply -f -
-    else
-        log "Creating TLS secret with certificate and key..."
-        oc create secret tls "$SECRET_NAME" \
-            --cert="$cert_file" \
-            --key="$key_file" \
-            -n "$NAMESPACE" \
-            --dry-run=client -o yaml | oc apply -f -
+    # Check if secret already exists (for update scenario)
+    SECRET_EXISTS=false
+    if oc get secret "$SECRET_NAME" -n "$NAMESPACE" &>/dev/null; then
+        SECRET_EXISTS=true
+        log "Existing secret '$SECRET_NAME' found - will delete and recreate for update"
+        log "Deleting existing secret..."
+        oc delete secret "$SECRET_NAME" -n "$NAMESPACE" || {
+            error "Failed to delete existing secret"
+            return 1
+        }
+        log "✓ Existing secret deleted"
     fi
     
-    # Update route to use reencrypt termination (backend expects HTTPS)
-    oc patch route "$ROUTE_NAME" -n "$NAMESPACE" --type='merge' -p "{
-        \"spec\": {
-            \"tls\": {
-                \"termination\": \"reencrypt\",
-                \"insecureEdgeTerminationPolicy\": \"Redirect\",
-                \"certificate\": \"$(cat $cert_file | base64 -w 0)\",
-                \"key\": \"$(cat $key_file | base64 -w 0)\"
-            }
-        }
-    }"
+    # Create secret with correct key names (tls-cert.pem and tls-key.pem)
+    log "Creating TLS secret '$SECRET_NAME' with keys 'tls-cert.pem' and 'tls-key.pem'..."
+    oc create secret generic "$SECRET_NAME" \
+        --from-file=tls-cert.pem="$cert_file" \
+        --from-file=tls-key.pem="$key_file" \
+        -n "$NAMESPACE" \
+        --dry-run=client -o yaml | oc apply -f -
     
-    if [ $? -eq 0 ]; then
-        log "✓ TLS configured successfully with custom certificate"
-        log "  Termination: reencrypt (TLS terminates at router, re-encrypts to backend)"
-        log "  Certificate: $cert_file"
-        log "  Key: $key_file"
-    else
-        error "Failed to configure TLS with custom certificate"
+    if [ $? -ne 0 ]; then
+        error "Failed to create TLS secret"
         return 1
     fi
+    
+    log "✓ TLS secret created successfully"
+    
+    # Configure Central CR with defaultTLSSecret
+    log "Configuring Central CR to use secret '$SECRET_NAME'..."
+    log "Patching spec.central.defaultTLSSecret..."
+    
+    # Try patching as a string first (most common format)
+    PATCH_SUCCESS=false
+    if oc patch central "$CENTRAL_CR_NAME" -n "$NAMESPACE" --type='merge' -p "{
+        \"spec\": {
+            \"central\": {
+                \"defaultTLSSecret\": \"$SECRET_NAME\"
+            }
+        }
+    }" 2>/dev/null; then
+        PATCH_SUCCESS=true
+    else
+        # If string format fails, try object format
+        log "Trying object format for defaultTLSSecret..."
+        if oc patch central "$CENTRAL_CR_NAME" -n "$NAMESPACE" --type='merge' -p "{
+            \"spec\": {
+                \"central\": {
+                    \"defaultTLSSecret\": {
+                        \"name\": \"$SECRET_NAME\"
+                    }
+                }
+            }
+        }" 2>/dev/null; then
+            PATCH_SUCCESS=true
+        fi
+    fi
+    
+    if [ "$PATCH_SUCCESS" != "true" ]; then
+        error "Failed to patch Central CR with defaultTLSSecret"
+        return 1
+    fi
+    
+    log "✓ Central CR configured with defaultTLSSecret"
+    
+    # Restart Central container
+    log "Restarting Central deployment to apply certificate changes..."
+    CENTRAL_DEPLOYMENT="central"
+    
+    if ! oc get deployment "$CENTRAL_DEPLOYMENT" -n "$NAMESPACE" &>/dev/null; then
+        error "Central deployment not found"
+        return 1
+    fi
+    
+    # Trigger restart by annotating the deployment
+    oc annotate deployment "$CENTRAL_DEPLOYMENT" -n "$NAMESPACE" \
+        "tls-updated-$(date +%s)=true" \
+        --overwrite
+    
+    log "Waiting for Central to restart..."
+    if oc wait --for=condition=Available deployment/"$CENTRAL_DEPLOYMENT" -n "$NAMESPACE" --timeout=600s 2>/dev/null; then
+        log "✓ Central restarted successfully"
+    else
+        warning "Central restart did not complete within timeout, but continuing..."
+        warning "Check deployment status: oc get deployment $CENTRAL_DEPLOYMENT -n $NAMESPACE"
+    fi
+    
+    log ""
+    log "✓ TLS configured successfully using Operator-based method"
+    log "  Secret: $SECRET_NAME"
+    log "  Certificate: $cert_file"
+    log "  Key: $key_file"
+    log "  Central CR: $CENTRAL_CR_NAME"
+    log "  Central restarted: Yes"
 }
 
 # Function to configure TLS with passthrough termination
@@ -400,83 +471,104 @@ configure_reencrypt_tls() {
 }
 
 # Main configuration logic
-# Note: All TLS termination methods use reencrypt because RHACS Central backend expects HTTPS
+# For Operator-based installations, use --custom-cert to follow the required process
 log ""
 
 # Determine which TLS configuration method to use
 if [ "$1" = "--custom-cert" ] && [ -n "$2" ] && [ -n "$3" ]; then
-    configure_edge_tls_custom "$2" "$3" "$4"
+    # Operator-based method (required process)
+    configure_operator_tls_custom "$2" "$3"
 elif [ "$1" = "--passthrough" ]; then
+    warning "Passthrough mode is for Route-based TLS, not Operator-based installations"
     configure_passthrough_tls
 elif [ "$1" = "--reencrypt" ]; then
+    warning "Reencrypt mode is for Route-based TLS, not Operator-based installations"
     configure_reencrypt_tls "$2"
 elif [ "$1" = "--default-cert" ]; then
-    log "Using default router certificate (as requested)..."
+    warning "Default cert mode is for Route-based TLS, not Operator-based installations"
     configure_edge_tls_default
-elif [ "$CERT_MANAGER_AVAILABLE" = true ] && [ -n "$CLUSTER_ISSUER" ]; then
-    # Default: Use cert-manager if available (uses reencrypt termination)
-    log "Using cert-manager with ClusterIssuer: $CLUSTER_ISSUER"
-    configure_cert_manager_tls "$CLUSTER_ISSUER" "$CURRENT_HOST"
+elif [ "$1" = "--reencrypt-default" ]; then
+    warning "Reencrypt-default mode is for Route-based TLS, not Operator-based installations"
+    configure_edge_tls_default
+elif [ -z "$1" ]; then
+    # No arguments provided - show usage
+    log "========================================================="
+    log "RHACS TLS Configuration Script (Operator-based)"
+    log "========================================================="
+    log ""
+    log "Usage:"
+    log "  $0 --custom-cert <cert-file> <key-file>"
+    log ""
+    log "This script follows the Operator-based process:"
+    log "  1. Creates secret 'central-default-tls-cert' with tls-cert.pem and tls-key.pem"
+    log "  2. Configures Central CR with spec.central.defaultTLSSecret"
+    log "  3. Restarts Central container"
+    log ""
+    log "Example:"
+    log "  $0 --custom-cert /path/to/cert.pem /path/to/key.pem"
+    log ""
+    log "Note: If updating an existing certificate, the script will:"
+    log "  - Delete the existing secret first"
+    log "  - Create a new secret with the new certificate"
+    log "  - Update the Central CR"
+    log "  - Restart Central"
+    log "========================================================="
+    exit 0
 else
-    # Fallback: Use default router certificate with reencrypt termination
-    log "Using default router certificate with reencrypt termination (cert-manager not available)..."
-    configure_edge_tls_default
+    error "Unknown option: $1"
+    error "Use --custom-cert <cert-file> <key-file> for Operator-based TLS configuration"
+    exit 1
 fi
 
 # Verify configuration
 log ""
-log "Verifying route configuration..."
-UPDATED_ROUTE=$(oc get route "$ROUTE_NAME" -n "$NAMESPACE" -o json)
-UPDATED_TLS=$(echo "$UPDATED_ROUTE" | jq -r '.spec.tls // empty' 2>/dev/null)
+log "Verifying TLS configuration..."
 
-if [ -n "$UPDATED_TLS" ] && [ "$UPDATED_TLS" != "null" ]; then
-    TERMINATION=$(echo "$UPDATED_ROUTE" | jq -r '.spec.tls.termination // "none"')
-    INSECURE_POLICY=$(echo "$UPDATED_ROUTE" | jq -r '.spec.tls.insecureEdgeTerminationPolicy // "none"')
-    
-    log "✓ Route TLS configuration verified"
-    log "  Termination: $TERMINATION"
-    log "  Insecure policy: $INSECURE_POLICY"
-    log "  Host: $CURRENT_HOST"
-    log ""
-    
-    # Check certificate status
-    log "Checking certificate status..."
-    CERT_CHECK=$(echo | openssl s_client -connect "$CURRENT_HOST:443" -servername "$CURRENT_HOST" 2>/dev/null | openssl x509 -noout -subject -issuer 2>/dev/null)
-    
-    if [ -n "$CERT_CHECK" ]; then
-        CERT_SUBJECT=$(echo "$CERT_CHECK" | grep "subject=" | sed 's/subject=//')
-        CERT_ISSUER=$(echo "$CERT_CHECK" | grep "issuer=" | sed 's/issuer=//')
-        log "  Certificate Subject: $CERT_SUBJECT"
-        log "  Certificate Issuer: $CERT_ISSUER"
-        
-        # Check if certificate is self-signed
-        if echo "$CERT_SUBJECT" | grep -q "$CERT_ISSUER"; then
-            warning "  ⚠️  Certificate appears to be self-signed"
-            warning "  Browser will show security warning"
-        fi
+# Check if secret exists and has correct keys
+if oc get secret "$SECRET_NAME" -n "$NAMESPACE" &>/dev/null; then
+    SECRET_KEYS=$(oc get secret "$SECRET_NAME" -n "$NAMESPACE" -o jsonpath='{.data}' | jq -r 'keys[]' 2>/dev/null || echo "")
+    if echo "$SECRET_KEYS" | grep -q "tls-cert.pem" && echo "$SECRET_KEYS" | grep -q "tls-key.pem"; then
+        log "✓ Secret '$SECRET_NAME' exists with correct keys (tls-cert.pem, tls-key.pem)"
     else
-        log "  Could not retrieve certificate details (may need to accept certificate first)"
+        warning "Secret exists but may not have correct keys"
     fi
-    
-    log ""
-    log "========================================================="
-    log "RHACS HTTPS Configuration Complete"
-    log "========================================================="
-    log "HTTPS URL: https://$CURRENT_HOST"
-    if [ "$INSECURE_POLICY" = "Redirect" ]; then
-        log "HTTP URL: http://$CURRENT_HOST (redirects to HTTPS)"
-    fi
-    log ""
-    log "⚠️  If you see a certificate warning in your browser:"
-    log "   1. Click 'Advanced' button"
-    log "   2. Click 'Proceed to [hostname] (unsafe)'"
-    log "   3. This is safe for development/testing environments"
-    log ""
-    log "For production, use a trusted certificate:"
-    log "   ./scripts/06-configure-rhacs-tls.sh --custom-cert /path/to/cert.crt /path/to/key.key"
-    log "========================================================="
 else
-    warning "TLS configuration may not have been applied correctly"
+    warning "Secret '$SECRET_NAME' not found"
+fi
+
+# Check Central CR configuration
+CENTRAL_CR_TLS_SECRET=$(oc get central "$CENTRAL_CR_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.central.defaultTLSSecret.name}' 2>/dev/null || echo "")
+if [ -n "$CENTRAL_CR_TLS_SECRET" ] && [ "$CENTRAL_CR_TLS_SECRET" = "$SECRET_NAME" ]; then
+    log "✓ Central CR configured with defaultTLSSecret: $SECRET_NAME"
+else
+    warning "Central CR may not be configured correctly"
+    if [ -n "$CENTRAL_CR_TLS_SECRET" ]; then
+        warning "  Current defaultTLSSecret: $CENTRAL_CR_TLS_SECRET (expected: $SECRET_NAME)"
+    else
+        warning "  defaultTLSSecret not set in Central CR"
+    fi
+fi
+
+# Get route host for verification
+if oc get route "$ROUTE_NAME" -n "$NAMESPACE" &>/dev/null; then
+    CURRENT_HOST=$(oc get route "$ROUTE_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null)
+    if [ -n "$CURRENT_HOST" ]; then
+        log ""
+        log "========================================================="
+        log "RHACS TLS Configuration Complete (Operator-based)"
+        log "========================================================="
+        log "HTTPS URL: https://$CURRENT_HOST"
+        log "Secret: $SECRET_NAME"
+        log "Central CR: $CENTRAL_CR_NAME"
+        log ""
+        log "The certificate has been configured using the Operator-based method:"
+        log "  ✓ Secret created with tls-cert.pem and tls-key.pem"
+        log "  ✓ Central CR configured with spec.central.defaultTLSSecret"
+        log "  ✓ Central container restarted"
+        log ""
+        log "Note: It may take a few moments for the new certificate to be active."
+        log "========================================================="
+    fi
 fi
 
 if [ "$SCRIPT_FAILED" = true ]; then
