@@ -35,7 +35,7 @@ setup_rhacs() {
     bash "${SCRIPT_DIR}/scripts/01-rhacs-setup.sh"
 }
 
-# Configure RHACS TLS/HTTPS (Optional - Step 7)
+# Configure RHACS TLS/HTTPS (Step 6)
 configure_rhacs_tls() {
     log "Configuring RHACS TLS/HTTPS route..."
     bash "${SCRIPT_DIR}/scripts/06-configure-rhacs-tls.sh"
@@ -105,29 +105,7 @@ main() {
     deploy_applications
     setup_compliance_scan_schedule
     trigger_compliance_scan
-    
-    # Prompt for TLS configuration (optional)
-    log ""
-    log "========================================================="
-    log "RHACS TLS/HTTPS Configuration (Optional)"
-    log "========================================================="
-    
-    # Check if running interactively
-    if [ -t 0 ]; then
-        read -p "Do you want to configure TLS/HTTPS for the RHACS route? (Yes/No): " configure_tls
-        configure_tls=$(echo "$configure_tls" | tr '[:upper:]' '[:lower:]')
-    else
-        log "Non-interactive mode detected. Skipping TLS configuration."
-        configure_tls="no"
-    fi
-    
-    if [[ "$configure_tls" == "yes" ]] || [[ "$configure_tls" == "y" ]]; then
-        configure_rhacs_tls
-        TLS_CONFIGURED=true
-    else
-        log "Skipping TLS configuration."
-        TLS_CONFIGURED=false
-    fi
+    configure_rhacs_tls
     
     success "Demo Config setup completed successfully!"
     log "All scripts have been executed in order:"
@@ -136,11 +114,7 @@ main() {
     log "  3. Application deployment"
     log "  4. Compliance scan schedule setup"
     log "  5. Compliance scan trigger"
-    if [ "$TLS_CONFIGURED" = true ]; then
-        log "  6. RHACS TLS/HTTPS route configuration"
-    else
-        log "  6. RHACS TLS/HTTPS route configuration (skipped)"
-    fi
+    log "  6. RHACS TLS/HTTPS route configuration"
     
     # Display RHACS access information
     log ""
