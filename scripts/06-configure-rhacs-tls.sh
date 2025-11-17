@@ -56,6 +56,32 @@ fi
 
 log "Using namespace: $NAMESPACE"
 
+# Check for cert-manager and ClusterIssuer
+log "Checking for cert-manager..."
+CERT_MANAGER_AVAILABLE=false
+CLUSTER_ISSUER=""
+
+if oc get namespace cert-manager &>/dev/null && oc get pods -n cert-manager &>/dev/null | grep -q Running; then
+    CERT_MANAGER_AVAILABLE=true
+    log "✓ cert-manager is installed and running"
+    
+    # Check for available ClusterIssuers
+    CLUSTER_ISSUERS=$(oc get clusterissuer -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+    if [ -n "$CLUSTER_ISSUERS" ]; then
+        # Prefer zerossl-production-ec2 if available, otherwise use first available
+        if echo "$CLUSTER_ISSUERS" | grep -q "zerossl-production-ec2"; then
+            CLUSTER_ISSUER="zerossl-production-ec2"
+        else
+            CLUSTER_ISSUER=$(echo "$CLUSTER_ISSUERS" | awk '{print $1}')
+        fi
+        log "✓ Found ClusterIssuer: $CLUSTER_ISSUER"
+    else
+        warning "cert-manager is installed but no ClusterIssuer found"
+    fi
+else
+    log "cert-manager not found, will use default router certificate"
+fi
+
 # Check current route configuration
 log "Checking current route configuration..."
 CURRENT_ROUTE=$(oc get route "$ROUTE_NAME" -n "$NAMESPACE" -o json)
@@ -74,6 +100,147 @@ if [ -n "$CURRENT_TLS" ] && [ "$CURRENT_TLS" != "null" ]; then
 else
     log "Current TLS termination: none"
 fi
+
+# Function to configure TLS using cert-manager
+configure_cert_manager_tls() {
+    local cluster_issuer="$1"
+    local route_host="$2"
+    
+    log "Configuring TLS using cert-manager with ClusterIssuer: $cluster_issuer"
+    
+    # Certificate name and secret name
+    CERT_NAME="rhacs-central-tls"
+    SECRET_NAME="rhacs-central-tls"
+    
+    # Check if certificate already exists
+    if oc get certificate "$CERT_NAME" -n "$NAMESPACE" &>/dev/null; then
+        log "Certificate resource already exists, checking status..."
+        CERT_STATUS=$(oc get certificate "$CERT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+        if [ "$CERT_STATUS" = "True" ]; then
+            log "✓ Certificate is ready"
+        else
+            log "Certificate exists but not ready yet, waiting..."
+            # Wait for certificate to be ready (max 5 minutes)
+            for i in {1..60}; do
+                sleep 5
+                CERT_STATUS=$(oc get certificate "$CERT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+                if [ "$CERT_STATUS" = "True" ]; then
+                    log "✓ Certificate is now ready"
+                    break
+                fi
+                if [ $i -eq 60 ]; then
+                    warning "Certificate did not become ready within timeout"
+                fi
+            done
+        fi
+    else
+        # Create Certificate resource
+        log "Creating Certificate resource..."
+        cat <<EOF | oc apply -f -
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: $CERT_NAME
+  namespace: $NAMESPACE
+spec:
+  secretName: $SECRET_NAME
+  issuerRef:
+    name: $cluster_issuer
+    kind: ClusterIssuer
+  dnsNames:
+  - $route_host
+EOF
+        
+        if [ $? -eq 0 ]; then
+            log "✓ Certificate resource created"
+            log "Waiting for certificate to be issued (this may take a few minutes)..."
+            
+            # Wait for certificate to be ready (max 10 minutes)
+            for i in {1..120}; do
+                sleep 5
+                CERT_STATUS=$(oc get certificate "$CERT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+                if [ "$CERT_STATUS" = "True" ]; then
+                    log "✓ Certificate issued successfully"
+                    break
+                fi
+                if [ $((i % 12)) -eq 0 ]; then
+                    log "Still waiting for certificate... ($((i * 5))s elapsed)"
+                fi
+                if [ $i -eq 120 ]; then
+                    warning "Certificate did not become ready within 10 minutes"
+                    warning "Check certificate status: oc get certificate $CERT_NAME -n $NAMESPACE"
+                fi
+            done
+        else
+            error "Failed to create Certificate resource"
+            return 1
+        fi
+    fi
+    
+    # Wait for secret to be created by cert-manager
+    log "Waiting for certificate secret to be created..."
+    for i in {1..60}; do
+        if oc get secret "$SECRET_NAME" -n "$NAMESPACE" &>/dev/null; then
+            log "✓ Certificate secret created"
+            break
+        fi
+        sleep 2
+        if [ $i -eq 60 ]; then
+            warning "Secret not created yet, but continuing..."
+        fi
+    done
+    
+    # Configure route to use the certificate secret
+    log "Configuring route to use certificate from secret..."
+    
+    # Get certificate and key from secret
+    if oc get secret "$SECRET_NAME" -n "$NAMESPACE" &>/dev/null; then
+        CERT_DATA=$(oc get secret "$SECRET_NAME" -n "$NAMESPACE" -o jsonpath='{.data.tls\.crt}' | base64 -d)
+        KEY_DATA=$(oc get secret "$SECRET_NAME" -n "$NAMESPACE" -o jsonpath='{.data.tls\.key}' | base64 -d)
+        
+        # Patch route with certificate and key
+        oc patch route "$ROUTE_NAME" -n "$NAMESPACE" --type='merge' -p "{
+            \"spec\": {
+                \"tls\": {
+                    \"termination\": \"edge\",
+                    \"insecureEdgeTerminationPolicy\": \"Redirect\",
+                    \"certificate\": \"$(echo -n "$CERT_DATA" | base64 -w 0)\",
+                    \"key\": \"$(echo -n "$KEY_DATA" | base64 -w 0)\"
+                }
+            }
+        }"
+    else
+        # If secret doesn't exist yet, configure route structure and it will be updated when secret is ready
+        oc patch route "$ROUTE_NAME" -n "$NAMESPACE" --type='merge' -p '{
+            "spec": {
+                "tls": {
+                    "termination": "edge",
+                    "insecureEdgeTerminationPolicy": "Redirect"
+                }
+            }
+        }'
+        warning "Certificate secret not ready yet. Route will be updated automatically when certificate is issued."
+    fi
+    
+    # Annotate route to reference the certificate (for cert-manager tracking)
+    oc annotate route "$ROUTE_NAME" -n "$NAMESPACE" \
+        cert-manager.io/certificate-name="$CERT_NAME" \
+        --overwrite 2>/dev/null || true
+    
+    # Wait a moment for route to update
+    sleep 3
+    
+    if [ $? -eq 0 ]; then
+        log "✓ TLS configured successfully using cert-manager"
+        log "  Termination: edge"
+        log "  Certificate: Managed by cert-manager"
+        log "  ClusterIssuer: $cluster_issuer"
+        log "  Secret: $SECRET_NAME"
+    else
+        error "Failed to configure route with cert-manager certificate"
+        return 1
+    fi
+}
 
 # Function to configure TLS with edge termination (default router certificate)
 configure_edge_tls_default() {
@@ -257,17 +424,24 @@ configure_reencrypt_tls() {
 
 # Main configuration logic
 log ""
-log "Configuring TLS with edge termination using default router certificate..."
 
-# Default to edge termination with default certificate
+# Determine which TLS configuration method to use
 if [ "$1" = "--custom-cert" ] && [ -n "$2" ] && [ -n "$3" ]; then
     configure_edge_tls_custom "$2" "$3" "$4"
 elif [ "$1" = "--passthrough" ]; then
     configure_passthrough_tls
 elif [ "$1" = "--reencrypt" ]; then
     configure_reencrypt_tls "$2"
+elif [ "$1" = "--default-cert" ]; then
+    log "Using default router certificate (as requested)..."
+    configure_edge_tls_default
+elif [ "$CERT_MANAGER_AVAILABLE" = true ] && [ -n "$CLUSTER_ISSUER" ]; then
+    # Default: Use cert-manager if available
+    log "Using cert-manager with ClusterIssuer: $CLUSTER_ISSUER"
+    configure_cert_manager_tls "$CLUSTER_ISSUER" "$CURRENT_HOST"
 else
-    # Default: edge termination with default router certificate
+    # Fallback: Use default router certificate
+    log "Using default router certificate (cert-manager not available)..."
     configure_edge_tls_default
 fi
 
