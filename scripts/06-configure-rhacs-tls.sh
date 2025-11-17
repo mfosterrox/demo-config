@@ -257,15 +257,7 @@ configure_reencrypt_tls() {
 
 # Main configuration logic
 log ""
-log "========================================================="
-log "RHACS TLS Configuration Options"
-log "========================================================="
-log "1. Edge termination with default router certificate (recommended for most cases)"
-log "2. Edge termination with custom certificate"
-log "3. Passthrough termination (TLS terminates at backend)"
-log "4. Reencrypt termination (TLS terminates at router, re-encrypts to backend)"
-log "========================================================="
-log ""
+log "Configuring TLS with edge termination using default router certificate..."
 
 # Default to edge termination with default certificate
 if [ "$1" = "--custom-cert" ] && [ -n "$2" ] && [ -n "$3" ]; then
