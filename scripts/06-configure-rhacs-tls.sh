@@ -198,11 +198,12 @@ EOF
         CERT_DATA=$(oc get secret "$SECRET_NAME" -n "$NAMESPACE" -o jsonpath='{.data.tls\.crt}' | base64 -d)
         KEY_DATA=$(oc get secret "$SECRET_NAME" -n "$NAMESPACE" -o jsonpath='{.data.tls\.key}' | base64 -d)
         
-        # Patch route with certificate and key
+        # Patch route with certificate and key using reencrypt termination
+        # Reencrypt is needed because RHACS Central backend expects HTTPS
         oc patch route "$ROUTE_NAME" -n "$NAMESPACE" --type='merge' -p "{
             \"spec\": {
                 \"tls\": {
-                    \"termination\": \"edge\",
+                    \"termination\": \"reencrypt\",
                     \"insecureEdgeTerminationPolicy\": \"Redirect\",
                     \"certificate\": \"$(echo -n "$CERT_DATA" | base64 -w 0)\",
                     \"key\": \"$(echo -n "$KEY_DATA" | base64 -w 0)\"
@@ -210,11 +211,11 @@ EOF
             }
         }"
     else
-        # If secret doesn't exist yet, configure route structure and it will be updated when secret is ready
+        # If secret doesn't exist yet, configure route structure with reencrypt termination
         oc patch route "$ROUTE_NAME" -n "$NAMESPACE" --type='merge' -p '{
             "spec": {
                 "tls": {
-                    "termination": "edge",
+                    "termination": "reencrypt",
                     "insecureEdgeTerminationPolicy": "Redirect"
                 }
             }
@@ -232,7 +233,7 @@ EOF
     
     if [ $? -eq 0 ]; then
         log "✓ TLS configured successfully using cert-manager"
-        log "  Termination: edge"
+        log "  Termination: reencrypt (TLS terminates at router, re-encrypts to backend)"
         log "  Certificate: Managed by cert-manager"
         log "  ClusterIssuer: $cluster_issuer"
         log "  Secret: $SECRET_NAME"
@@ -242,22 +243,24 @@ EOF
     fi
 }
 
-# Function to configure TLS with edge termination (default router certificate)
+# Function to configure TLS with reencrypt termination (default router certificate)
+# Reencrypt is required because RHACS Central backend service expects HTTPS
 configure_edge_tls_default() {
-    log "Configuring TLS with edge termination using default router certificate..."
+    log "Configuring TLS with reencrypt termination using default router certificate..."
+    log "Note: Using reencrypt because RHACS Central backend expects HTTPS connections"
     
     oc patch route "$ROUTE_NAME" -n "$NAMESPACE" --type='merge' -p '{
         "spec": {
             "tls": {
-                "termination": "edge",
+                "termination": "reencrypt",
                 "insecureEdgeTerminationPolicy": "Redirect"
             }
         }
     }'
     
     if [ $? -eq 0 ]; then
-        log "✓ TLS configured successfully with edge termination"
-        log "  Termination: edge"
+        log "✓ TLS configured successfully with reencrypt termination"
+        log "  Termination: reencrypt (TLS terminates at router, re-encrypts to backend)"
         log "  Insecure policy: Redirect (HTTP -> HTTPS)"
         log "  Certificate: Default router certificate"
         log ""
@@ -268,7 +271,7 @@ configure_edge_tls_default() {
         log "To resolve the certificate warning, you have these options:"
         log "  1. Accept the certificate in your browser (click 'Advanced' -> 'Proceed')"
         log "  2. Use a custom trusted certificate (run with --custom-cert option)"
-        log "  3. Configure Let's Encrypt certificate using cert-manager"
+        log "  3. Configure Let's Encrypt certificate using cert-manager (automatic)"
         log ""
         log "For production, use option 2 or 3 with a trusted certificate authority."
     else
@@ -277,7 +280,7 @@ configure_edge_tls_default() {
     fi
 }
 
-# Function to configure TLS with edge termination (custom certificate)
+# Function to configure TLS with reencrypt termination (custom certificate)
 configure_edge_tls_custom() {
     local cert_file="$1"
     local key_file="$2"
@@ -293,7 +296,8 @@ configure_edge_tls_custom() {
         return 1
     fi
     
-    log "Configuring TLS with edge termination using custom certificate..."
+    log "Configuring TLS with reencrypt termination using custom certificate..."
+    log "Note: Using reencrypt because RHACS Central backend expects HTTPS connections"
     
     # Create or update TLS secret
     SECRET_NAME="central-tls"
@@ -315,11 +319,11 @@ configure_edge_tls_custom() {
             --dry-run=client -o yaml | oc apply -f -
     fi
     
-    # Update route to use the secret
+    # Update route to use reencrypt termination (backend expects HTTPS)
     oc patch route "$ROUTE_NAME" -n "$NAMESPACE" --type='merge' -p "{
         \"spec\": {
             \"tls\": {
-                \"termination\": \"edge\",
+                \"termination\": \"reencrypt\",
                 \"insecureEdgeTerminationPolicy\": \"Redirect\",
                 \"certificate\": \"$(cat $cert_file | base64 -w 0)\",
                 \"key\": \"$(cat $key_file | base64 -w 0)\"
@@ -327,36 +331,9 @@ configure_edge_tls_custom() {
         }
     }"
     
-    # Alternative: Use secret reference (recommended)
-    oc patch route "$ROUTE_NAME" -n "$NAMESPACE" --type='merge' -p "{
-        \"spec\": {
-            \"tls\": {
-                \"termination\": \"edge\",
-                \"insecureEdgeTerminationPolicy\": \"Redirect\",
-                \"key\": \"\",
-                \"certificate\": \"\"
-            }
-        }
-    }"
-    
-    # Set the secret reference
-    oc set data route/"$ROUTE_NAME" -n "$NAMESPACE" --from-file=tls.crt="$cert_file" --from-file=tls.key="$key_file" 2>/dev/null || \
-    oc patch route "$ROUTE_NAME" -n "$NAMESPACE" --type='json' -p "[
-        {
-            \"op\": \"replace\",
-            \"path\": \"/spec/tls/key\",
-            \"value\": \"$(cat $key_file | base64 -w 0)\"
-        },
-        {
-            \"op\": \"replace\",
-            \"path\": \"/spec/tls/certificate\",
-            \"value\": \"$(cat $cert_file | base64 -w 0)\"
-        }
-    ]"
-    
     if [ $? -eq 0 ]; then
         log "✓ TLS configured successfully with custom certificate"
-        log "  Termination: edge"
+        log "  Termination: reencrypt (TLS terminates at router, re-encrypts to backend)"
         log "  Certificate: $cert_file"
         log "  Key: $key_file"
     else
@@ -423,6 +400,7 @@ configure_reencrypt_tls() {
 }
 
 # Main configuration logic
+# Note: All TLS termination methods use reencrypt because RHACS Central backend expects HTTPS
 log ""
 
 # Determine which TLS configuration method to use
@@ -436,12 +414,12 @@ elif [ "$1" = "--default-cert" ]; then
     log "Using default router certificate (as requested)..."
     configure_edge_tls_default
 elif [ "$CERT_MANAGER_AVAILABLE" = true ] && [ -n "$CLUSTER_ISSUER" ]; then
-    # Default: Use cert-manager if available
+    # Default: Use cert-manager if available (uses reencrypt termination)
     log "Using cert-manager with ClusterIssuer: $CLUSTER_ISSUER"
     configure_cert_manager_tls "$CLUSTER_ISSUER" "$CURRENT_HOST"
 else
-    # Fallback: Use default router certificate
-    log "Using default router certificate (cert-manager not available)..."
+    # Fallback: Use default router certificate with reencrypt termination
+    log "Using default router certificate with reencrypt termination (cert-manager not available)..."
     configure_edge_tls_default
 fi
 

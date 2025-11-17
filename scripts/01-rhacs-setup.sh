@@ -37,12 +37,30 @@ normalize_rox_endpoint() {
     echo "$input"
 }
 
-# Track whether ROX_API_TOKEN was already present
+# Check for existing API token in ~/.bashrc
+TOKEN_FROM_BASHRC=false
 TOKEN_FROM_ENV=false
-if [ -n "$ROX_API_TOKEN" ]; then
-    TOKEN_FROM_ENV=true
-    log "Found existing ROX_API_TOKEN in environment (from ~/.bashrc)"
+
+if [ -f ~/.bashrc ]; then
+    # Extract ROX_API_TOKEN from ~/.bashrc if it exists
+    # Handle both double quotes and single quotes, and unquoted values
+    TOKEN_LINE=$(grep "^export ROX_API_TOKEN=" ~/.bashrc 2>/dev/null | head -1)
+    
+    if [ -n "$TOKEN_LINE" ]; then
+        # Extract token value using awk (more reliable than sed for this)
+        # Handles: export ROX_API_TOKEN="value", export ROX_API_TOKEN='value', export ROX_API_TOKEN=value
+        EXISTING_TOKEN=$(echo "$TOKEN_LINE" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
+        
+        if [ -n "$EXISTING_TOKEN" ] && [ "$EXISTING_TOKEN" != "=" ]; then
+            ROX_API_TOKEN="$EXISTING_TOKEN"
+            TOKEN_FROM_BASHRC=true
+            log "Found existing ROX_API_TOKEN in ~/.bashrc"
+        fi
+    fi
 fi
+
+# Note: If bashrc was sourced earlier, ROX_API_TOKEN may already be in environment
+# But we've now explicitly checked bashrc, so we'll use that value
 
 # Configuration variables
 NAMESPACE="tssc-acs"
@@ -247,25 +265,54 @@ if ! curl -k -s --connect-timeout 10 "https://$ROX_ENDPOINT" >/dev/null; then
 fi
 
 # Create or reuse API token
-if [ "$TOKEN_FROM_ENV" = false ]; then
+if [ "$TOKEN_FROM_BASHRC" = true ]; then
+    log "Using existing ROX_API_TOKEN from ~/.bashrc"
+elif [ -n "$ROX_API_TOKEN" ]; then
+    log "Using existing ROX_API_TOKEN from environment"
+else
+    # No token found, generate a new one
     if [ -n "$ADMIN_PASSWORD" ]; then
-        log "Creating API token: $TOKEN_NAME"
-        NEW_ROX_API_TOKEN=$(curl -k -X POST \
+        log "No API token found in ~/.bashrc, creating new API token: $TOKEN_NAME"
+        
+        set +e
+        TOKEN_RESPONSE=$(curl -k -X POST \
           -u "admin:$ADMIN_PASSWORD" \
           -H "Content-Type: application/json" \
           --data "{\"name\":\"$TOKEN_NAME\",\"role\":\"$TOKEN_ROLE\"}" \
-          "https://$ROX_ENDPOINT/v1/apitokens/generate" 2>/dev/null | python3 -c "import sys, json; print(json.load(sys.stdin)['token'])" 2>/dev/null)
-
-        if [ -z "$NEW_ROX_API_TOKEN" ]; then
-            error "Failed to create API token"
+          "https://$ROX_ENDPOINT/v1/apitokens/generate" 2>&1)
+        TOKEN_EXIT_CODE=$?
+        set -e
+        
+        if [ $TOKEN_EXIT_CODE -eq 0 ] && [ -n "$TOKEN_RESPONSE" ]; then
+            # Extract token from JSON response
+            NEW_ROX_API_TOKEN=$(echo "$TOKEN_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['token'])" 2>/dev/null)
+            
+            if [ -n "$NEW_ROX_API_TOKEN" ] && [ "$NEW_ROX_API_TOKEN" != "null" ]; then
+                ROX_API_TOKEN="$NEW_ROX_API_TOKEN"
+                log "✓ API token created successfully"
+                
+                # Save token to ~/.bashrc
+                log "Saving ROX_API_TOKEN to ~/.bashrc..."
+                
+                # Remove existing ROX_API_TOKEN entry if it exists
+                sed -i '/^export ROX_API_TOKEN=/d' ~/.bashrc 2>/dev/null || true
+                
+                # Add new token entry
+                echo "export ROX_API_TOKEN=\"$ROX_API_TOKEN\"" >> ~/.bashrc
+                log "✓ ROX_API_TOKEN saved to ~/.bashrc"
+            else
+                error "Failed to extract token from API response"
+                log "Response: ${TOKEN_RESPONSE:0:200}"
+            fi
+        else
+            error "Failed to create API token (exit code: $TOKEN_EXIT_CODE)"
+            if [ -n "$TOKEN_RESPONSE" ]; then
+                log "Response: ${TOKEN_RESPONSE:0:200}"
+            fi
         fi
-        ROX_API_TOKEN="$NEW_ROX_API_TOKEN"
-        log "API token created successfully"
     else
-        warning "No existing ROX_API_TOKEN found and admin password unavailable; cannot generate new token"
+        error "No existing ROX_API_TOKEN found in ~/.bashrc and admin password unavailable; cannot generate new token"
     fi
-else
-    log "Reusing existing ROX_API_TOKEN from environment"
 fi
 
 # Export environment variables for roxctl
@@ -587,50 +634,21 @@ else
     warning "SecuredCluster resource not found, auto-lock verification skipped"
 fi
 
-# Save API token and environment variables to bashrc
-# Reuse the token created earlier instead of creating a new one
-if [ -n "$ROX_API_TOKEN" ] && [ "$TOKEN_FROM_ENV" = false ]; then
-    # Token was created earlier in the script, save it to bashrc
-    log "Saving ROX_API_TOKEN, ROX_ENDPOINT, and ADMIN_PASSWORD to ~/.bashrc..."
-    
-    # Remove existing entries if they exist
-    sed -i '/^export ROX_API_TOKEN=/d' ~/.bashrc 2>/dev/null || true
-    sed -i '/^export ROX_ENDPOINT=/d' ~/.bashrc 2>/dev/null || true
-    sed -i '/^export ADMIN_PASSWORD=/d' ~/.bashrc 2>/dev/null || true
-    
-    # Add new entries
-    echo "export ROX_API_TOKEN=\"$ROX_API_TOKEN\"" >> ~/.bashrc
-    echo "export ROX_ENDPOINT=\"$ROX_ENDPOINT\"" >> ~/.bashrc
-    if [ -n "$ADMIN_PASSWORD" ]; then
-        echo "export ADMIN_PASSWORD=\"$ADMIN_PASSWORD\"" >> ~/.bashrc
-    fi
-    
-    log "✓ Environment variables saved to ~/.bashrc"
-elif [ -n "$ROX_API_TOKEN" ] && [ "$TOKEN_FROM_ENV" = true ]; then
-    # Token was already in environment, just save endpoint and password if needed
-    log "ROX_API_TOKEN already present in environment; saving ROX_ENDPOINT to ~/.bashrc..."
-    
-    sed -i '/^export ROX_ENDPOINT=/d' ~/.bashrc 2>/dev/null || true
-    echo "export ROX_ENDPOINT=\"$ROX_ENDPOINT\"" >> ~/.bashrc
-    
-    if [ -n "$ADMIN_PASSWORD" ]; then
-        sed -i '/^export ADMIN_PASSWORD=/d' ~/.bashrc 2>/dev/null || true
-        echo "export ADMIN_PASSWORD=\"$ADMIN_PASSWORD\"" >> ~/.bashrc
-    fi
-    
-    log "✓ Environment variables saved to ~/.bashrc"
-else
-    if [ -n "$ADMIN_PASSWORD" ]; then
-        warning "No ROX_API_TOKEN available to save, but admin password is available"
-        log "Saving ROX_ENDPOINT and ADMIN_PASSWORD to ~/.bashrc..."
-        sed -i '/^export ROX_ENDPOINT=/d' ~/.bashrc 2>/dev/null || true
-        sed -i '/^export ADMIN_PASSWORD=/d' ~/.bashrc 2>/dev/null || true
-        echo "export ROX_ENDPOINT=\"$ROX_ENDPOINT\"" >> ~/.bashrc
-        echo "export ADMIN_PASSWORD=\"$ADMIN_PASSWORD\"" >> ~/.bashrc
-    else
-        warning "No ROX_API_TOKEN or admin password available to save"
-    fi
+# Save ROX_ENDPOINT and ADMIN_PASSWORD to bashrc
+# Note: ROX_API_TOKEN is already saved to ~/.bashrc if it was newly created above
+log "Saving ROX_ENDPOINT and ADMIN_PASSWORD to ~/.bashrc..."
+
+# Remove existing entries if they exist
+sed -i '/^export ROX_ENDPOINT=/d' ~/.bashrc 2>/dev/null || true
+sed -i '/^export ADMIN_PASSWORD=/d' ~/.bashrc 2>/dev/null || true
+
+# Add new entries
+echo "export ROX_ENDPOINT=\"$ROX_ENDPOINT\"" >> ~/.bashrc
+if [ -n "$ADMIN_PASSWORD" ]; then
+    echo "export ADMIN_PASSWORD=\"$ADMIN_PASSWORD\"" >> ~/.bashrc
 fi
+
+log "✓ Environment variables saved to ~/.bashrc"
 
 # Clean up temporary files
 rm -f cluster_init_bundle.yaml
