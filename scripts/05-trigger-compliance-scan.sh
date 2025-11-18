@@ -75,7 +75,19 @@ log "Starting compliance scan trigger process..."
 
 # Function to make authenticated API calls
 function roxcurl() {
-    curl -sk -H "Authorization: Bearer $ROX_API_TOKEN" "$@"
+    curl -skL -H "Authorization: Bearer $ROX_API_TOKEN" \
+        -H "Content-Type: application/json" \
+        -w "\n%{http_code}" "$@"
+}
+
+# Function to extract HTTP status code from curl response
+function extract_http_code() {
+    echo "$1" | tail -n1
+}
+
+# Function to extract response body from curl response
+function extract_body() {
+    echo "$1" | head -n -1
 }
 
 # Try to trigger using scan configuration first (preferred method)
@@ -149,24 +161,51 @@ fi
 # Fallback: Get all cluster IDs and trigger legacy compliance runs
 log "Fetching cluster IDs for legacy compliance trigger..."
 set +e
-CLUSTERS_RESPONSE=$(roxcurl "$ROX_ENDPOINT/v1/clusters" 2>&1)
+CLUSTERS_FULL_RESPONSE=$(roxcurl "$ROX_ENDPOINT/v1/clusters" 2>&1)
 CLUSTERS_EXIT_CODE=$?
 set -e
 
+CLUSTERS_HTTP_CODE=$(extract_http_code "$CLUSTERS_FULL_RESPONSE")
+CLUSTERS_RESPONSE=$(extract_body "$CLUSTERS_FULL_RESPONSE")
+
 if [ $CLUSTERS_EXIT_CODE -ne 0 ]; then
     error "Failed to fetch clusters (exit code: $CLUSTERS_EXIT_CODE)"
-    log "Response: ${CLUSTERS_RESPONSE:0:200}"
+    if [ -n "$CLUSTERS_RESPONSE" ]; then
+        log "Response: ${CLUSTERS_RESPONSE:0:200}"
+    fi
     exit 1
 fi
 
 if [ -z "$CLUSTERS_RESPONSE" ]; then
-    error "Empty response from clusters API"
+    error "Empty response from clusters API (HTTP $CLUSTERS_HTTP_CODE)"
+    exit 1
+fi
+
+# Check if response is HTML (error page or redirect)
+if echo "$CLUSTERS_RESPONSE" | grep -qiE "<html|<!DOCTYPE"; then
+    error "Received HTML instead of JSON from clusters API (HTTP $CLUSTERS_HTTP_CODE)"
+    error "This usually indicates:"
+    error "  1. Authentication failure (invalid/expired token)"
+    error "  2. Endpoint redirect issue"
+    error "  3. Wrong endpoint URL"
+    log "Response preview: ${CLUSTERS_RESPONSE:0:300}"
+    log ""
+    log "Please verify:"
+    log "  - ROX_ENDPOINT is correct: $ROX_ENDPOINT"
+    log "  - ROX_API_TOKEN is valid (check with: curl -k -H \"Authorization: Bearer \$ROX_API_TOKEN\" \"$ROX_ENDPOINT/v1/metadata\")"
     exit 1
 fi
 
 # Validate JSON response
 if ! echo "$CLUSTERS_RESPONSE" | jq . >/dev/null 2>&1; then
-    error "Invalid JSON response from clusters API"
+    error "Invalid JSON response from clusters API (HTTP $CLUSTERS_HTTP_CODE)"
+    log "Response: ${CLUSTERS_RESPONSE:0:200}"
+    exit 1
+fi
+
+# Check HTTP status code
+if [ "$CLUSTERS_HTTP_CODE" -lt 200 ] || [ "$CLUSTERS_HTTP_CODE" -ge 300 ]; then
+    error "Clusters API returned HTTP $CLUSTERS_HTTP_CODE"
     log "Response: ${CLUSTERS_RESPONSE:0:200}"
     exit 1
 fi
@@ -188,12 +227,15 @@ if [ -n "$cluster_ids" ]; then
         log "Triggering compliance run for cluster $cluster"
         
         set +e
-        runs=$(roxcurl "$ROX_ENDPOINT/v1/compliancemanagement/runs" -X POST -d '{ "selection": { "cluster_id": "'"$cluster"'", "standard_id": "*" } }' 2>&1)
+        RUNS_FULL_RESPONSE=$(roxcurl "$ROX_ENDPOINT/v1/compliancemanagement/runs" -X POST -d '{ "selection": { "cluster_id": "'"$cluster"'", "standard_id": "*" } }' 2>&1)
         RUNS_EXIT_CODE=$?
         set -e
         
+        RUNS_HTTP_CODE=$(extract_http_code "$RUNS_FULL_RESPONSE")
+        runs=$(extract_body "$RUNS_FULL_RESPONSE")
+        
         if [ $RUNS_EXIT_CODE -ne 0 ]; then
-            warning "Failed to trigger compliance run for cluster $cluster (exit code: $RUNS_EXIT_CODE)"
+            warning "Failed to trigger compliance run for cluster $cluster (exit code: $RUNS_EXIT_CODE, HTTP $RUNS_HTTP_CODE)"
             if [ -n "$runs" ]; then
                 log "Error response: ${runs:0:200}"
             fi
@@ -201,13 +243,27 @@ if [ -n "$cluster_ids" ]; then
         fi
         
         if [ -z "$runs" ]; then
-            warning "Empty response when triggering compliance run for cluster $cluster"
+            warning "Empty response when triggering compliance run for cluster $cluster (HTTP $RUNS_HTTP_CODE)"
+            continue
+        fi
+        
+        # Check if response is HTML
+        if echo "$runs" | grep -qiE "<html|<!DOCTYPE"; then
+            warning "Received HTML instead of JSON when triggering compliance run for cluster $cluster (HTTP $RUNS_HTTP_CODE)"
+            log "Response preview: ${runs:0:200}"
             continue
         fi
         
         # Validate JSON response
         if ! echo "$runs" | jq . >/dev/null 2>&1; then
-            warning "Invalid JSON response when triggering compliance run for cluster $cluster"
+            warning "Invalid JSON response when triggering compliance run for cluster $cluster (HTTP $RUNS_HTTP_CODE)"
+            log "Response: ${runs:0:200}"
+            continue
+        fi
+        
+        # Check HTTP status code
+        if [ "$RUNS_HTTP_CODE" -lt 200 ] || [ "$RUNS_HTTP_CODE" -ge 300 ]; then
+            warning "Compliance run trigger returned HTTP $RUNS_HTTP_CODE for cluster $cluster"
             log "Response: ${runs:0:200}"
             continue
         fi
@@ -228,7 +284,9 @@ if [ -n "$cluster_ids" ]; then
             size="$num_runs"
             for run_id in $run_ids; do
                 set +e
-                run_status=$(roxcurl "$ROX_ENDPOINT/v1/compliancemanagement/runstatuses" --data-urlencode "run_ids=$run_id" 2>&1 | jq -r '.runs[0] // empty' 2>/dev/null)
+                RUN_STATUS_FULL_RESPONSE=$(roxcurl "$ROX_ENDPOINT/v1/compliancemanagement/runstatuses" --data-urlencode "run_ids=$run_id" 2>&1)
+                RUN_STATUS_BODY=$(extract_body "$RUN_STATUS_FULL_RESPONSE")
+                run_status=$(echo "$RUN_STATUS_BODY" | jq -r '.runs[0] // empty' 2>/dev/null)
                 set -e
                 
                 if [ -z "$run_status" ] || [ "$run_status" = "null" ]; then
