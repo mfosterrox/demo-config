@@ -107,7 +107,10 @@ main() {
     trigger_compliance_scan
     configure_rhacs_tls
     
+    log "========================================================="
     success "Demo Config setup completed successfully!"
+    log "========================================================="
+    log ""
     log "All scripts have been executed in order:"
     log "  1. RHACS secured cluster setup"
     log "  2. Red Hat Compliance Operator installation"
