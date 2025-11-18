@@ -68,40 +68,43 @@ log "Checking for cert-manager..."
 CERT_MANAGER_AVAILABLE=false
 CLUSTER_ISSUER=""
 
-# Check if cert-manager API is available by checking for ClusterIssuer CRD
-if oc api-resources | grep -q clusterissuer; then
+# Try to get ClusterIssuers directly - this is the most reliable check
+CLUSTER_ISSUERS=$(oc get clusterissuer -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+
+if [ -n "$CLUSTER_ISSUERS" ]; then
     CERT_MANAGER_AVAILABLE=true
-    log "✓ cert-manager API is available"
+    log "✓ cert-manager is available (found ClusterIssuers)"
     
-    # Check for available ClusterIssuers
-    CLUSTER_ISSUERS=$(oc get clusterissuer -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
-    if [ -n "$CLUSTER_ISSUERS" ]; then
-        # Prefer zerossl-production-ec2 if available, otherwise use first available
-        if echo "$CLUSTER_ISSUERS" | grep -q "zerossl-production-ec2"; then
-            CLUSTER_ISSUER="zerossl-production-ec2"
-        else
-            CLUSTER_ISSUER=$(echo "$CLUSTER_ISSUERS" | awk '{print $1}')
-        fi
-        log "✓ Found ClusterIssuer: $CLUSTER_ISSUER"
-        
-        # Verify ClusterIssuer is ready
-        CLUSTER_ISSUER_STATUS=$(oc get clusterissuer "$CLUSTER_ISSUER" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
-        if [ "$CLUSTER_ISSUER_STATUS" = "True" ]; then
-            log "✓ ClusterIssuer '$CLUSTER_ISSUER' is ready"
-        else
-            warning "ClusterIssuer '$CLUSTER_ISSUER' may not be ready (status: ${CLUSTER_ISSUER_STATUS:-unknown})"
-            warning "Continuing anyway - certificate issuance may fail if issuer is not ready"
-        fi
+    # Prefer zerossl-production-ec2 if available, otherwise use first available
+    if echo "$CLUSTER_ISSUERS" | grep -q "zerossl-production-ec2"; then
+        CLUSTER_ISSUER="zerossl-production-ec2"
     else
-        error "cert-manager is installed but no ClusterIssuer found"
-        error "Please configure a ClusterIssuer (e.g., Let's Encrypt, ZeroSSL) before running this script"
-        exit 1
+        CLUSTER_ISSUER=$(echo "$CLUSTER_ISSUERS" | awk '{print $1}')
+    fi
+    log "✓ Found ClusterIssuer: $CLUSTER_ISSUER"
+    
+    # Verify ClusterIssuer is ready
+    CLUSTER_ISSUER_STATUS=$(oc get clusterissuer "$CLUSTER_ISSUER" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+    if [ "$CLUSTER_ISSUER_STATUS" = "True" ]; then
+        log "✓ ClusterIssuer '$CLUSTER_ISSUER' is ready"
+    else
+        warning "ClusterIssuer '$CLUSTER_ISSUER' may not be ready (status: ${CLUSTER_ISSUER_STATUS:-unknown})"
+        warning "Continuing anyway - certificate issuance may fail if issuer is not ready"
     fi
 else
-    error "cert-manager is not installed or API is not available"
-    error "This script requires cert-manager to automatically obtain trusted certificates"
-    error "Please install cert-manager and configure a ClusterIssuer"
-    exit 1
+    # Fallback: Check if cert-manager API resource exists
+    if oc api-resources 2>/dev/null | grep -qiE "clusterissuer|cert-manager"; then
+        CERT_MANAGER_AVAILABLE=true
+        warning "cert-manager API is available but no ClusterIssuer found"
+        error "Please configure a ClusterIssuer (e.g., Let's Encrypt, ZeroSSL) before running this script"
+        error "You can create a ClusterIssuer using: oc create -f <clusterissuer-yaml>"
+        exit 1
+    else
+        error "cert-manager is not installed or API is not available"
+        error "This script requires cert-manager to automatically obtain trusted certificates"
+        error "Please install cert-manager and configure a ClusterIssuer"
+        exit 1
+    fi
 fi
 
 # Get route hostname
