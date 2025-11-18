@@ -68,9 +68,10 @@ log "Checking for cert-manager..."
 CERT_MANAGER_AVAILABLE=false
 CLUSTER_ISSUER=""
 
-if oc get namespace cert-manager &>/dev/null && oc get pods -n cert-manager &>/dev/null | grep -q Running; then
+# Check if cert-manager API is available by checking for ClusterIssuer CRD
+if oc api-resources | grep -q clusterissuer; then
     CERT_MANAGER_AVAILABLE=true
-    log "✓ cert-manager is installed and running"
+    log "✓ cert-manager API is available"
     
     # Check for available ClusterIssuers
     CLUSTER_ISSUERS=$(oc get clusterissuer -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
@@ -82,13 +83,22 @@ if oc get namespace cert-manager &>/dev/null && oc get pods -n cert-manager &>/d
             CLUSTER_ISSUER=$(echo "$CLUSTER_ISSUERS" | awk '{print $1}')
         fi
         log "✓ Found ClusterIssuer: $CLUSTER_ISSUER"
+        
+        # Verify ClusterIssuer is ready
+        CLUSTER_ISSUER_STATUS=$(oc get clusterissuer "$CLUSTER_ISSUER" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+        if [ "$CLUSTER_ISSUER_STATUS" = "True" ]; then
+            log "✓ ClusterIssuer '$CLUSTER_ISSUER' is ready"
+        else
+            warning "ClusterIssuer '$CLUSTER_ISSUER' may not be ready (status: ${CLUSTER_ISSUER_STATUS:-unknown})"
+            warning "Continuing anyway - certificate issuance may fail if issuer is not ready"
+        fi
     else
         error "cert-manager is installed but no ClusterIssuer found"
-        error "Please configure a ClusterIssuer (e.g., Let's Encrypt) before running this script"
+        error "Please configure a ClusterIssuer (e.g., Let's Encrypt, ZeroSSL) before running this script"
         exit 1
     fi
 else
-    error "cert-manager is not installed or not running"
+    error "cert-manager is not installed or API is not available"
     error "This script requires cert-manager to automatically obtain trusted certificates"
     error "Please install cert-manager and configure a ClusterIssuer"
     exit 1
