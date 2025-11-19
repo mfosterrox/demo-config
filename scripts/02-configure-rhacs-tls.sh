@@ -198,32 +198,38 @@ echo "$KEY_DATA" > "$TEMP_KEY"
 
 log "✓ Certificate and key extracted"
 
-# Delete existing central-tls secret if it exists
+# Patch existing central-tls secret or create if it doesn't exist
 if oc get secret "central-tls" -n "tssc-acs" &>/dev/null; then
-    log "Deleting existing 'central-tls' secret..."
-    oc delete secret "central-tls" -n "tssc-acs" 2>/dev/null || true
-    log "✓ Existing secret deleted"
+    log "Patching existing 'central-tls' secret with new certificate from cert-manager..."
+    oc -n "tssc-acs" create secret tls "central-tls" \
+        --cert="$TEMP_CERT" \
+        --key="$TEMP_KEY" \
+        --dry-run=client -o yaml | oc apply -f -
+    
+    if [ $? -ne 0 ]; then
+        error "Failed to patch central-tls secret"
+        rm -f "$TEMP_CERT" "$TEMP_KEY"
+        exit 1
+    fi
+    log "✓ Secret 'central-tls' patched successfully"
+else
+    log "Creating 'central-tls' secret with certificate from cert-manager..."
+    oc -n "tssc-acs" create secret tls "central-tls" \
+        --cert="$TEMP_CERT" \
+        --key="$TEMP_KEY"
+    
+    if [ $? -ne 0 ]; then
+        error "Failed to create central-tls secret"
+        rm -f "$TEMP_CERT" "$TEMP_KEY"
+        exit 1
+    fi
+    log "✓ Secret 'central-tls' created successfully"
 fi
-
-# Create central-tls secret with certificate and key
-log "Creating 'central-tls' secret with certificate from cert-manager..."
-oc -n "tssc-acs" create secret tls "central-tls" \
-    --cert="$TEMP_CERT" \
-    --key="$TEMP_KEY"
-
-if [ $? -ne 0 ]; then
-    error "Failed to create central-tls secret"
-    rm -f "$TEMP_CERT" "$TEMP_KEY"
-    exit 1
-fi
-
-log "✓ Secret 'central-tls' created successfully"
 
 # Clean up temp files
 rm -f "$TEMP_CERT" "$TEMP_KEY"
 
 # Configure Central CR to use the central-tls secret
-log ""
 log "Configuring Central CR to use 'central-tls' secret..."
 log "Patching spec.central.defaultTLSSecret..."
 
@@ -261,7 +267,6 @@ fi
 log "✓ Central CR configured with defaultTLSSecret: central-tls"
 
 # Restart Central to pick up the new certificate
-log ""
 log "Restarting Central to apply certificate changes..."
 
 OLD_POD=$(oc get pod -n "tssc-acs" -l app=central -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
