@@ -271,10 +271,9 @@ configure_operator_tls_custom() {
     log "  2. Configure Central CR with spec.central.defaultTLSSecret"
     log "  3. Restart Central container"
     
-    # Check if secret already exists (for update scenario)
+    # Always delete existing secret to ensure clean rotation
     if oc get secret "$SECRET_NAME" -n "$NAMESPACE" &>/dev/null; then
-        log "Existing secret '$SECRET_NAME' found - will delete and recreate for update"
-        log "Deleting existing secret..."
+        log "Deleting existing secret '$SECRET_NAME' for certificate rotation..."
         oc delete secret "$SECRET_NAME" -n "$NAMESPACE" || {
             error "Failed to delete existing secret"
             return 1
@@ -343,18 +342,62 @@ configure_operator_tls_custom() {
         return 1
     fi
     
-    # Trigger restart by annotating the deployment
-    oc annotate deployment "$CENTRAL_DEPLOYMENT" -n "$NAMESPACE" \
-        "tls-updated-$(date +%s)=true" \
-        --overwrite
+    # Get current pod name before restart
+    OLD_POD=$(oc get pod -n "$NAMESPACE" -l app=central -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+    
+    # Try rollout restart first (most reliable for Operator-managed deployments)
+    if oc rollout restart deployment/"$CENTRAL_DEPLOYMENT" -n "$NAMESPACE" 2>/dev/null; then
+        log "Triggered deployment rollout restart..."
+    else
+        # Fallback: Delete the pod directly (Operator will recreate it)
+        if [ -n "$OLD_POD" ]; then
+            log "Deleting Central pod to trigger restart..."
+            oc delete pod "$OLD_POD" -n "$NAMESPACE" 2>/dev/null || {
+                warning "Could not delete pod, trying annotation method..."
+                oc annotate deployment "$CENTRAL_DEPLOYMENT" -n "$NAMESPACE" \
+                    "tls-updated-$(date +%s)=true" \
+                    --overwrite 2>/dev/null || true
+            }
+        else
+            # Last resort: annotate deployment
+            oc annotate deployment "$CENTRAL_DEPLOYMENT" -n "$NAMESPACE" \
+                "tls-updated-$(date +%s)=true" \
+                --overwrite 2>/dev/null || true
+        fi
+    fi
     
     log "Waiting for Central to restart..."
-    if oc wait --for=condition=Available deployment/"$CENTRAL_DEPLOYMENT" -n "$NAMESPACE" --timeout=600s 2>/dev/null; then
-        log "✓ Central restarted successfully"
-    else
-        warning "Central restart did not complete within timeout, but continuing..."
-        warning "Check deployment status: oc get deployment $CENTRAL_DEPLOYMENT -n $NAMESPACE"
-    fi
+    sleep 5  # Give it a moment to start restarting
+    
+    # Wait for new pod to be ready
+    for i in {1..120}; do
+        NEW_POD=$(oc get pod -n "$NAMESPACE" -l app=central -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+        POD_STATUS=$(oc get pod -n "$NAMESPACE" -l app=central -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
+        POD_READY=$(oc get pod -n "$NAMESPACE" -l app=central -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+        
+        # Check if pod restarted (new pod name or pod is restarting)
+        if [ -n "$NEW_POD" ] && [ "$NEW_POD" != "$OLD_POD" ]; then
+            if [ "$POD_READY" = "True" ]; then
+                log "✓ Central restarted successfully (new pod: $NEW_POD)"
+                break
+            fi
+        elif [ "$POD_STATUS" = "Running" ] && [ "$POD_READY" = "True" ]; then
+            log "✓ Central is running and ready"
+            break
+        fi
+        
+        if [ $((i % 12)) -eq 0 ]; then
+            log "Still waiting for Central restart... ($((i * 5))s elapsed, status: $POD_STATUS)"
+        fi
+        
+        sleep 5
+        
+        if [ $i -eq 120 ]; then
+            warning "Central restart did not complete within timeout"
+            warning "Current pod status: $POD_STATUS, Ready: $POD_READY"
+            warning "You may need to manually restart Central: oc delete pod -n $NAMESPACE -l app=central"
+        fi
+    done
 }
 
 # Main configuration logic - Use cert-manager to obtain certificate
@@ -365,36 +408,22 @@ log "ClusterIssuer: $CLUSTER_ISSUER"
 # Create Certificate resource
 CERT_NAME="rhacs-central-tls-cert-manager"
 CERT_SECRET_NAME="rhacs-central-tls-cert-manager"
-    
-    # Check if certificate already exists
-    if oc get certificate "$CERT_NAME" -n "$NAMESPACE" &>/dev/null; then
-        log "Certificate resource already exists, checking status..."
-        CERT_STATUS=$(oc get certificate "$CERT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
-        if [ "$CERT_STATUS" = "True" ]; then
-            log "✓ Certificate is ready"
-        else
-            log "Certificate exists but not ready yet, waiting..."
-        # Wait for certificate to be ready (max 10 minutes)
-        for i in {1..120}; do
-                sleep 5
-                CERT_STATUS=$(oc get certificate "$CERT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
-                if [ "$CERT_STATUS" = "True" ]; then
-                    log "✓ Certificate is now ready"
-                    break
-                fi
-            if [ $((i % 12)) -eq 0 ]; then
-                log "Still waiting for certificate... ($((i * 5))s elapsed)"
-            fi
-            if [ $i -eq 120 ]; then
-                error "Certificate did not become ready within 10 minutes"
-                error "Check certificate status: oc get certificate $CERT_NAME -n $NAMESPACE"
-                exit 1
-                fi
-            done
-        fi
-    else
-        log "Creating Certificate resource..."
-        cat <<EOF | oc apply -f -
+
+# Always delete existing Certificate resource and secret to ensure clean rotation
+if oc get certificate "$CERT_NAME" -n "$NAMESPACE" &>/dev/null; then
+    log "Deleting existing Certificate resource '$CERT_NAME' for certificate rotation..."
+    oc delete certificate "$CERT_NAME" -n "$NAMESPACE" 2>/dev/null || true
+    log "✓ Existing Certificate resource deleted"
+fi
+
+if oc get secret "$CERT_SECRET_NAME" -n "$NAMESPACE" &>/dev/null; then
+    log "Deleting existing cert-manager secret '$CERT_SECRET_NAME' for certificate rotation..."
+    oc delete secret "$CERT_SECRET_NAME" -n "$NAMESPACE" 2>/dev/null || true
+    log "✓ Existing cert-manager secret deleted"
+fi
+
+log "Creating Certificate resource..."
+cat <<EOF | oc apply -f -
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -408,33 +437,32 @@ spec:
   dnsNames:
   - $ROUTE_HOST
 EOF
-    
-    if [ $? -ne 0 ]; then
-        error "Failed to create Certificate resource"
+
+if [ $? -ne 0 ]; then
+    error "Failed to create Certificate resource"
+    exit 1
+fi
+
+log "✓ Certificate resource created"
+log "Waiting for certificate to be issued (this may take a few minutes)..."
+
+# Wait for certificate to be ready (max 10 minutes)
+for i in {1..120}; do
+    sleep 5
+    CERT_STATUS=$(oc get certificate "$CERT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+    if [ "$CERT_STATUS" = "True" ]; then
+        log "✓ Certificate issued successfully"
+        break
+    fi
+    if [ $((i % 12)) -eq 0 ]; then
+        log "Still waiting for certificate... ($((i * 5))s elapsed)"
+    fi
+    if [ $i -eq 120 ]; then
+        error "Certificate did not become ready within 10 minutes"
+        error "Check certificate status: oc get certificate $CERT_NAME -n $NAMESPACE"
         exit 1
     fi
-    
-            log "✓ Certificate resource created"
-            log "Waiting for certificate to be issued (this may take a few minutes)..."
-            
-            # Wait for certificate to be ready (max 10 minutes)
-            for i in {1..120}; do
-                sleep 5
-                CERT_STATUS=$(oc get certificate "$CERT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
-                if [ "$CERT_STATUS" = "True" ]; then
-                    log "✓ Certificate issued successfully"
-                    break
-                fi
-                if [ $((i % 12)) -eq 0 ]; then
-                    log "Still waiting for certificate... ($((i * 5))s elapsed)"
-                fi
-                if [ $i -eq 120 ]; then
-            error "Certificate did not become ready within 10 minutes"
-            error "Check certificate status: oc get certificate $CERT_NAME -n $NAMESPACE"
-            exit 1
-        fi
-    done
-fi
+done
 
 # Wait for secret to be created
     log "Waiting for certificate secret to be created..."
