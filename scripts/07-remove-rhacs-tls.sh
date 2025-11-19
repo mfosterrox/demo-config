@@ -87,16 +87,17 @@ fi
 
 log ""
 log "========================================================="
-log "Remove TLS Certificate Configuration"
+log "Remove All TLS Certificate Configurations"
 log "========================================================="
-log "This will:"
+log "This will remove ALL custom TLS certificate configurations:"
 log "  1. Remove defaultTLSSecret from Central CR"
-log "  2. Delete TLS secret: $SECRET_NAME (if exists)"
-log "  3. Delete cert-manager Certificate resource (if exists)"
-log "  4. Delete cert-manager secret (if exists)"
+log "  2. Delete ALL TLS secrets (central-default-tls-cert and variants)"
+log "  3. Delete ALL cert-manager Certificate resources"
+log "  4. Delete ALL cert-manager secrets"
 log "  5. Restart Central to apply changes"
 log ""
-log "After removal, Central will use its default self-signed certificate."
+log "After removal, Central will use its default self-signed certificate"
+log "with no custom certificate configuration."
 log "========================================================="
 log ""
 
@@ -128,43 +129,111 @@ else
     log "✓ Central CR updated - defaultTLSSecret removed"
 fi
 
-# Delete TLS secret
+# Delete ALL TLS secrets (including any variants)
 log ""
-log "Deleting TLS secret '$SECRET_NAME'..."
+log "Deleting all TLS secrets..."
+TLS_SECRETS_FOUND=0
+
+# Delete the standard secret
 if oc get secret "$SECRET_NAME" -n "$NAMESPACE" &>/dev/null; then
     oc delete secret "$SECRET_NAME" -n "$NAMESPACE" 2>/dev/null && {
         log "✓ TLS secret '$SECRET_NAME' deleted"
+        TLS_SECRETS_FOUND=$((TLS_SECRETS_FOUND + 1))
     } || {
         warning "Failed to delete secret '$SECRET_NAME'"
     }
-else
-    log "TLS secret '$SECRET_NAME' not found (already removed or never created)"
 fi
 
-# Delete cert-manager Certificate resource
+# Find and delete any other TLS secrets that might exist
+ALL_SECRETS=$(oc get secrets -n "$NAMESPACE" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+for secret in $ALL_SECRETS; do
+    # Look for secrets that might be TLS-related
+    if echo "$secret" | grep -qiE "tls|cert|central.*cert"; then
+        if [ "$secret" != "$SECRET_NAME" ] && [ "$secret" != "$CERT_SECRET_NAME" ]; then
+            log "Found additional TLS-related secret: $secret"
+            oc delete secret "$secret" -n "$NAMESPACE" 2>/dev/null && {
+                log "✓ Deleted secret '$secret'"
+                TLS_SECRETS_FOUND=$((TLS_SECRETS_FOUND + 1))
+            } || {
+                warning "Failed to delete secret '$secret'"
+            }
+        fi
+    fi
+done
+
+if [ $TLS_SECRETS_FOUND -eq 0 ]; then
+    log "No TLS secrets found to delete"
+fi
+
+# Delete ALL cert-manager Certificate resources
 log ""
-log "Deleting cert-manager Certificate resource '$CERT_NAME'..."
+log "Deleting all cert-manager Certificate resources..."
+CERT_RESOURCES_FOUND=0
+
+# Delete the standard certificate resource
 if oc get certificate "$CERT_NAME" -n "$NAMESPACE" &>/dev/null; then
     oc delete certificate "$CERT_NAME" -n "$NAMESPACE" 2>/dev/null && {
         log "✓ Certificate resource '$CERT_NAME' deleted"
+        CERT_RESOURCES_FOUND=$((CERT_RESOURCES_FOUND + 1))
     } || {
         warning "Failed to delete Certificate resource '$CERT_NAME'"
     }
-else
-    log "Certificate resource '$CERT_NAME' not found (already removed or never created)"
 fi
 
-# Delete cert-manager secret
+# Find and delete any other Certificate resources
+ALL_CERTIFICATES=$(oc get certificate -n "$NAMESPACE" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+for cert in $ALL_CERTIFICATES; do
+    if [ "$cert" != "$CERT_NAME" ]; then
+        # Check if it's related to Central/RHACS
+        CERT_DNS=$(oc get certificate "$cert" -n "$NAMESPACE" -o jsonpath='{.spec.dnsNames[*]}' 2>/dev/null || echo "")
+        if echo "$CERT_DNS" | grep -qiE "central|rhacs|stackrox"; then
+            log "Found additional Central-related Certificate: $cert"
+            oc delete certificate "$cert" -n "$NAMESPACE" 2>/dev/null && {
+                log "✓ Deleted Certificate resource '$cert'"
+                CERT_RESOURCES_FOUND=$((CERT_RESOURCES_FOUND + 1))
+            } || {
+                warning "Failed to delete Certificate resource '$cert'"
+            }
+        fi
+    fi
+done
+
+if [ $CERT_RESOURCES_FOUND -eq 0 ]; then
+    log "No Certificate resources found to delete"
+fi
+
+# Delete ALL cert-manager secrets
 log ""
-log "Deleting cert-manager secret '$CERT_SECRET_NAME'..."
+log "Deleting all cert-manager secrets..."
+CERT_SECRETS_FOUND=0
+
+# Delete the standard cert-manager secret
 if oc get secret "$CERT_SECRET_NAME" -n "$NAMESPACE" &>/dev/null; then
     oc delete secret "$CERT_SECRET_NAME" -n "$NAMESPACE" 2>/dev/null && {
         log "✓ Cert-manager secret '$CERT_SECRET_NAME' deleted"
+        CERT_SECRETS_FOUND=$((CERT_SECRETS_FOUND + 1))
     } || {
         warning "Failed to delete cert-manager secret '$CERT_SECRET_NAME'"
     }
-else
-    log "Cert-manager secret '$CERT_SECRET_NAME' not found (already removed or never created)"
+fi
+
+# Find and delete any other cert-manager secrets
+for secret in $ALL_SECRETS; do
+    if echo "$secret" | grep -qiE "cert-manager|rhacs.*tls.*cert-manager"; then
+        if [ "$secret" != "$CERT_SECRET_NAME" ]; then
+            log "Found additional cert-manager secret: $secret"
+            oc delete secret "$secret" -n "$NAMESPACE" 2>/dev/null && {
+                log "✓ Deleted cert-manager secret '$secret'"
+                CERT_SECRETS_FOUND=$((CERT_SECRETS_FOUND + 1))
+            } || {
+                warning "Failed to delete cert-manager secret '$secret'"
+            }
+        fi
+    fi
+done
+
+if [ $CERT_SECRETS_FOUND -eq 0 ]; then
+    log "No cert-manager secrets found to delete"
 fi
 
 # Restart Central to apply changes
@@ -257,16 +326,20 @@ if [ -n "$ROUTE_HOST" ]; then
     log "HTTPS URL: https://$ROUTE_HOST"
 fi
 log ""
-log "The custom TLS certificate configuration has been removed:"
+log "All TLS certificate configurations have been removed:"
 log "  ✓ defaultTLSSecret removed from Central CR"
-log "  ✓ TLS secrets deleted"
-log "  ✓ Certificate resources deleted"
+log "  ✓ All TLS secrets deleted"
+log "  ✓ All Certificate resources deleted"
+log "  ✓ All cert-manager secrets deleted"
 log "  ✓ Central restarted"
 log ""
-log "Central is now using its default self-signed certificate."
-log "You may see NET::ERR_CERT_AUTHORITY_INVALID in your browser."
+log "Central now has NO custom certificate configuration."
+log "Central is using its default self-signed StackRox certificate."
 log ""
-log "To configure a trusted certificate, run:"
+warning "⚠️  You will see NET::ERR_CERT_AUTHORITY_INVALID in your browser"
+warning "   because Central is using the default self-signed certificate."
+log ""
+log "To configure a trusted certificate from cert-manager, run:"
 log "   ./scripts/06-configure-rhacs-tls.sh"
 log "========================================================="
 

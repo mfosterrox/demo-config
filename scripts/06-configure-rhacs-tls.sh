@@ -333,8 +333,33 @@ configure_operator_tls_custom() {
     
     log "✓ Central CR configured with defaultTLSSecret"
     
-    # Wait a moment for Operator to reconcile the CR change
+    # Wait for Operator to reconcile the CR change
     log "Waiting for Operator to reconcile Central CR changes..."
+    log "This may take up to 2 minutes for the Operator to process..."
+    
+    # Wait and verify Operator has processed the change
+    for i in {1..24}; do
+        sleep 5
+        # Check if Central deployment has been updated by Operator (check for new generation or annotations)
+        CR_GENERATION=$(oc get central "$CENTRAL_CR_NAME" -n "$NAMESPACE" -o jsonpath='{.metadata.generation}' 2>/dev/null || echo "")
+        CR_OBSERVED_GEN=$(oc get central "$CENTRAL_CR_NAME" -n "$NAMESPACE" -o jsonpath='{.status.observedGeneration}' 2>/dev/null || echo "")
+        
+        if [ -n "$CR_GENERATION" ] && [ -n "$CR_OBSERVED_GEN" ] && [ "$CR_GENERATION" = "$CR_OBSERVED_GEN" ]; then
+            log "✓ Operator has reconciled Central CR changes"
+            break
+        fi
+        
+        if [ $((i % 6)) -eq 0 ]; then
+            log "Still waiting for Operator reconciliation... ($((i * 5))s elapsed)"
+        fi
+        
+        if [ $i -eq 24 ]; then
+            warning "Operator reconciliation timeout - continuing anyway"
+            warning "Central may need more time to pick up the certificate"
+        fi
+    done
+    
+    # Additional wait to ensure Operator has updated the deployment
     sleep 10
     
     # Restart Central container
@@ -424,7 +449,29 @@ configure_operator_tls_custom() {
     
     # Wait additional time for Central to fully initialize with new certificate
     log "Waiting for Central to initialize with new certificate..."
-    sleep 15
+    log "This ensures the certificate is loaded and active..."
+    
+    # Wait longer and verify the secret is mounted
+    for i in {1..12}; do
+        sleep 5
+        # Check if the secret is referenced in the pod
+        POD_NAME=$(oc get pod -n "$NAMESPACE" -l app=central -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+        if [ -n "$POD_NAME" ]; then
+            # Check if secret is mounted in the pod
+            MOUNTED_SECRETS=$(oc get pod "$POD_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.volumes[*].secret.secretName}' 2>/dev/null || echo "")
+            if echo "$MOUNTED_SECRETS" | grep -q "$SECRET_NAME"; then
+                log "✓ Certificate secret is mounted in Central pod"
+                break
+            fi
+        fi
+        
+        if [ $i -eq 12 ]; then
+            warning "Could not verify secret mount - certificate may still be loading"
+        fi
+    done
+    
+    # Final wait for Central to fully start serving the certificate
+    sleep 10
 }
 
 # Main configuration logic - Use cert-manager to obtain certificate
