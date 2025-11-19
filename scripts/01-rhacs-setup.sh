@@ -319,6 +319,9 @@ fi
 export ROX_API_TOKEN
 export ROX_ENDPOINT
 
+echo $ROX_API_TOKEN
+echo $ROX_ENDPOINT
+
 # Download roxctl if not available
 if ! command -v roxctl &>/dev/null; then
     log "roxctl not found, installing to system location..."

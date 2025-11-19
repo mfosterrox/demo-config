@@ -303,6 +303,90 @@ else
     warning "Could not find Central pod to restart"
 fi
 
+# Regenerate API token after certificate change and restart
+log ""
+log "Regenerating API token after certificate change..."
+
+# Wait a bit more for Central to be fully ready
+log "Waiting for Central API to be ready..."
+for i in {1..30}; do
+    if curl -k -s --connect-timeout 5 --max-time 10 "https://$ROUTE_HOST" >/dev/null 2>&1; then
+        log "✓ Central API is responding"
+        break
+    fi
+    sleep 2
+    if [ $i -eq 30 ]; then
+        warning "Central API did not become ready within timeout, but continuing..."
+    fi
+done
+
+# Get admin password from secret
+ADMIN_PASSWORD=""
+ADMIN_PASSWORD_B64=$(oc get secret central-htpasswd -n "tssc-acs" -o jsonpath='{.data.password}' 2>/dev/null || true)
+if [ -n "$ADMIN_PASSWORD_B64" ]; then
+    ADMIN_PASSWORD=$(echo "$ADMIN_PASSWORD_B64" | base64 -d 2>/dev/null || true)
+fi
+
+# Get ROX_ENDPOINT from route
+ROX_ENDPOINT_HOST=$(oc get route central -n "tssc-acs" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+if [ -z "$ROX_ENDPOINT_HOST" ]; then
+    warning "Could not get Central route host, skipping token regeneration"
+else
+    ROX_ENDPOINT="https://$ROX_ENDPOINT_HOST"
+    
+    if [ -n "$ADMIN_PASSWORD" ]; then
+        log "Generating new API token..."
+        TOKEN_NAME="demo-config-token-$(date +%s)"
+        TOKEN_ROLE="Admin"
+        
+        set +e
+        TOKEN_RESPONSE=$(curl -k -X POST \
+          -u "admin:$ADMIN_PASSWORD" \
+          -H "Content-Type: application/json" \
+          --data "{\"name\":\"$TOKEN_NAME\",\"role\":\"$TOKEN_ROLE\"}" \
+          "$ROX_ENDPOINT/v1/apitokens/generate" 2>&1)
+        TOKEN_EXIT_CODE=$?
+        set -e
+        
+        if [ $TOKEN_EXIT_CODE -eq 0 ] && [ -n "$TOKEN_RESPONSE" ]; then
+            # Extract token from JSON response
+            NEW_ROX_API_TOKEN=$(echo "$TOKEN_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['token'])" 2>/dev/null || echo "")
+            
+            if [ -n "$NEW_ROX_API_TOKEN" ] && [ "$NEW_ROX_API_TOKEN" != "null" ] && [ "$NEW_ROX_API_TOKEN" != "" ]; then
+                log "✓ API token regenerated successfully"
+                
+                # Update ~/.bashrc with new token
+                if [ -f ~/.bashrc ]; then
+                    # Remove existing ROX_API_TOKEN entry if it exists
+                    sed -i '' '/^export ROX_API_TOKEN=/d' ~/.bashrc 2>/dev/null || sed -i '/^export ROX_API_TOKEN=/d' ~/.bashrc 2>/dev/null || true
+                    
+                    # Add new token entry
+                    echo "export ROX_API_TOKEN=\"$NEW_ROX_API_TOKEN\"" >> ~/.bashrc
+                    log "✓ ROX_API_TOKEN updated in ~/.bashrc"
+                    
+                    # Also update ROX_ENDPOINT if needed
+                    sed -i '' '/^export ROX_ENDPOINT=/d' ~/.bashrc 2>/dev/null || sed -i '/^export ROX_ENDPOINT=/d' ~/.bashrc 2>/dev/null || true
+                    echo "export ROX_ENDPOINT=\"$ROX_ENDPOINT\"" >> ~/.bashrc
+                    log "✓ ROX_ENDPOINT updated in ~/.bashrc"
+                else
+                    warning "~/.bashrc not found, cannot update API token"
+                fi
+            else
+                warning "Failed to extract token from API response"
+                log "Response preview: ${TOKEN_RESPONSE:0:200}..."
+            fi
+        else
+            warning "Failed to regenerate API token (exit code: $TOKEN_EXIT_CODE)"
+            if [ -n "$TOKEN_RESPONSE" ]; then
+                log "Response preview: ${TOKEN_RESPONSE:0:200}..."
+            fi
+        fi
+    else
+        warning "Admin password not available, cannot regenerate API token"
+        log "You may need to manually regenerate the API token or source ~/.bashrc"
+    fi
+fi
+
 # Note: Certificate resource and secret are kept for auto-renewal by cert-manager
 # If you want to clean them up, uncomment the following lines:
 # log "Cleaning up Certificate resource and secret..."
@@ -338,6 +422,10 @@ log "Central has been restarted to apply the changes."
 log ""
 log "Note: It may take 1-2 minutes for Central to fully pick up the new certificate."
 log "If you still see the StackRox certificate, wait a bit longer and refresh your browser."
+log ""
+log "Note: API token has been regenerated and updated in ~/.bashrc."
+log "If running scripts manually, source ~/.bashrc to use the new token:"
+log "  source ~/.bashrc"
 log "========================================================="
 
 if [ "$SCRIPT_FAILED" = true ]; then
