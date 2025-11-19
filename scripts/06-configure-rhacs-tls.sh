@@ -116,6 +116,108 @@ fi
 
 log "Route hostname: $ROUTE_HOST"
 
+# Check if a valid certificate is already configured
+log "Checking if valid certificate is already configured..."
+CURRENT_TLS_SECRET=$(oc get central "$CENTRAL_CR_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.central.defaultTLSSecret.name}' 2>/dev/null || echo "")
+CURRENT_TLS_SECRET_ALT=$(oc get central "$CENTRAL_CR_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.central.defaultTLSSecret}' 2>/dev/null || echo "")
+
+# Use whichever format is set
+if [ -n "$CURRENT_TLS_SECRET" ] && [ "$CURRENT_TLS_SECRET" != "null" ]; then
+    TLS_SECRET_TO_CHECK="$CURRENT_TLS_SECRET"
+elif [ -n "$CURRENT_TLS_SECRET_ALT" ] && [ "$CURRENT_TLS_SECRET_ALT" != "null" ]; then
+    TLS_SECRET_TO_CHECK="$CURRENT_TLS_SECRET_ALT"
+else
+    TLS_SECRET_TO_CHECK=""
+fi
+
+if [ -n "$TLS_SECRET_TO_CHECK" ]; then
+    log "Found configured TLS secret: $TLS_SECRET_TO_CHECK"
+    
+    # Check if secret exists
+    if oc get secret "$TLS_SECRET_TO_CHECK" -n "$NAMESPACE" &>/dev/null; then
+        log "✓ TLS secret exists"
+        
+        # Check if secret has required keys
+        SECRET_KEYS=$(oc get secret "$TLS_SECRET_TO_CHECK" -n "$NAMESPACE" -o jsonpath='{.data}' | jq -r 'keys[]' 2>/dev/null || echo "")
+        HAS_CERT=false
+        HAS_KEY=false
+        
+        if echo "$SECRET_KEYS" | grep -qE "tls-cert\.pem|tls\.crt"; then
+            HAS_CERT=true
+        fi
+        if echo "$SECRET_KEYS" | grep -qE "tls-key\.pem|tls\.key"; then
+            HAS_KEY=true
+        fi
+        
+        if [ "$HAS_CERT" = "true" ] && [ "$HAS_KEY" = "true" ]; then
+            log "✓ Secret has required certificate and key"
+            
+            # Try to check certificate validity (if openssl is available)
+            CERT_KEY_NAME=$(echo "$SECRET_KEYS" | grep -E "tls-cert\.pem|tls\.crt" | head -1)
+            CERT_DATA=$(oc get secret "$TLS_SECRET_TO_CHECK" -n "$NAMESPACE" -o jsonpath="{.data.$CERT_KEY_NAME}" 2>/dev/null | base64 -d 2>/dev/null || echo "")
+            
+            if [ -n "$CERT_DATA" ] && command -v openssl &>/dev/null; then
+                # Check certificate expiration
+                CERT_EXPIRY=$(echo "$CERT_DATA" | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2 || echo "")
+                if [ -n "$CERT_EXPIRY" ]; then
+                    # Try Linux date format first, then macOS format
+                    CERT_EXPIRY_EPOCH=$(date -d "$CERT_EXPIRY" +%s 2>/dev/null || date -j -f "%b %d %H:%M:%S %Y %Z" "$CERT_EXPIRY" +%s 2>/dev/null || echo "")
+                    CURRENT_EPOCH=$(date +%s)
+                    
+                    if [ -n "$CERT_EXPIRY_EPOCH" ] && [ "$CERT_EXPIRY_EPOCH" -gt "$CURRENT_EPOCH" ]; then
+                        DAYS_UNTIL_EXPIRY=$(( ($CERT_EXPIRY_EPOCH - $CURRENT_EPOCH) / 86400 ))
+                        log "✓ Certificate is valid and expires in $DAYS_UNTIL_EXPIRY days ($CERT_EXPIRY)"
+                        log ""
+                        log "========================================================="
+                        log "Valid certificate already configured"
+                        log "========================================================="
+                        log "TLS Secret: $TLS_SECRET_TO_CHECK"
+                        log "Certificate expires: $CERT_EXPIRY ($DAYS_UNTIL_EXPIRY days remaining)"
+                        log ""
+                        log "No action needed - certificate is already configured and valid."
+                        log "To force reconfiguration, delete the secret first:"
+                        log "  oc delete secret $TLS_SECRET_TO_CHECK -n $NAMESPACE"
+                        log "========================================================="
+                        exit 0
+                    elif [ -n "$CERT_EXPIRY_EPOCH" ]; then
+                        warning "Certificate has expired ($CERT_EXPIRY) - will reconfigure"
+                    else
+                        # If we can't parse the date but certificate exists, check if it's not expired using openssl directly
+                        CERT_NOT_AFTER=$(echo "$CERT_DATA" | openssl x509 -noout -checkend 0 2>/dev/null && echo "valid" || echo "expired")
+                        if [ "$CERT_NOT_AFTER" = "valid" ]; then
+                            log "✓ Certificate is valid (expires: $CERT_EXPIRY)"
+                            log ""
+                            log "========================================================="
+                            log "Valid certificate already configured"
+                            log "========================================================="
+                            log "TLS Secret: $TLS_SECRET_TO_CHECK"
+                            log "Certificate expires: $CERT_EXPIRY"
+                            log ""
+                            log "No action needed - certificate is already configured and valid."
+                            log "To force reconfiguration, delete the secret first:"
+                            log "  oc delete secret $TLS_SECRET_TO_CHECK -n $NAMESPACE"
+                            log "========================================================="
+                            exit 0
+                        else
+                            warning "Certificate has expired ($CERT_EXPIRY) - will reconfigure"
+                        fi
+                    fi
+                else
+                    log "Certificate exists but could not parse expiration - continuing with configuration"
+                fi
+            else
+                log "Certificate exists - continuing with configuration"
+            fi
+        else
+            warning "Secret exists but missing required keys - will reconfigure"
+        fi
+    else
+        warning "Configured secret '$TLS_SECRET_TO_CHECK' not found - will create new certificate"
+    fi
+else
+    log "No TLS certificate configured - proceeding with certificate setup"
+fi
+
 # Internal function to configure TLS using certificate files
 # This is used internally by the cert-manager flow
 configure_operator_tls_custom() {
