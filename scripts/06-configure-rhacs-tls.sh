@@ -75,13 +75,13 @@ if [ -n "$CLUSTER_ISSUERS" ]; then
     CERT_MANAGER_AVAILABLE=true
     log "✓ cert-manager is available (found ClusterIssuers)"
     
-    # Prefer zerossl-production-ec2 if available, otherwise use first available
-    if echo "$CLUSTER_ISSUERS" | grep -q "zerossl-production-ec2"; then
-        CLUSTER_ISSUER="zerossl-production-ec2"
-    else
-        CLUSTER_ISSUER=$(echo "$CLUSTER_ISSUERS" | awk '{print $1}')
-    fi
-    log "✓ Found ClusterIssuer: $CLUSTER_ISSUER"
+        # Prefer zerossl-production-ec2 if available, otherwise use first available
+        if echo "$CLUSTER_ISSUERS" | grep -q "zerossl-production-ec2"; then
+            CLUSTER_ISSUER="zerossl-production-ec2"
+        else
+            CLUSTER_ISSUER=$(echo "$CLUSTER_ISSUERS" | awk '{print $1}')
+        fi
+        log "✓ Found ClusterIssuer: $CLUSTER_ISSUER"
     
     # Verify ClusterIssuer is ready
     CLUSTER_ISSUER_STATUS=$(oc get clusterissuer "$CLUSTER_ISSUER" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
@@ -157,56 +157,87 @@ if [ -n "$TLS_SECRET_TO_CHECK" ]; then
             CERT_DATA=$(oc get secret "$TLS_SECRET_TO_CHECK" -n "$NAMESPACE" -o jsonpath="{.data.$CERT_KEY_NAME}" 2>/dev/null | base64 -d 2>/dev/null || echo "")
             
             if [ -n "$CERT_DATA" ] && command -v openssl &>/dev/null; then
-                # Check certificate expiration
-                CERT_EXPIRY=$(echo "$CERT_DATA" | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2 || echo "")
-                if [ -n "$CERT_EXPIRY" ]; then
-                    # Try Linux date format first, then macOS format
-                    CERT_EXPIRY_EPOCH=$(date -d "$CERT_EXPIRY" +%s 2>/dev/null || date -j -f "%b %d %H:%M:%S %Y %Z" "$CERT_EXPIRY" +%s 2>/dev/null || echo "")
-                    CURRENT_EPOCH=$(date +%s)
-                    
-                    if [ -n "$CERT_EXPIRY_EPOCH" ] && [ "$CERT_EXPIRY_EPOCH" -gt "$CURRENT_EPOCH" ]; then
-                        DAYS_UNTIL_EXPIRY=$(( ($CERT_EXPIRY_EPOCH - $CURRENT_EPOCH) / 86400 ))
-                        log "✓ Certificate is valid and expires in $DAYS_UNTIL_EXPIRY days ($CERT_EXPIRY)"
-                        log ""
-                        log "========================================================="
-                        log "Valid certificate already configured"
-                        log "========================================================="
-                        log "TLS Secret: $TLS_SECRET_TO_CHECK"
-                        log "Certificate expires: $CERT_EXPIRY ($DAYS_UNTIL_EXPIRY days remaining)"
-                        log ""
-                        log "No action needed - certificate is already configured and valid."
-                        log "To force reconfiguration, delete the secret first:"
-                        log "  oc delete secret $TLS_SECRET_TO_CHECK -n $NAMESPACE"
-                        log "========================================================="
-                        exit 0
-                    elif [ -n "$CERT_EXPIRY_EPOCH" ]; then
-                        warning "Certificate has expired ($CERT_EXPIRY) - will reconfigure"
-                    else
-                        # If we can't parse the date but certificate exists, check if it's not expired using openssl directly
-                        CERT_NOT_AFTER=$(echo "$CERT_DATA" | openssl x509 -noout -checkend 0 2>/dev/null && echo "valid" || echo "expired")
-                        if [ "$CERT_NOT_AFTER" = "valid" ]; then
-                            log "✓ Certificate is valid (expires: $CERT_EXPIRY)"
+                # Check certificate issuer to determine if it's from a trusted CA
+                CERT_ISSUER=$(echo "$CERT_DATA" | openssl x509 -noout -issuer 2>/dev/null | sed 's/issuer=//' || echo "")
+                CERT_SUBJECT=$(echo "$CERT_DATA" | openssl x509 -noout -subject 2>/dev/null | sed 's/subject=//' || echo "")
+                
+                # Check if certificate is self-signed (issuer matches subject) or from StackRox internal CA
+                IS_SELF_SIGNED=false
+                IS_STACKROX_CA=false
+                
+                if [ -n "$CERT_ISSUER" ] && [ -n "$CERT_SUBJECT" ]; then
+                    # Check if issuer contains subject (self-signed)
+                    if echo "$CERT_ISSUER" | grep -qiE "StackRox|Stackrox|stackrox"; then
+                        IS_STACKROX_CA=true
+                    fi
+                    # Check if issuer matches subject (self-signed)
+                    if [ "$CERT_ISSUER" = "$CERT_SUBJECT" ]; then
+                        IS_SELF_SIGNED=true
+                    fi
+                fi
+                
+                # If it's a self-signed or StackRox CA certificate, we need to reconfigure
+                if [ "$IS_SELF_SIGNED" = "true" ] || [ "$IS_STACKROX_CA" = "true" ]; then
+                    warning "Certificate is self-signed or from StackRox internal CA (not trusted by browsers)"
+                    warning "Issuer: $CERT_ISSUER"
+                    warning "This will cause NET::ERR_CERT_AUTHORITY_INVALID errors"
+                    log "Reconfiguring with cert-manager trusted certificate..."
+                else
+                    # Check certificate expiration only if it's from a trusted CA
+                    CERT_EXPIRY=$(echo "$CERT_DATA" | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2 || echo "")
+                    if [ -n "$CERT_EXPIRY" ]; then
+                        # Try Linux date format first, then macOS format
+                        CERT_EXPIRY_EPOCH=$(date -d "$CERT_EXPIRY" +%s 2>/dev/null || date -j -f "%b %d %H:%M:%S %Y %Z" "$CERT_EXPIRY" +%s 2>/dev/null || echo "")
+                        CURRENT_EPOCH=$(date +%s)
+                        
+                        if [ -n "$CERT_EXPIRY_EPOCH" ] && [ "$CERT_EXPIRY_EPOCH" -gt "$CURRENT_EPOCH" ]; then
+                            DAYS_UNTIL_EXPIRY=$(( ($CERT_EXPIRY_EPOCH - $CURRENT_EPOCH) / 86400 ))
+                            log "✓ Certificate is from trusted CA and expires in $DAYS_UNTIL_EXPIRY days ($CERT_EXPIRY)"
+                            log "Issuer: $CERT_ISSUER"
                             log ""
                             log "========================================================="
-                            log "Valid certificate already configured"
+                            log "Valid trusted certificate already configured"
                             log "========================================================="
                             log "TLS Secret: $TLS_SECRET_TO_CHECK"
-                            log "Certificate expires: $CERT_EXPIRY"
+                            log "Certificate expires: $CERT_EXPIRY ($DAYS_UNTIL_EXPIRY days remaining)"
+                            log "Issuer: $CERT_ISSUER"
                             log ""
-                            log "No action needed - certificate is already configured and valid."
+                            log "No action needed - certificate is already configured and trusted."
                             log "To force reconfiguration, delete the secret first:"
                             log "  oc delete secret $TLS_SECRET_TO_CHECK -n $NAMESPACE"
                             log "========================================================="
                             exit 0
-                        else
+                        elif [ -n "$CERT_EXPIRY_EPOCH" ]; then
                             warning "Certificate has expired ($CERT_EXPIRY) - will reconfigure"
+                        else
+                            # If we can't parse the date but certificate exists, check if it's not expired using openssl directly
+                            CERT_NOT_AFTER=$(echo "$CERT_DATA" | openssl x509 -noout -checkend 0 2>/dev/null && echo "valid" || echo "expired")
+                            if [ "$CERT_NOT_AFTER" = "valid" ]; then
+                                log "✓ Certificate is from trusted CA and valid (expires: $CERT_EXPIRY)"
+                                log "Issuer: $CERT_ISSUER"
+                                log ""
+                                log "========================================================="
+                                log "Valid trusted certificate already configured"
+                                log "========================================================="
+                                log "TLS Secret: $TLS_SECRET_TO_CHECK"
+                                log "Certificate expires: $CERT_EXPIRY"
+                                log "Issuer: $CERT_ISSUER"
+                                log ""
+                                log "No action needed - certificate is already configured and trusted."
+                                log "To force reconfiguration, delete the secret first:"
+                                log "  oc delete secret $TLS_SECRET_TO_CHECK -n $NAMESPACE"
+                                log "========================================================="
+                                exit 0
+                            else
+                                warning "Certificate has expired ($CERT_EXPIRY) - will reconfigure"
+                            fi
                         fi
+                    else
+                        log "Certificate exists but could not parse expiration - continuing with configuration"
                     fi
-                else
-                    log "Certificate exists but could not parse expiration - continuing with configuration"
                 fi
             else
-                log "Certificate exists - continuing with configuration"
+                log "Certificate exists but openssl not available - continuing with configuration"
             fi
         else
             warning "Secret exists but missing required keys - will reconfigure"
@@ -334,23 +365,23 @@ log "ClusterIssuer: $CLUSTER_ISSUER"
 # Create Certificate resource
 CERT_NAME="rhacs-central-tls-cert-manager"
 CERT_SECRET_NAME="rhacs-central-tls-cert-manager"
-
-# Check if certificate already exists
-if oc get certificate "$CERT_NAME" -n "$NAMESPACE" &>/dev/null; then
-    log "Certificate resource already exists, checking status..."
-    CERT_STATUS=$(oc get certificate "$CERT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
-    if [ "$CERT_STATUS" = "True" ]; then
-        log "✓ Certificate is ready"
-    else
-        log "Certificate exists but not ready yet, waiting..."
+    
+    # Check if certificate already exists
+    if oc get certificate "$CERT_NAME" -n "$NAMESPACE" &>/dev/null; then
+        log "Certificate resource already exists, checking status..."
+        CERT_STATUS=$(oc get certificate "$CERT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+        if [ "$CERT_STATUS" = "True" ]; then
+            log "✓ Certificate is ready"
+        else
+            log "Certificate exists but not ready yet, waiting..."
         # Wait for certificate to be ready (max 10 minutes)
         for i in {1..120}; do
-            sleep 5
-            CERT_STATUS=$(oc get certificate "$CERT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
-            if [ "$CERT_STATUS" = "True" ]; then
-                log "✓ Certificate is now ready"
-                break
-            fi
+                sleep 5
+                CERT_STATUS=$(oc get certificate "$CERT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+                if [ "$CERT_STATUS" = "True" ]; then
+                    log "✓ Certificate is now ready"
+                    break
+                fi
             if [ $((i % 12)) -eq 0 ]; then
                 log "Still waiting for certificate... ($((i * 5))s elapsed)"
             fi
@@ -358,12 +389,12 @@ if oc get certificate "$CERT_NAME" -n "$NAMESPACE" &>/dev/null; then
                 error "Certificate did not become ready within 10 minutes"
                 error "Check certificate status: oc get certificate $CERT_NAME -n $NAMESPACE"
                 exit 1
-            fi
-        done
-    fi
-else
-    log "Creating Certificate resource..."
-    cat <<EOF | oc apply -f -
+                fi
+            done
+        fi
+    else
+        log "Creating Certificate resource..."
+        cat <<EOF | oc apply -f -
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -383,21 +414,21 @@ EOF
         exit 1
     fi
     
-    log "✓ Certificate resource created"
-    log "Waiting for certificate to be issued (this may take a few minutes)..."
-    
-    # Wait for certificate to be ready (max 10 minutes)
-    for i in {1..120}; do
-        sleep 5
-        CERT_STATUS=$(oc get certificate "$CERT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
-        if [ "$CERT_STATUS" = "True" ]; then
-            log "✓ Certificate issued successfully"
-            break
-        fi
-        if [ $((i % 12)) -eq 0 ]; then
-            log "Still waiting for certificate... ($((i * 5))s elapsed)"
-        fi
-        if [ $i -eq 120 ]; then
+            log "✓ Certificate resource created"
+            log "Waiting for certificate to be issued (this may take a few minutes)..."
+            
+            # Wait for certificate to be ready (max 10 minutes)
+            for i in {1..120}; do
+                sleep 5
+                CERT_STATUS=$(oc get certificate "$CERT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+                if [ "$CERT_STATUS" = "True" ]; then
+                    log "✓ Certificate issued successfully"
+                    break
+                fi
+                if [ $((i % 12)) -eq 0 ]; then
+                    log "Still waiting for certificate... ($((i * 5))s elapsed)"
+                fi
+                if [ $i -eq 120 ]; then
             error "Certificate did not become ready within 10 minutes"
             error "Check certificate status: oc get certificate $CERT_NAME -n $NAMESPACE"
             exit 1
@@ -406,19 +437,19 @@ EOF
 fi
 
 # Wait for secret to be created
-log "Waiting for certificate secret to be created..."
-for i in {1..60}; do
+    log "Waiting for certificate secret to be created..."
+    for i in {1..60}; do
     if oc get secret "$CERT_SECRET_NAME" -n "$NAMESPACE" &>/dev/null; then
-        log "✓ Certificate secret created"
-        break
-    fi
-    sleep 2
-    if [ $i -eq 60 ]; then
+            log "✓ Certificate secret created"
+            break
+        fi
+        sleep 2
+        if [ $i -eq 60 ]; then
         error "Secret not created within timeout"
         exit 1
-    fi
-done
-
+        fi
+    done
+    
 # Extract certificate and key from cert-manager secret (tls.crt and tls.key)
 # and create the secret with the correct format (tls-cert.pem and tls-key.pem)
 log "Converting cert-manager secret format to RHACS format..."
@@ -471,26 +502,26 @@ else
     else
         warning "  defaultTLSSecret not set in Central CR"
     fi
-fi
-
-log ""
-log "========================================================="
+    fi
+    
+    log ""
+    log "========================================================="
 log "RHACS TLS Configuration Complete (cert-manager)"
-log "========================================================="
+    log "========================================================="
 log "HTTPS URL: https://$ROUTE_HOST"
 log "Secret: $SECRET_NAME"
 log "Central CR: $CENTRAL_CR_NAME"
 log "Certificate: Automatically issued by $CLUSTER_ISSUER"
-log ""
+    log ""
 log "The certificate has been configured using the Operator-based method:"
 log "  ✓ Certificate obtained from cert-manager"
 log "  ✓ Secret created with tls-cert.pem and tls-key.pem"
 log "  ✓ Central CR configured with spec.central.defaultTLSSecret"
 log "  ✓ Central container restarted"
-log ""
+    log ""
 log "Certificate auto-renewal: Managed by cert-manager"
 log "Note: It may take a few moments for the new certificate to be active."
-log "========================================================="
+    log "========================================================="
 
 if [ "$SCRIPT_FAILED" = true ]; then
     warning "TLS configuration completed with errors. Review log output for details."
