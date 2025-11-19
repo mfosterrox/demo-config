@@ -333,6 +333,10 @@ configure_operator_tls_custom() {
     
     log "✓ Central CR configured with defaultTLSSecret"
     
+    # Wait a moment for Operator to reconcile the CR change
+    log "Waiting for Operator to reconcile Central CR changes..."
+    sleep 10
+    
     # Restart Central container
     log "Restarting Central deployment to apply certificate changes..."
     CENTRAL_DEPLOYMENT="central"
@@ -345,31 +349,30 @@ configure_operator_tls_custom() {
     # Get current pod name before restart
     OLD_POD=$(oc get pod -n "$NAMESPACE" -l app=central -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
     
-    # Try rollout restart first (most reliable for Operator-managed deployments)
-    if oc rollout restart deployment/"$CENTRAL_DEPLOYMENT" -n "$NAMESPACE" 2>/dev/null; then
-        log "Triggered deployment rollout restart..."
+    # For Operator-managed deployments, delete the pod directly (Operator will recreate it with new config)
+    # This is more reliable than rollout restart for Operator-managed resources
+    if [ -n "$OLD_POD" ]; then
+        log "Deleting Central pod to trigger restart with new certificate..."
+        oc delete pod "$OLD_POD" -n "$NAMESPACE" --grace-period=30 2>/dev/null || {
+            warning "Could not delete pod gracefully, forcing deletion..."
+            oc delete pod "$OLD_POD" -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+        }
     else
-        # Fallback: Delete the pod directly (Operator will recreate it)
-        if [ -n "$OLD_POD" ]; then
-            log "Deleting Central pod to trigger restart..."
-            oc delete pod "$OLD_POD" -n "$NAMESPACE" 2>/dev/null || {
-                warning "Could not delete pod, trying annotation method..."
-                oc annotate deployment "$CENTRAL_DEPLOYMENT" -n "$NAMESPACE" \
-                    "tls-updated-$(date +%s)=true" \
-                    --overwrite 2>/dev/null || true
-            }
+        # Fallback: Try rollout restart
+        if oc rollout restart deployment/"$CENTRAL_DEPLOYMENT" -n "$NAMESPACE" 2>/dev/null; then
+            log "Triggered deployment rollout restart..."
         else
-            # Last resort: annotate deployment
-            oc annotate deployment "$CENTRAL_DEPLOYMENT" -n "$NAMESPACE" \
-                "tls-updated-$(date +%s)=true" \
-                --overwrite 2>/dev/null || true
+            # Last resort: Delete all Central pods
+            log "Deleting all Central pods..."
+            oc delete pod -n "$NAMESPACE" -l app=central --grace-period=30 2>/dev/null || true
         fi
     fi
     
     log "Waiting for Central to restart..."
-    sleep 5  # Give it a moment to start restarting
+    sleep 10  # Give it a moment to start restarting
     
     # Wait for new pod to be ready
+    RESTART_SUCCESS=false
     for i in {1..120}; do
         NEW_POD=$(oc get pod -n "$NAMESPACE" -l app=central -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
         POD_STATUS=$(oc get pod -n "$NAMESPACE" -l app=central -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
@@ -379,15 +382,27 @@ configure_operator_tls_custom() {
         if [ -n "$NEW_POD" ] && [ "$NEW_POD" != "$OLD_POD" ]; then
             if [ "$POD_READY" = "True" ]; then
                 log "✓ Central restarted successfully (new pod: $NEW_POD)"
+                RESTART_SUCCESS=true
                 break
             fi
         elif [ "$POD_STATUS" = "Running" ] && [ "$POD_READY" = "True" ]; then
-            log "✓ Central is running and ready"
-            break
+            # If pod didn't change name but is ready, check if it's actually a new pod by checking restart count
+            RESTART_COUNT=$(oc get pod "$NEW_POD" -n "$NAMESPACE" -o jsonpath='{.status.containerStatuses[0].restartCount}' 2>/dev/null || echo "0")
+            if [ -n "$OLD_POD" ] && [ "$NEW_POD" = "$OLD_POD" ]; then
+                # Same pod - force delete it
+                log "Pod did not restart, forcing deletion..."
+                oc delete pod "$OLD_POD" -n "$NAMESPACE" --force --grace-period=0 2>/dev/null || true
+                sleep 5
+                continue
+            else
+                log "✓ Central is running and ready"
+                RESTART_SUCCESS=true
+                break
+            fi
         fi
         
         if [ $((i % 12)) -eq 0 ]; then
-            log "Still waiting for Central restart... ($((i * 5))s elapsed, status: $POD_STATUS)"
+            log "Still waiting for Central restart... ($((i * 5))s elapsed, status: $POD_STATUS, pod: $NEW_POD)"
         fi
         
         sleep 5
@@ -395,9 +410,21 @@ configure_operator_tls_custom() {
         if [ $i -eq 120 ]; then
             warning "Central restart did not complete within timeout"
             warning "Current pod status: $POD_STATUS, Ready: $POD_READY"
-            warning "You may need to manually restart Central: oc delete pod -n $NAMESPACE -l app=central"
+            warning "Forcing pod deletion..."
+            oc delete pod -n "$NAMESPACE" -l app=central --force --grace-period=0 2>/dev/null || true
+            warning "Waiting for new pod..."
+            sleep 30
         fi
     done
+    
+    if [ "$RESTART_SUCCESS" = "false" ]; then
+        warning "Central restart verification incomplete - certificate may not be active yet"
+        warning "Please verify manually: oc get pods -n $NAMESPACE -l app=central"
+    fi
+    
+    # Wait additional time for Central to fully initialize with new certificate
+    log "Waiting for Central to initialize with new certificate..."
+    sleep 15
 }
 
 # Main configuration logic - Use cert-manager to obtain certificate
@@ -548,8 +575,36 @@ log "  ✓ Central CR configured with spec.central.defaultTLSSecret"
 log "  ✓ Central container restarted"
     log ""
 log "Certificate auto-renewal: Managed by cert-manager"
-log "Note: It may take a few moments for the new certificate to be active."
-    log "========================================================="
+log ""
+log "Verifying certificate is active..."
+sleep 5
+
+# Verify the certificate being served matches what we configured
+if command -v openssl &>/dev/null; then
+    SERVED_CERT_ISSUER=$(echo | openssl s_client -connect "$ROUTE_HOST:443" -servername "$ROUTE_HOST" 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null | sed 's/issuer=//' || echo "")
+    SECRET_CERT_ISSUER=$(oc get secret "$SECRET_NAME" -n "$NAMESPACE" -o jsonpath='{.data.tls-cert\.pem}' 2>/dev/null | base64 -d | openssl x509 -noout -issuer 2>/dev/null | sed 's/issuer=//' || echo "")
+    
+    if [ -n "$SERVED_CERT_ISSUER" ] && [ -n "$SECRET_CERT_ISSUER" ]; then
+        if echo "$SERVED_CERT_ISSUER" | grep -qiE "ZeroSSL|Let's Encrypt|Let''s Encrypt"; then
+            log "✓ Certificate verification: Central is serving trusted certificate"
+            log "  Served certificate issuer: $SERVED_CERT_ISSUER"
+        elif echo "$SERVED_CERT_ISSUER" | grep -qiE "StackRox|Stackrox|stackrox"; then
+            warning "⚠️  Certificate verification: Central is still serving StackRox certificate"
+            warning "  Served certificate issuer: $SERVED_CERT_ISSUER"
+            warning "  Expected issuer: $SECRET_CERT_ISSUER"
+            warning ""
+            warning "Central may need additional time to pick up the certificate."
+            warning "Try manually restarting Central: oc delete pod -n $NAMESPACE -l app=central"
+            warning "Then wait 2-3 minutes and refresh your browser."
+        else
+            log "Certificate issuer: $SERVED_CERT_ISSUER"
+        fi
+    else
+        warning "Could not verify certificate issuer - may need to wait longer"
+    fi
+fi
+
+log "========================================================="
 
 if [ "$SCRIPT_FAILED" = true ]; then
     warning "TLS configuration completed with errors. Review log output for details."
