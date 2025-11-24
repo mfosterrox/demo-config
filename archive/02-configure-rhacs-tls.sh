@@ -213,17 +213,17 @@ if oc get secret "central-tls" -n "tssc-acs" &>/dev/null; then
     fi
     log "✓ Secret 'central-tls' patched successfully"
 else
-    log "Creating 'central-tls' secret with certificate from cert-manager..."
-    oc -n "tssc-acs" create secret tls "central-tls" \
-        --cert="$TEMP_CERT" \
-        --key="$TEMP_KEY"
-    
-    if [ $? -ne 0 ]; then
-        error "Failed to create central-tls secret"
-        rm -f "$TEMP_CERT" "$TEMP_KEY"
-        exit 1
-    fi
-    log "✓ Secret 'central-tls' created successfully"
+log "Creating 'central-tls' secret with certificate from cert-manager..."
+oc -n "tssc-acs" create secret tls "central-tls" \
+    --cert="$TEMP_CERT" \
+    --key="$TEMP_KEY"
+
+if [ $? -ne 0 ]; then
+    error "Failed to create central-tls secret"
+    rm -f "$TEMP_CERT" "$TEMP_KEY"
+    exit 1
+fi
+log "✓ Secret 'central-tls' created successfully"
 fi
 
 # Clean up temp files

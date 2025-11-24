@@ -40,50 +40,40 @@ setup_rhacs() {
     fi
 }
 
-# Configure RHACS TLS/HTTPS (Step 2)
-configure_rhacs_tls() {
-    log "Configuring RHACS TLS/HTTPS route..."
-    if bash "${SCRIPT_DIR}/scripts/02-configure-rhacs-tls.sh"; then
-        success "RHACS TLS configuration completed successfully"
-    else
-        warning "RHACS TLS configuration script failed or had errors - continuing to next step"
-    fi
-}
-
-# Install Red Hat Compliance Operator (Step 3)
+# Install Red Hat Compliance Operator (Step 2)
 install_compliance_operator() {
     log "Installing Red Hat Compliance Operator..."
-    if bash "${SCRIPT_DIR}/scripts/03-compliance-operator-install.sh"; then
+    if bash "${SCRIPT_DIR}/scripts/02-compliance-operator-install.sh"; then
         success "Compliance Operator installation completed successfully"
     else
         warning "Compliance Operator installation script failed or had errors - continuing to next step"
     fi
 }
 
-# Deploy applications to OpenShift cluster (Step 4)
+# Deploy applications to OpenShift cluster (Step 3)
 deploy_applications() {
     log "Deploying applications to OpenShift cluster..."
-    if bash "${SCRIPT_DIR}/scripts/04-deploy-applications.sh"; then
+    if bash "${SCRIPT_DIR}/scripts/03-deploy-applications.sh"; then
         success "Application deployment completed successfully"
     else
         warning "Application deployment script failed or had errors - continuing to next step"
     fi
 }
 
-# Setup compliance scan schedule (Step 5)
+# Setup compliance scan schedule (Step 4)
 setup_compliance_scan_schedule() {
     log "Setting up compliance scan schedule..."
-    if bash "${SCRIPT_DIR}/scripts/05-setup-co-scan-schedule.sh"; then
+    if bash "${SCRIPT_DIR}/scripts/04-setup-co-scan-schedule.sh"; then
         success "Compliance scan schedule setup completed successfully"
     else
         warning "Compliance scan schedule script failed or had errors - continuing to next step"
     fi
 }
 
-# Trigger compliance scan (Step 6)
+# Trigger compliance scan (Step 5)
 trigger_compliance_scan() {
     log "Triggering compliance scan..."
-    if bash "${SCRIPT_DIR}/scripts/06-trigger-compliance-scan.sh"; then
+    if bash "${SCRIPT_DIR}/scripts/05-trigger-compliance-scan.sh"; then
         success "Compliance scan trigger completed successfully"
     else
         warning "Compliance scan trigger script failed or had errors - continuing to next step"
@@ -119,7 +109,7 @@ main() {
     
     # Verify scripts exist (warn but don't fail)
     # Scripts listed in execution order
-    for script in "01-rhacs-setup.sh" "02-configure-rhacs-tls.sh" "03-compliance-operator-install.sh" "04-deploy-applications.sh" "05-setup-co-scan-schedule.sh" "06-trigger-compliance-scan.sh" ; do
+    for script in "01-rhacs-setup.sh" "02-compliance-operator-install.sh" "03-deploy-applications.sh" "04-setup-co-scan-schedule.sh" "05-trigger-compliance-scan.sh" ; do
         if [ ! -f "$SCRIPT_DIR/scripts/$script" ]; then
             warning "Script not found: $SCRIPT_DIR/scripts/$script - will skip this step"
         fi
@@ -127,7 +117,6 @@ main() {
     
     # Run setup scripts in order
     setup_rhacs
-    configure_rhacs_tls
     install_compliance_operator
     deploy_applications
     setup_compliance_scan_schedule
@@ -139,11 +128,10 @@ main() {
     log ""
     log "All scripts have been executed in order:"
     log "  1. RHACS secured cluster setup"
-    log "  2. RHACS TLS/HTTPS route configuration"
-    log "  3. Red Hat Compliance Operator installation"
-    log "  4. Application deployment"
-    log "  5. Compliance scan schedule setup"
-    log "  6. Compliance scan trigger"
+    log "  2. Red Hat Compliance Operator installation"
+    log "  3. Application deployment"
+    log "  4. Compliance scan schedule setup"
+    log "  5. Compliance scan trigger"
     
     # Display RHACS access information
     log ""
