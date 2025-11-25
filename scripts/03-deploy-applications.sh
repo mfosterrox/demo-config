@@ -230,9 +230,16 @@ SCAN_IMAGE="quay.io/mfoster/frontend:latest"
 SCAN_TIMEOUT=30  # 30 seconds timeout
 log "Scanning image: $SCAN_IMAGE (timeout: ${SCAN_TIMEOUT}s)"
 SCAN_OUTPUT_FORMAT="json"
-log "Running command: timeout $SCAN_TIMEOUT $ROXCTL_CMD --insecure-skip-tls-verify -e \"$ROX_ENDPOINT\" --token \"$ROX_API_TOKEN\" image scan --image \"$SCAN_IMAGE\" --force --output \"$SCAN_OUTPUT_FORMAT\""
 
-SCAN_OUTPUT=$(timeout $SCAN_TIMEOUT $ROXCTL_CMD --insecure-skip-tls-verify -e "$ROX_ENDPOINT" --token "$ROX_API_TOKEN" image scan --image "$SCAN_IMAGE" --force --output "$SCAN_OUTPUT_FORMAT" 2>&1)
+# Ensure ROX_ENDPOINT has https:// prefix for roxctl
+ROX_ENDPOINT_FOR_ROXCTL="$ROX_ENDPOINT"
+if [[ ! "$ROX_ENDPOINT_FOR_ROXCTL" =~ ^https?:// ]]; then
+    ROX_ENDPOINT_FOR_ROXCTL="https://$ROX_ENDPOINT_FOR_ROXCTL"
+fi
+
+log "Running command: timeout $SCAN_TIMEOUT $ROXCTL_CMD --insecure-skip-tls-verify -e \"$ROX_ENDPOINT_FOR_ROXCTL\" --token \"$ROX_API_TOKEN\" image scan --image \"$SCAN_IMAGE\" --force --output \"$SCAN_OUTPUT_FORMAT\""
+
+SCAN_OUTPUT=$(timeout $SCAN_TIMEOUT $ROXCTL_CMD --insecure-skip-tls-verify -e "$ROX_ENDPOINT_FOR_ROXCTL" --token "$ROX_API_TOKEN" image scan --image "$SCAN_IMAGE" --force --output "$SCAN_OUTPUT_FORMAT" 2>&1)
 SCAN_EXIT_CODE=$?
 
 log "Scan output:"

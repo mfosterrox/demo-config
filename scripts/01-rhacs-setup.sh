@@ -426,10 +426,14 @@ log "Central endpoint: $ROX_ENDPOINT (normalized: $ROX_ENDPOINT_NORMALIZED)"
 
 # Test connectivity to Central endpoint
 log "Testing connectivity to Central endpoint..."
-if ! curl -k -s --connect-timeout 10 "https://$ROX_ENDPOINT_NORMALIZED"; then
-    error "Cannot connect to Central at https://$ROX_ENDPOINT_NORMALIZED. Check network connectivity and route status."
+CONNECT_OUTPUT=$(curl -k -s --connect-timeout 10 -w "\n%{http_code}" "https://$ROX_ENDPOINT_NORMALIZED" 2>&1)
+CONNECT_EXIT_CODE=$?
+HTTP_CODE=$(echo "$CONNECT_OUTPUT" | tail -n1)
+
+if [ $CONNECT_EXIT_CODE -ne 0 ] || [ -z "$HTTP_CODE" ] || [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 400 ]; then
+    error "Cannot connect to Central at https://$ROX_ENDPOINT_NORMALIZED. Exit code: $CONNECT_EXIT_CODE, HTTP code: ${HTTP_CODE:-unknown}. Response: $(echo "$CONNECT_OUTPUT" | head -n -1 | head -c 500)"
 fi
-log "✓ Successfully connected to Central endpoint"
+log "✓ Successfully connected to Central endpoint (HTTP $HTTP_CODE)"
 
 # Verify all required variables are set
 if [ -z "${ROX_API_TOKEN:-}" ]; then
@@ -443,9 +447,6 @@ log "✓ All required variables verified: ROX_ENDPOINT and ROX_API_TOKEN are set
 # Export environment variables for roxctl
 export ROX_API_TOKEN
 export ROX_ENDPOINT
-
-echo $ROX_API_TOKEN
-echo $ROX_ENDPOINT
 
 # Download roxctl if not available
 if ! command -v roxctl &>/dev/null; then
@@ -513,7 +514,6 @@ if [ -n "$ADMIN_PASSWORD" ]; then
     
     if echo "$ADMIN_PASSWORD" | $ROXCTL_CMD central login \
       -e "$ROX_ENDPOINT_FOR_ROXCTL" \
-      --username admin \
       --password-stdin \
       --insecure-skip-tls-verify 2>&1 | tee /tmp/roxctl-login.log; then
         log "✓ Successfully logged into RHACS Central"
