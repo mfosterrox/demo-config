@@ -322,43 +322,71 @@ if [ -z "${ROX_API_TOKEN:-}" ]; then
     TOKEN_NAME="setup-script-$(date +%d-%m-%Y_%H-%M-%S)"
     TOKEN_ROLE="Admin"
     
-    # Wait a bit for Central API to be fully ready
-    log "Waiting for Central API to be ready..."
-    sleep 5
-    
     # Normalize ROX_ENDPOINT for API call
     ROX_ENDPOINT_NORMALIZED="$(normalize_rox_endpoint "$ROX_ENDPOINT")"
     
-    # Generate token
-    log "Creating API token: $TOKEN_NAME"
-    TOKEN_RESPONSE=$(curl -k -X POST \
-      -u "$ADMIN_USERNAME:$ADMIN_PASSWORD" \
-      -H "Content-Type: application/json" \
-      --data "{\"name\":\"$TOKEN_NAME\",\"role\":\"$TOKEN_ROLE\"}" \
-      "https://$ROX_ENDPOINT_NORMALIZED/v1/apitokens/generate" 2>&1)
+    # Retry logic for token generation (Central API might need time to be ready)
+    MAX_RETRIES=5
+    RETRY_COUNT=0
+    TOKEN_CREATED=false
     
-    if [ -z "$TOKEN_RESPONSE" ]; then
-        error "Empty response from token API. Check Central connectivity at https://$ROX_ENDPOINT_NORMALIZED"
+    while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$TOKEN_CREATED" = false ]; do
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+        
+        if [ $RETRY_COUNT -gt 1 ]; then
+            log "Retry attempt $RETRY_COUNT of $MAX_RETRIES for token generation..."
+            sleep 10
+        else
+            log "Waiting for Central API to be ready..."
+            sleep 5
+        fi
+        
+        # Generate token
+        log "Creating API token: $TOKEN_NAME (attempt $RETRY_COUNT/$MAX_RETRIES)"
+        TOKEN_RESPONSE=$(curl -k -s -w "\n%{http_code}" -X POST \
+          -u "$ADMIN_USERNAME:$ADMIN_PASSWORD" \
+          -H "Content-Type: application/json" \
+          --data "{\"name\":\"$TOKEN_NAME\",\"role\":\"$TOKEN_ROLE\"}" \
+          "https://$ROX_ENDPOINT_NORMALIZED/v1/apitokens/generate" 2>&1)
+        
+        HTTP_CODE=$(echo "$TOKEN_RESPONSE" | tail -n1)
+        TOKEN_BODY=$(echo "$TOKEN_RESPONSE" | head -n -1)
+        
+        if [ -z "$TOKEN_BODY" ]; then
+            warning "Empty response from token API (HTTP $HTTP_CODE). Retrying..."
+            continue
+        fi
+        
+        # Check for HTTP error codes
+        if [ "$HTTP_CODE" -eq 401 ] || [ "$HTTP_CODE" -eq 403 ]; then
+            error "Authentication failed (HTTP $HTTP_CODE). Check admin username and password. Response: ${TOKEN_BODY:0:300}"
+        fi
+        
+        if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            warning "Token API returned HTTP $HTTP_CODE. Response: ${TOKEN_BODY:0:200}. Retrying..."
+            continue
+        fi
+        
+        # Extract token from JSON response
+        ROX_API_TOKEN=$(echo "$TOKEN_BODY" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('token', ''))" 2>/dev/null)
+        
+        if [ -z "$ROX_API_TOKEN" ] || [ "$ROX_API_TOKEN" = "null" ]; then
+            # Try alternative extraction method
+            ROX_API_TOKEN=$(echo "$TOKEN_BODY" | grep -oP '"token"\s*:\s*"\K[^"]+' | head -1)
+        fi
+        
+        if [ -n "$ROX_API_TOKEN" ] && [ "$ROX_API_TOKEN" != "null" ] && [ ${#ROX_API_TOKEN} -gt 20 ]; then
+            TOKEN_CREATED=true
+            log "✓ API token created successfully"
+            break
+        else
+            warning "Failed to extract valid token from API response (HTTP $HTTP_CODE). Response: ${TOKEN_BODY:0:300}"
+        fi
+    done
+    
+    if [ "$TOKEN_CREATED" = false ]; then
+        error "Failed to generate API token after $MAX_RETRIES attempts. Last response (HTTP $HTTP_CODE): ${TOKEN_BODY:0:500}"
     fi
-    
-    # Check for HTTP error codes
-    if echo "$TOKEN_RESPONSE" | grep -qi "401\|unauthorized\|forbidden"; then
-        error "Authentication failed (401 Unauthorized). Check admin username and password. Response: ${TOKEN_RESPONSE:0:300}"
-    fi
-    
-    # Extract token from JSON response
-    ROX_API_TOKEN=$(echo "$TOKEN_RESPONSE" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('token', ''))")
-    
-    if [ -z "$ROX_API_TOKEN" ] || [ "$ROX_API_TOKEN" = "null" ]; then
-        # Try alternative extraction method
-        ROX_API_TOKEN=$(echo "$TOKEN_RESPONSE" | grep -oP '"token"\s*:\s*"\K[^"]+' | head -1)
-    fi
-    
-    if [ -z "$ROX_API_TOKEN" ] || [ "$ROX_API_TOKEN" = "null" ] || [ ${#ROX_API_TOKEN} -le 20 ]; then
-        error "Failed to extract valid token from API response. Response: ${TOKEN_RESPONSE:0:300}"
-    fi
-    
-    log "✓ API token created successfully"
     
     # Save to ~/.bashrc
     log "Saving ROX_API_TOKEN to ~/.bashrc..."
@@ -435,12 +463,12 @@ if [ $CONNECT_EXIT_CODE -ne 0 ] || [ -z "$HTTP_CODE" ] || [ "$HTTP_CODE" -lt 200
 fi
 log "✓ Successfully connected to Central endpoint (HTTP $HTTP_CODE)"
 
-# Verify all required variables are set
+# Verify all required variables are set (they should have been generated above)
 if [ -z "${ROX_API_TOKEN:-}" ]; then
-    error "ROX_API_TOKEN is not set. This should have been generated above."
+    error "ROX_API_TOKEN is not set after generation. Check token generation above for errors."
 fi
 if [ -z "${ROX_ENDPOINT:-}" ]; then
-    error "ROX_ENDPOINT is not set. This should have been generated above."
+    error "ROX_ENDPOINT is not set after generation. Check endpoint extraction above for errors."
 fi
 log "✓ All required variables verified: ROX_ENDPOINT and ROX_API_TOKEN are set"
 
@@ -502,12 +530,12 @@ fi
 # Prepare authentication arguments (token-based)
 # Note: roxctl central login requires interactive browser-based authentication,
 # so we use token-based authentication for all roxctl commands
-if [ -n "$ROX_API_TOKEN" ]; then
-    log "Using token-based authentication for roxctl commands"
-    ROXCTL_AUTH_ARGS=(--token "$ROX_API_TOKEN")
-else
-    error "ROX_API_TOKEN is required for roxctl commands. Token should have been generated above."
+if [ -z "${ROX_API_TOKEN:-}" ]; then
+    error "ROX_API_TOKEN is required for roxctl commands but was not generated. Check token generation above for errors."
 fi
+
+log "Using token-based authentication for roxctl commands"
+ROXCTL_AUTH_ARGS=(--token "$ROX_API_TOKEN")
 
 # Test roxctl connectivity using available authentication method
 if [ -n "$ROX_API_TOKEN" ]; then
