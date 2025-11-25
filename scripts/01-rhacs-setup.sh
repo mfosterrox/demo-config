@@ -499,43 +499,14 @@ if [ -f ~/.bashrc ]; then
     fi
 fi
 
-# Prepare authentication arguments (token-based by default when available)
-# Login to RHACS Central with roxctl (optional - API token will be used)
-if [ -n "$ADMIN_PASSWORD" ]; then
-    log "Logging into RHACS Central with roxctl (using admin credentials)..."
-    log "Endpoint: $ROX_ENDPOINT"
-    log "Username: admin"
-    
-    # Ensure ROX_ENDPOINT has https:// prefix for roxctl
-    ROX_ENDPOINT_FOR_ROXCTL="$ROX_ENDPOINT"
-    if [[ ! "$ROX_ENDPOINT_FOR_ROXCTL" =~ ^https?:// ]]; then
-        ROX_ENDPOINT_FOR_ROXCTL="https://$ROX_ENDPOINT_FOR_ROXCTL"
-    fi
-    
-    if echo "$ADMIN_PASSWORD" | $ROXCTL_CMD central login \
-      -e "$ROX_ENDPOINT_FOR_ROXCTL" \
-      --password-stdin \
-      --insecure-skip-tls-verify 2>&1 | tee /tmp/roxctl-login.log; then
-        log "✓ Successfully logged into RHACS Central"
-    else
-        warning "Password-based login failed"
-        if [ -f /tmp/roxctl-login.log ]; then
-            warning "roxctl login error output:"
-            cat /tmp/roxctl-login.log | head -10
-            rm -f /tmp/roxctl-login.log
-        fi
-        warning "Will fall back to token authentication if available"
-    fi
-else
-    if [ -n "$ROX_API_TOKEN" ]; then
-        log "Preparing token-based authentication for roxctl commands using existing ROX_API_TOKEN"
-    else
-        warning "No ADMIN_PASSWORD found in environment or ~/.bashrc"
-    fi
-fi
-
-if [ ${#ROXCTL_AUTH_ARGS[@]} -eq 0 ] && [ -n "$ROX_API_TOKEN" ]; then
+# Prepare authentication arguments (token-based)
+# Note: roxctl central login requires interactive browser-based authentication,
+# so we use token-based authentication for all roxctl commands
+if [ -n "$ROX_API_TOKEN" ]; then
+    log "Using token-based authentication for roxctl commands"
     ROXCTL_AUTH_ARGS=(--token "$ROX_API_TOKEN")
+else
+    error "ROX_API_TOKEN is required for roxctl commands. Token should have been generated above."
 fi
 
 # Test roxctl connectivity using available authentication method
