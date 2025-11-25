@@ -443,22 +443,61 @@ fi
 
 ROXCTL_AUTH_ARGS=()
 ROXCTL_TOKEN_FILE=""
+
+# Reload ~/.bashrc to get ADMIN_PASSWORD if it was saved earlier
+if [ -f ~/.bashrc ]; then
+    set +u  # Temporarily disable unbound variable checking
+    source ~/.bashrc 2>/dev/null || true
+    set -u  # Re-enable unbound variable checking
+    # Ensure ADMIN_PASSWORD is loaded
+    if [ -z "$ADMIN_PASSWORD" ]; then
+        ADMIN_PASSWORD_LINE=$(grep "^export ADMIN_PASSWORD=" ~/.bashrc 2>/dev/null | head -1)
+        if [ -n "$ADMIN_PASSWORD_LINE" ]; then
+            ADMIN_PASSWORD=$(echo "$ADMIN_PASSWORD_LINE" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
+        fi
+    fi
+    # Ensure ROX_ENDPOINT is loaded
+    if [ -z "$ROX_ENDPOINT" ]; then
+        ROX_ENDPOINT_LINE=$(grep "^export ROX_ENDPOINT=" ~/.bashrc 2>/dev/null | head -1)
+        if [ -n "$ROX_ENDPOINT_LINE" ]; then
+            ROX_ENDPOINT=$(echo "$ROX_ENDPOINT_LINE" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
+        fi
+    fi
+fi
+
 # Prepare authentication arguments (token-based by default when available)
 # Login to RHACS Central with roxctl (optional - API token will be used)
 if [ -n "$ADMIN_PASSWORD" ]; then
     log "Logging into RHACS Central with roxctl (using admin credentials)..."
+    log "Endpoint: $ROX_ENDPOINT"
+    log "Username: admin"
+    
+    # Ensure ROX_ENDPOINT has https:// prefix for roxctl
+    ROX_ENDPOINT_FOR_ROXCTL="$ROX_ENDPOINT"
+    if [[ ! "$ROX_ENDPOINT_FOR_ROXCTL" =~ ^https?:// ]]; then
+        ROX_ENDPOINT_FOR_ROXCTL="https://$ROX_ENDPOINT_FOR_ROXCTL"
+    fi
+    
     if echo "$ADMIN_PASSWORD" | $ROXCTL_CMD central login \
-      -e "$ROX_ENDPOINT" \
+      -e "$ROX_ENDPOINT_FOR_ROXCTL" \
       --username admin \
       --password-stdin \
-      --insecure-skip-tls-verify >/dev/null 2>&1; then
+      --insecure-skip-tls-verify 2>&1 | tee /tmp/roxctl-login.log; then
         log "✓ Successfully logged into RHACS Central"
     else
-        warning "Password-based login failed, will fall back to token authentication if available"
+        warning "Password-based login failed"
+        if [ -f /tmp/roxctl-login.log ]; then
+            warning "roxctl login error output:"
+            cat /tmp/roxctl-login.log | head -10
+            rm -f /tmp/roxctl-login.log
+        fi
+        warning "Will fall back to token authentication if available"
     fi
 else
     if [ -n "$ROX_API_TOKEN" ]; then
         log "Preparing token-based authentication for roxctl commands using existing ROX_API_TOKEN"
+    else
+        warning "No ADMIN_PASSWORD found in environment or ~/.bashrc"
     fi
 fi
 
