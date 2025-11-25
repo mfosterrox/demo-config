@@ -47,15 +47,15 @@ else
     log "~/.bashrc not found, proceeding with current environment"
 fi
 
-# Validate environment variables
+# Validate required environment variables (should be set by script 01)
 if [ -z "$ROX_API_TOKEN" ]; then
-    error "ROX_API_TOKEN needs to be set. Please set it in ~/.bashrc"
+    error "ROX_API_TOKEN not set. Please run script 01-rhacs-setup.sh first to generate required variables."
 fi
 
 if [ -z "$ROX_ENDPOINT" ]; then
-    error "ROX_ENDPOINT needs to be set. Please set it in ~/.bashrc"
+    error "ROX_ENDPOINT not set. Please run script 01-rhacs-setup.sh first to generate required variables."
 fi
-log "✓ Environment variables validated"
+log "✓ Required environment variables validated: ROX_ENDPOINT=$ROX_ENDPOINT"
 
 # Ensure jq is installed
 if ! command -v jq >/dev/null 2>&1; then

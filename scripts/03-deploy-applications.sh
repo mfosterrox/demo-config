@@ -88,36 +88,16 @@ else
     warning "~/.bashrc not found"
 fi
 
-# Get ACS Central Address from environment or oc command
-log "Getting ACS Central Address..."
-ACS_NAMESPACE="tssc-acs"
-
-if [ -n "$ROX_ENDPOINT" ]; then
-    ACS_CENTRAL_ADDRESS="$ROX_ENDPOINT"
-    log "ACS Central Address from environment: $ACS_CENTRAL_ADDRESS"
-else
-    log "ROX_ENDPOINT not set, retrieving from OpenShift route..."
-    if ! oc get ns "$ACS_NAMESPACE"; then
-        error "Namespace '$ACS_NAMESPACE' not found. Check namespace: oc get namespace $ACS_NAMESPACE"
-    fi
-
-    if ! oc -n "$ACS_NAMESPACE" get route central; then
-        error "ACS route 'central' not found in namespace '$ACS_NAMESPACE'. Check route: oc get route -n $ACS_NAMESPACE"
-    fi
-
-    ACS_CENTRAL_ADDRESS=$(oc -n "$ACS_NAMESPACE" get route central -o jsonpath='{.spec.host}:443')
-
-    if [ -z "$ACS_CENTRAL_ADDRESS" ]; then
-        error "Unable to determine ACS Central Address from route. Route exists but host is empty."
-    fi
-    log "✓ ACS Central Address from oc command (namespace: $ACS_NAMESPACE): $ACS_CENTRAL_ADDRESS"
+# Validate required environment variables (should be set by script 01)
+if [ -z "$ROX_ENDPOINT" ]; then
+    error "ROX_ENDPOINT not set. Please run script 01-rhacs-setup.sh first to generate required variables."
 fi
-
-# Check if API token is available
 if [ -z "$ROX_API_TOKEN" ]; then
-    error "ROX_API_TOKEN not found in environment. Please ensure ROX_API_TOKEN is set in ~/.bashrc"
+    error "ROX_API_TOKEN not set. Please run script 01-rhacs-setup.sh first to generate required variables."
 fi
-log "✓ ROX_API_TOKEN found in environment"
+log "✓ Required environment variables validated: ROX_ENDPOINT=$ROX_ENDPOINT"
+
+ACS_CENTRAL_ADDRESS="$ROX_ENDPOINT"
 
 # Deploy applications
 log "Deploying applications from $TUTORIAL_HOME..."
