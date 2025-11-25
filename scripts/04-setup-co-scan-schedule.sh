@@ -185,4 +185,4 @@ else
     log "Compliance scan schedule setup completed successfully!"
 fi
 log "Scan configuration ID: $SCAN_CONFIG_ID"
-log "Note: Run script 05-trigger-compliance-scan.sh to trigger an immediate scan"
+log ""

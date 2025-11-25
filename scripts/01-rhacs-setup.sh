@@ -227,21 +227,38 @@ else
     log "✓ Central auto-lock setting: $CENTRAL_AUTO_LOCK (enabled)"
 fi
 
-# Extract admin credentials
-log "Extracting admin credentials..."
+# Extract admin credentials from secret
+log "Extracting admin credentials from secret in namespace $NAMESPACE..."
+ADMIN_USERNAME="admin"
 ADMIN_PASSWORD=""
-ADMIN_PASSWORD_B64=$(oc get secret central-htpasswd -n $NAMESPACE -o jsonpath='{.data.password}' 2>/dev/null || true)
-if [ -n "$ADMIN_PASSWORD_B64" ]; then
-    ADMIN_PASSWORD=$(echo "$ADMIN_PASSWORD_B64" | base64 -d 2>/dev/null || true)
+
+# Wait for Central to be ready before trying to get the password
+log "Waiting for Central to be ready..."
+if ! oc wait --for=condition=Available deployment/central -n $NAMESPACE --timeout=300s 2>/dev/null; then
+    warning "Central deployment may not be fully ready, but continuing..."
 fi
 
-if [ -n "$ADMIN_PASSWORD" ]; then
-    log "Admin password extracted from secret"
-else
-    if [ -n "$ROX_API_TOKEN" ]; then
-        warning "Admin password not available in secret; will rely on existing ROX_API_TOKEN for API access"
+# Get admin password from secret
+ADMIN_PASSWORD_B64=$(oc get secret central-htpasswd -n $NAMESPACE -o jsonpath='{.data.password}' 2>/dev/null || true)
+if [ -z "$ADMIN_PASSWORD_B64" ]; then
+    # Try alternative secret name
+    ADMIN_PASSWORD_B64=$(oc get secret central-admin-password -n $NAMESPACE -o jsonpath='{.data.password}' 2>/dev/null || true)
+fi
+
+if [ -n "$ADMIN_PASSWORD_B64" ]; then
+    ADMIN_PASSWORD=$(echo "$ADMIN_PASSWORD_B64" | base64 -d 2>/dev/null || true)
+    if [ -n "$ADMIN_PASSWORD" ]; then
+        log "✓ Admin password extracted from secret (username: $ADMIN_USERNAME)"
     else
-        error "Failed to extract admin password and no ROX_API_TOKEN found in environment"
+        error "Failed to decode admin password from secret"
+    fi
+else
+    error "Admin password secret not found in namespace $NAMESPACE"
+    error "Expected secret: central-htpasswd"
+    if [ -z "$ROX_API_TOKEN" ]; then
+        error "No existing ROX_API_TOKEN found; cannot proceed without admin credentials"
+    else
+        warning "Will rely on existing ROX_API_TOKEN for API access"
     fi
 fi
 
@@ -270,48 +287,99 @@ if [ "$TOKEN_FROM_BASHRC" = true ]; then
 elif [ -n "$ROX_API_TOKEN" ]; then
     log "Using existing ROX_API_TOKEN from environment"
 else
-    # No token found, generate a new one
-    if [ -n "$ADMIN_PASSWORD" ]; then
-        log "No API token found in ~/.bashrc, creating new API token: $TOKEN_NAME"
+    # No token found, generate a new one using admin credentials
+    if [ -n "$ADMIN_PASSWORD" ] && [ -n "$ADMIN_USERNAME" ]; then
+        log "No API token found, creating new API token using admin credentials..."
+        log "Username: $ADMIN_USERNAME"
+        log "Token name: $TOKEN_NAME"
+        log "Token role: $TOKEN_ROLE"
         
-        set +e
-        TOKEN_RESPONSE=$(curl -k -X POST \
-          -u "admin:$ADMIN_PASSWORD" \
-          -H "Content-Type: application/json" \
-          --data "{\"name\":\"$TOKEN_NAME\",\"role\":\"$TOKEN_ROLE\"}" \
-          "https://$ROX_ENDPOINT/v1/apitokens/generate" 2>&1)
-        TOKEN_EXIT_CODE=$?
-        set -e
+        # Wait a bit more to ensure Central API is ready
+        log "Waiting for Central API to be ready..."
+        sleep 5
         
-        if [ $TOKEN_EXIT_CODE -eq 0 ] && [ -n "$TOKEN_RESPONSE" ]; then
-            # Extract token from JSON response
-            NEW_ROX_API_TOKEN=$(echo "$TOKEN_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['token'])" 2>/dev/null)
+        # Retry logic for token creation
+        MAX_RETRIES=3
+        RETRY_COUNT=0
+        TOKEN_CREATED=false
+        
+        while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$TOKEN_CREATED" = false ]; do
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            if [ $RETRY_COUNT -gt 1 ]; then
+                log "Retry attempt $RETRY_COUNT of $MAX_RETRIES..."
+                sleep 10
+            fi
             
-            if [ -n "$NEW_ROX_API_TOKEN" ] && [ "$NEW_ROX_API_TOKEN" != "null" ]; then
-                ROX_API_TOKEN="$NEW_ROX_API_TOKEN"
-                log "✓ API token created successfully"
+            set +e
+            TOKEN_RESPONSE=$(curl -k -X POST \
+              -u "$ADMIN_USERNAME:$ADMIN_PASSWORD" \
+              -H "Content-Type: application/json" \
+              --data "{\"name\":\"$TOKEN_NAME\",\"role\":\"$TOKEN_ROLE\"}" \
+              "https://$ROX_ENDPOINT/v1/apitokens/generate" 2>&1)
+            TOKEN_EXIT_CODE=$?
+            HTTP_CODE=$(echo "$TOKEN_RESPONSE" | grep -oP 'HTTP/\d\.\d \K\d+' | tail -1 || echo "")
+            set -e
+            
+            # Check if we got a valid response
+            if [ $TOKEN_EXIT_CODE -eq 0 ] && [ -n "$TOKEN_RESPONSE" ]; then
+                # Check for HTTP error codes in response
+                if echo "$TOKEN_RESPONSE" | grep -qi "401\|unauthorized\|forbidden"; then
+                    error "Authentication failed - check admin username and password"
+                    log "Response: ${TOKEN_RESPONSE:0:300}"
+                    continue
+                fi
                 
-                # Save token to ~/.bashrc
-                log "Saving ROX_API_TOKEN to ~/.bashrc..."
+                # Extract token from JSON response
+                NEW_ROX_API_TOKEN=$(echo "$TOKEN_RESPONSE" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('token', ''))" 2>/dev/null || echo "")
                 
-                # Remove existing ROX_API_TOKEN entry if it exists
-                sed -i '/^export ROX_API_TOKEN=/d' ~/.bashrc 2>/dev/null || true
+                if [ -z "$NEW_ROX_API_TOKEN" ]; then
+                    # Try alternative extraction method
+                    NEW_ROX_API_TOKEN=$(echo "$TOKEN_RESPONSE" | grep -oP '"token"\s*:\s*"\K[^"]+' | head -1 || echo "")
+                fi
                 
-                # Add new token entry
-                echo "export ROX_API_TOKEN=\"$ROX_API_TOKEN\"" >> ~/.bashrc
-                log "✓ ROX_API_TOKEN saved to ~/.bashrc"
+                if [ -n "$NEW_ROX_API_TOKEN" ] && [ "$NEW_ROX_API_TOKEN" != "null" ] && [ ${#NEW_ROX_API_TOKEN} -gt 20 ]; then
+                    ROX_API_TOKEN="$NEW_ROX_API_TOKEN"
+                    log "✓ API token created successfully"
+                    TOKEN_CREATED=true
+                    
+                    # Save token to ~/.bashrc
+                    log "Saving ROX_API_TOKEN to ~/.bashrc..."
+                    
+                    # Remove existing ROX_API_TOKEN entry if it exists
+                    sed -i '/^export ROX_API_TOKEN=/d' ~/.bashrc 2>/dev/null || true
+                    
+                    # Add new token entry
+                    echo "export ROX_API_TOKEN=\"$ROX_API_TOKEN\"" >> ~/.bashrc
+                    log "✓ ROX_API_TOKEN saved to ~/.bashrc"
+                else
+                    error "Failed to extract valid token from API response"
+                    log "Response preview: ${TOKEN_RESPONSE:0:300}"
+                    if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                        warning "Will retry token creation..."
+                    fi
+                fi
             else
-                error "Failed to extract token from API response"
-                log "Response: ${TOKEN_RESPONSE:0:200}"
+                error "Failed to create API token (exit code: $TOKEN_EXIT_CODE)"
+                if [ -n "$TOKEN_RESPONSE" ]; then
+                    log "Response: ${TOKEN_RESPONSE:0:300}"
+                fi
+                if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                    warning "Will retry token creation..."
+                fi
             fi
-        else
-            error "Failed to create API token (exit code: $TOKEN_EXIT_CODE)"
-            if [ -n "$TOKEN_RESPONSE" ]; then
-                log "Response: ${TOKEN_RESPONSE:0:200}"
-            fi
+        done
+        
+        if [ "$TOKEN_CREATED" = false ]; then
+            error "Failed to create API token after $MAX_RETRIES attempts"
+            error "Please check:"
+            error "  1. Central is running and accessible at https://$ROX_ENDPOINT"
+            error "  2. Admin password is correct in secret central-htpasswd"
+            error "  3. Central API is ready (may need to wait longer)"
         fi
     else
-        error "No existing ROX_API_TOKEN found in ~/.bashrc and admin password unavailable; cannot generate new token"
+        error "Cannot create API token: admin credentials not available"
+        error "Username: $ADMIN_USERNAME"
+        error "Password available: $([ -n "$ADMIN_PASSWORD" ] && echo "Yes" || echo "No")"
     fi
 fi
 
