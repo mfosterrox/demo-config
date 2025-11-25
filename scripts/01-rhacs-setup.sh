@@ -2,6 +2,9 @@
 # RHACS Secured Cluster Setup Script
 # Creates RHACS secured cluster services
 
+# Exit immediately on error, show exact error message
+set -euo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
@@ -10,8 +13,6 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
-
-SCRIPT_FAILED=false
 
 log() {
     echo -e "${GREEN}[RHACS-SETUP]${NC} $1"
@@ -22,9 +23,13 @@ warning() {
 }
 
 error() {
-    echo -e "${RED}[RHACS-SETUP]${NC} $1"
-    SCRIPT_FAILED=true
+    echo -e "${RED}[RHACS-SETUP] ERROR:${NC} $1" >&2
+    echo -e "${RED}[RHACS-SETUP] Script failed at line ${BASH_LINENO[0]}${NC}" >&2
+    exit 1
 }
+
+# Trap to show error details on exit
+trap 'error "Command failed: $(cat <<< "$BASH_COMMAND")"' ERR
 
 normalize_rox_endpoint() {
     local input="$1"
@@ -72,9 +77,11 @@ TOKEN_ROLE="Admin"
 log "Validating prerequisites..."
 
 # Check if oc is available and connected
-if ! oc whoami &>/dev/null; then
-    error "OpenShift CLI not connected. Please login first."
+log "Checking OpenShift CLI connection..."
+if ! oc whoami; then
+    error "OpenShift CLI not connected. Please login first with: oc login"
 fi
+log "✓ OpenShift CLI connected as: $(oc whoami)"
 
 # Load existing environment variables from ~/.bashrc if available
 if [ -f ~/.bashrc ]; then
@@ -233,39 +240,36 @@ ADMIN_USERNAME="admin"
 ADMIN_PASSWORD=""
 
 # Wait for Central to be ready before trying to get the password
-log "Waiting for Central to be ready..."
-if ! oc wait --for=condition=Available deployment/central -n $NAMESPACE --timeout=300s 2>/dev/null; then
-    warning "Central deployment may not be fully ready, but continuing..."
+log "Waiting for Central deployment to be ready..."
+if ! oc wait --for=condition=Available deployment/central -n $NAMESPACE --timeout=300s; then
+    error "Central deployment is not ready after 5 minutes. Check deployment status with: oc get deployment central -n $NAMESPACE"
 fi
+log "✓ Central deployment is ready"
 
 # Get admin password from secret
-ADMIN_PASSWORD_B64=$(oc get secret central-htpasswd -n $NAMESPACE -o jsonpath='{.data.password}' 2>/dev/null || true)
+log "Retrieving admin password from secret..."
+ADMIN_PASSWORD_B64=$(oc get secret central-htpasswd -n $NAMESPACE -o jsonpath='{.data.password}')
 if [ -z "$ADMIN_PASSWORD_B64" ]; then
     # Try alternative secret name
-    ADMIN_PASSWORD_B64=$(oc get secret central-admin-password -n $NAMESPACE -o jsonpath='{.data.password}' 2>/dev/null || true)
+    log "Secret 'central-htpasswd' not found, trying 'central-admin-password'..."
+    ADMIN_PASSWORD_B64=$(oc get secret central-admin-password -n $NAMESPACE -o jsonpath='{.data.password}')
 fi
 
-if [ -n "$ADMIN_PASSWORD_B64" ]; then
-    ADMIN_PASSWORD=$(echo "$ADMIN_PASSWORD_B64" | base64 -d 2>/dev/null || true)
-    if [ -n "$ADMIN_PASSWORD" ]; then
-        log "✓ Admin password extracted from secret (username: $ADMIN_USERNAME)"
-    else
-        error "Failed to decode admin password from secret"
-    fi
-else
-    error "Admin password secret not found in namespace $NAMESPACE"
-    error "Expected secret: central-htpasswd"
-    if [ -z "$ROX_API_TOKEN" ]; then
-        error "No existing ROX_API_TOKEN found; cannot proceed without admin credentials"
-    else
-        warning "Will rely on existing ROX_API_TOKEN for API access"
-    fi
+if [ -z "$ADMIN_PASSWORD_B64" ]; then
+    error "Admin password secret not found in namespace $NAMESPACE. Expected one of: central-htpasswd, central-admin-password"
 fi
+
+ADMIN_PASSWORD=$(echo "$ADMIN_PASSWORD_B64" | base64 -d)
+if [ -z "$ADMIN_PASSWORD" ]; then
+    error "Failed to decode admin password from secret. Base64 value: ${ADMIN_PASSWORD_B64:0:20}..."
+fi
+log "✓ Admin password extracted from secret (username: $ADMIN_USERNAME)"
 
 # Extract external Central endpoint
+log "Extracting Central route endpoint..."
 ROX_ENDPOINT_HOST=$(oc get route central -n $NAMESPACE -o jsonpath='{.spec.host}')
 if [ -z "$ROX_ENDPOINT_HOST" ]; then
-    error "Failed to extract Central endpoint"
+    error "Failed to extract Central endpoint from route. Check route exists: oc get route central -n $NAMESPACE"
 fi
 if [ -z "$ROX_ENDPOINT" ]; then
     ROX_ENDPOINT="$(normalize_rox_endpoint "$ROX_ENDPOINT_HOST")"
@@ -277,27 +281,24 @@ log "Central endpoint: $ROX_ENDPOINT"
 
 # Save ROX_ENDPOINT to ~/.bashrc immediately after extraction
 log "Saving ROX_ENDPOINT to ~/.bashrc..."
-# Remove existing ROX_ENDPOINT entry if it exists
-sed -i '/^export ROX_ENDPOINT=/d' ~/.bashrc 2>/dev/null || true
-# Add new entry with just the hostname (no port)
+sed -i '/^export ROX_ENDPOINT=/d' ~/.bashrc
 echo "export ROX_ENDPOINT=\"$ROX_ENDPOINT_HOST\"" >> ~/.bashrc
 log "✓ ROX_ENDPOINT saved to ~/.bashrc: $ROX_ENDPOINT_HOST"
 
 # Save ROX_API_TOKEN to ~/.bashrc immediately if it already exists
 if [ -n "$ROX_API_TOKEN" ] && [ "$TOKEN_FROM_BASHRC" != true ]; then
     log "Saving existing ROX_API_TOKEN to ~/.bashrc..."
-    # Remove existing ROX_API_TOKEN entry if it exists
-    sed -i '/^export ROX_API_TOKEN=/d' ~/.bashrc 2>/dev/null || true
-    # Add token entry
+    sed -i '/^export ROX_API_TOKEN=/d' ~/.bashrc
     echo "export ROX_API_TOKEN=\"$ROX_API_TOKEN\"" >> ~/.bashrc
     log "✓ ROX_API_TOKEN saved to ~/.bashrc"
 fi
 
 # Test connectivity to Central endpoint
 log "Testing connectivity to Central endpoint..."
-if ! curl -k -s --connect-timeout 10 "https://$ROX_ENDPOINT" >/dev/null; then
-    error "Cannot connect to Central at $ROX_ENDPOINT"
+if ! curl -k -s --connect-timeout 10 "https://$ROX_ENDPOINT"; then
+    error "Cannot connect to Central at https://$ROX_ENDPOINT. Check network connectivity and route status."
 fi
+log "✓ Successfully connected to Central endpoint"
 
 # Create or reuse API token
 if [ "$TOKEN_FROM_BASHRC" = true ]; then
@@ -307,7 +308,7 @@ elif [ -n "$ROX_API_TOKEN" ]; then
     log "Using existing ROX_API_TOKEN from environment"
     # Token from environment but not in bashrc, ensure it's saved
     log "Ensuring ROX_API_TOKEN is saved to ~/.bashrc..."
-    sed -i '/^export ROX_API_TOKEN=/d' ~/.bashrc 2>/dev/null || true
+    sed -i '/^export ROX_API_TOKEN=/d' ~/.bashrc
     echo "export ROX_API_TOKEN=\"$ROX_API_TOKEN\"" >> ~/.bashrc
     log "✓ ROX_API_TOKEN saved to ~/.bashrc"
 else
@@ -334,67 +335,50 @@ else
                 sleep 10
             fi
             
-            set +e
+            log "Attempting to create API token (attempt $RETRY_COUNT/$MAX_RETRIES)..."
             TOKEN_RESPONSE=$(curl -k -X POST \
               -u "$ADMIN_USERNAME:$ADMIN_PASSWORD" \
               -H "Content-Type: application/json" \
               --data "{\"name\":\"$TOKEN_NAME\",\"role\":\"$TOKEN_ROLE\"}" \
               "https://$ROX_ENDPOINT/v1/apitokens/generate" 2>&1)
-            TOKEN_EXIT_CODE=$?
-            HTTP_CODE=$(echo "$TOKEN_RESPONSE" | grep -oP 'HTTP/\d\.\d \K\d+' | tail -1 || echo "")
-            set -e
             
-            # Check if we got a valid response
-            if [ $TOKEN_EXIT_CODE -eq 0 ] && [ -n "$TOKEN_RESPONSE" ]; then
-                # Check for HTTP error codes in response
-                if echo "$TOKEN_RESPONSE" | grep -qi "401\|unauthorized\|forbidden"; then
-                    error "Authentication failed - check admin username and password"
-                    log "Response: ${TOKEN_RESPONSE:0:300}"
-                    continue
-                fi
-                
-                # Extract token from JSON response
-                NEW_ROX_API_TOKEN=$(echo "$TOKEN_RESPONSE" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('token', ''))" 2>/dev/null || echo "")
-                
-                if [ -z "$NEW_ROX_API_TOKEN" ]; then
-                    # Try alternative extraction method
-                    NEW_ROX_API_TOKEN=$(echo "$TOKEN_RESPONSE" | grep -oP '"token"\s*:\s*"\K[^"]+' | head -1 || echo "")
-                fi
-                
-                if [ -n "$NEW_ROX_API_TOKEN" ] && [ "$NEW_ROX_API_TOKEN" != "null" ] && [ ${#NEW_ROX_API_TOKEN} -gt 20 ]; then
-                    ROX_API_TOKEN="$NEW_ROX_API_TOKEN"
-                    log "✓ API token created successfully"
-                    TOKEN_CREATED=true
-                    
-                    # Save token to ~/.bashrc
-                    log "Saving ROX_API_TOKEN to ~/.bashrc..."
-                    
-                    # Remove existing ROX_API_TOKEN entry if it exists
-                    sed -i '/^export ROX_API_TOKEN=/d' ~/.bashrc 2>/dev/null || true
-                    
-                    # Add new token entry
-                    echo "export ROX_API_TOKEN=\"$ROX_API_TOKEN\"" >> ~/.bashrc
-                    log "✓ ROX_API_TOKEN saved to ~/.bashrc"
-                else
-                    error "Failed to extract valid token from API response"
-                    log "Response preview: ${TOKEN_RESPONSE:0:300}"
-                    if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
-                        warning "Will retry token creation..."
-                    fi
-                fi
-            else
-                error "Failed to create API token (exit code: $TOKEN_EXIT_CODE)"
-                if [ -n "$TOKEN_RESPONSE" ]; then
-                    log "Response: ${TOKEN_RESPONSE:0:300}"
-                fi
-                if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
-                    warning "Will retry token creation..."
-                fi
+            if [ -z "$TOKEN_RESPONSE" ]; then
+                error "Empty response from token API. Check Central connectivity."
             fi
+            
+            # Check for HTTP error codes in response
+            if echo "$TOKEN_RESPONSE" | grep -qi "401\|unauthorized\|forbidden"; then
+                error "Authentication failed (401 Unauthorized). Check admin username and password."
+                error "Full response: $TOKEN_RESPONSE"
+            fi
+            
+            # Extract token from JSON response
+            NEW_ROX_API_TOKEN=$(echo "$TOKEN_RESPONSE" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('token', ''))")
+            
+            if [ -z "$NEW_ROX_API_TOKEN" ] || [ "$NEW_ROX_API_TOKEN" = "null" ]; then
+                # Try alternative extraction method
+                NEW_ROX_API_TOKEN=$(echo "$TOKEN_RESPONSE" | grep -oP '"token"\s*:\s*"\K[^"]+' | head -1)
+            fi
+            
+            if [ -z "$NEW_ROX_API_TOKEN" ] || [ "$NEW_ROX_API_TOKEN" = "null" ] || [ ${#NEW_ROX_API_TOKEN} -le 20 ]; then
+                error "Failed to extract valid token from API response"
+                error "Response: $TOKEN_RESPONSE"
+            fi
+            
+            ROX_API_TOKEN="$NEW_ROX_API_TOKEN"
+            log "✓ API token created successfully"
+            TOKEN_CREATED=true
+            
+            # Save token to ~/.bashrc
+            log "Saving ROX_API_TOKEN to ~/.bashrc..."
+            sed -i '/^export ROX_API_TOKEN=/d' ~/.bashrc
+            echo "export ROX_API_TOKEN=\"$ROX_API_TOKEN\"" >> ~/.bashrc
+            log "✓ ROX_API_TOKEN saved to ~/.bashrc"
         done
         
         if [ "$TOKEN_CREATED" = false ]; then
             error "Failed to create API token after $MAX_RETRIES attempts"
+            error "Last response: $TOKEN_RESPONSE"
             error "Please check:"
             error "  1. Central is running and accessible at https://$ROX_ENDPOINT"
             error "  2. Admin password is correct in secret central-htpasswd"
@@ -447,18 +431,18 @@ ROXCTL_TOKEN_FILE=""
 # Reload ~/.bashrc to get ADMIN_PASSWORD if it was saved earlier
 if [ -f ~/.bashrc ]; then
     set +u  # Temporarily disable unbound variable checking
-    source ~/.bashrc 2>/dev/null || true
+    source ~/.bashrc || true
     set -u  # Re-enable unbound variable checking
     # Ensure ADMIN_PASSWORD is loaded
     if [ -z "$ADMIN_PASSWORD" ]; then
-        ADMIN_PASSWORD_LINE=$(grep "^export ADMIN_PASSWORD=" ~/.bashrc 2>/dev/null | head -1)
+        ADMIN_PASSWORD_LINE=$(grep "^export ADMIN_PASSWORD=" ~/.bashrc | head -1 || echo "")
         if [ -n "$ADMIN_PASSWORD_LINE" ]; then
             ADMIN_PASSWORD=$(echo "$ADMIN_PASSWORD_LINE" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
         fi
     fi
     # Ensure ROX_ENDPOINT is loaded
     if [ -z "$ROX_ENDPOINT" ]; then
-        ROX_ENDPOINT_LINE=$(grep "^export ROX_ENDPOINT=" ~/.bashrc 2>/dev/null | head -1)
+        ROX_ENDPOINT_LINE=$(grep "^export ROX_ENDPOINT=" ~/.bashrc | head -1 || echo "")
         if [ -n "$ROX_ENDPOINT_LINE" ]; then
             ROX_ENDPOINT=$(echo "$ROX_ENDPOINT_LINE" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
         fi
@@ -526,21 +510,21 @@ if [ -n "$OLD_SECURED_CLUSTERS" ]; then
     log "Found old SecuredCluster resources, cleaning up..."
     for sc in $OLD_SECURED_CLUSTERS; do
         log "Deleting old resource: $sc"
-        oc delete $sc -n $NAMESPACE --wait=false 2>/dev/null || true
+        oc delete $sc -n $NAMESPACE --wait=false || error "Failed to delete old SecuredCluster: $sc"
     done
     log "Waiting for old resources to be cleaned up..."
     sleep 15
     
     # Clean up any orphaned NetworkPolicies with old Helm release names
     log "Checking for orphaned NetworkPolicies..."
-    ORPHANED_NETPOLS=$(oc get networkpolicy -n $NAMESPACE -o json 2>/dev/null | \
-        python3 -c "import sys, json; data=json.load(sys.stdin); print('\n'.join([item['metadata']['name'] for item in data.get('items', []) if item['metadata'].get('annotations', {}).get('meta.helm.sh/release-name', '').startswith('stackrox-secured-cluster') or item['metadata'].get('annotations', {}).get('meta.helm.sh/release-name', '') == 'same-cluster-secured-services']))" 2>/dev/null || true)
+    ORPHANED_NETPOLS=$(oc get networkpolicy -n $NAMESPACE -o json | \
+        python3 -c "import sys, json; data=json.load(sys.stdin); print('\n'.join([item['metadata']['name'] for item in data.get('items', []) if item['metadata'].get('annotations', {}).get('meta.helm.sh/release-name', '').startswith('stackrox-secured-cluster') or item['metadata'].get('annotations', {}).get('meta.helm.sh/release-name', '') == 'same-cluster-secured-services']))" || true)
     
     if [ -n "$ORPHANED_NETPOLS" ]; then
         log "Found orphaned NetworkPolicies, removing Helm annotations..."
         for netpol in $ORPHANED_NETPOLS; do
             log "Cleaning up NetworkPolicy: $netpol"
-            oc annotate networkpolicy $netpol -n $NAMESPACE meta.helm.sh/release-name- meta.helm.sh/release-namespace- helm.sh/resource-policy- 2>/dev/null || true
+            oc annotate networkpolicy $netpol -n $NAMESPACE meta.helm.sh/release-name- meta.helm.sh/release-namespace- helm.sh/resource-policy- || warning "Failed to remove annotations from networkpolicy $netpol"
         done
     fi
 fi
@@ -773,7 +757,7 @@ fi
 if [ -n "$ADMIN_PASSWORD" ]; then
     log "Saving ADMIN_PASSWORD to ~/.bashrc..."
     # Remove existing ADMIN_PASSWORD entry if it exists
-    sed -i '/^export ADMIN_PASSWORD=/d' ~/.bashrc 2>/dev/null || true
+    sed -i '/^export ADMIN_PASSWORD=/d' ~/.bashrc
     # Add new entry
     echo "export ADMIN_PASSWORD=\"$ADMIN_PASSWORD\"" >> ~/.bashrc
     log "✓ ADMIN_PASSWORD saved to ~/.bashrc"
@@ -786,11 +770,8 @@ if [ -n "$ROXCTL_TOKEN_FILE" ] && [ -f "$ROXCTL_TOKEN_FILE" ]; then
 fi
 # roxctl is now installed permanently to /usr/local/bin/roxctl
 
-if [ "$SCRIPT_FAILED" = true ]; then
-    warning "RHACS secured cluster configuration completed with errors. Review the log above for details."
-else
-    log "RHACS secured cluster configuration completed successfully!"
-fi
+# Script will exit automatically on error due to set -e at the top
+log "RHACS secured cluster configuration completed successfully!"
 log "========================================================="
 log "RHACS UI:     https://$ROX_ENDPOINT"
 log "---------------------------------------------------------"

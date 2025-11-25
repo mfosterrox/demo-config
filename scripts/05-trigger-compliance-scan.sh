@@ -2,15 +2,14 @@
 # Trigger Compliance Scan Script
 # Triggers compliance scans for all clusters and monitors their completion
 
-set -eo pipefail
+# Exit immediately on error, show exact error message
+set -euo pipefail
 
 # Colors for logging
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
-
-SCRIPT_FAILED=false
 
 log() {
     echo -e "${GREEN}[COMPLIANCE-SCAN]${NC} $1"
@@ -21,9 +20,13 @@ warning() {
 }
 
 error() {
-    echo -e "${RED}[COMPLIANCE-SCAN]${NC} $1"
-    SCRIPT_FAILED=true
+    echo -e "${RED}[COMPLIANCE-SCAN] ERROR:${NC} $1" >&2
+    echo -e "${RED}[COMPLIANCE-SCAN] Script failed at line ${BASH_LINENO[0]}${NC}" >&2
+    exit 1
 }
+
+# Trap to show error details on exit
+trap 'error "Command failed: $(cat <<< "$BASH_COMMAND")"' ERR
 
 # Source environment variables
 if [ -f ~/.bashrc ]; then
@@ -36,8 +39,8 @@ if [ -f ~/.bashrc ]; then
     fi
     
     set +u  # Temporarily disable unbound variable checking
-    if ! source ~/.bashrc 2>/dev/null; then
-        log "Error loading ~/.bashrc, proceeding with current environment"
+    if ! source ~/.bashrc; then
+        warning "Error loading ~/.bashrc, proceeding with current environment"
     fi
     set -u  # Re-enable unbound variable checking
 else
@@ -45,24 +48,32 @@ else
 fi
 
 # Validate environment variables
-if [[ -z "$ROX_API_TOKEN" ]]; then
-    error "ROX_API_TOKEN needs to be set"
+if [ -z "$ROX_API_TOKEN" ]; then
+    error "ROX_API_TOKEN needs to be set. Please set it in ~/.bashrc"
 fi
 
-if [[ -z "$ROX_ENDPOINT" ]]; then
-    error "ROX_ENDPOINT needs to be set"
+if [ -z "$ROX_ENDPOINT" ]; then
+    error "ROX_ENDPOINT needs to be set. Please set it in ~/.bashrc"
 fi
+log "✓ Environment variables validated"
 
 # Ensure jq is installed
-if [ ! -x "$(which jq)" ]; then
-    warning "jq not found, installing..."
-    if command -v dnf &>/dev/null; then
-        sudo dnf install -y jq
-    elif command -v apt-get &>/dev/null; then
-        sudo apt-get update && sudo apt-get install -y jq
+if ! command -v jq >/dev/null 2>&1; then
+    log "Installing jq..."
+    if command -v dnf >/dev/null 2>&1; then
+        if ! sudo dnf install -y jq; then
+            error "Failed to install jq using dnf. Check sudo permissions and package repository."
+        fi
+    elif command -v apt-get >/dev/null 2>&1; then
+        if ! sudo apt-get update && sudo apt-get install -y jq; then
+            error "Failed to install jq using apt-get. Check sudo permissions and package repository."
+        fi
     else
-        error "jq is required for this script to work correctly"
+        error "jq is required for this script to work correctly. Please install jq manually."
     fi
+    log "✓ jq installed successfully"
+else
+    log "✓ jq is already installed"
 fi
 
 # Ensure ROX_ENDPOINT has https:// prefix
@@ -95,14 +106,11 @@ log "Checking for 'acs-catch-all' scan configuration..."
 SCAN_CONFIGS=""
 SCAN_CONFIG_ERROR=""
 
-# Temporarily disable exit on error for this section
-set +e
 SCAN_CONFIGS=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
     -H "Authorization: Bearer $ROX_API_TOKEN" \
     -H "Content-Type: application/json" \
     "$ROX_ENDPOINT/v2/compliance/scan/configurations" 2>&1)
 CURL_EXIT_CODE=$?
-set -e
 
 if [ $CURL_EXIT_CODE -eq 0 ] && [ -n "$SCAN_CONFIGS" ]; then
     # Check if response is valid JSON
@@ -114,16 +122,14 @@ if [ $CURL_EXIT_CODE -eq 0 ] && [ -n "$SCAN_CONFIGS" ]; then
             log "✓ Found 'acs-catch-all' scan configuration (ID: $SCAN_CONFIG_ID)"
             log "Triggering compliance scan using scan configuration..."
             
-            set +e
             RUN_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X POST \
                 -H "Authorization: Bearer $ROX_API_TOKEN" \
                 -H "Content-Type: application/json" \
                 --data-raw "{\"scanConfigId\": \"$SCAN_CONFIG_ID\"}" \
                 "$ROX_ENDPOINT/v2/compliance/scan/configurations/reports/run" 2>&1)
             RUN_EXIT_CODE=$?
-            set -e
             
-            if [ $RUN_EXIT_CODE -eq 0 ]; then
+            if [ $RUN_EXIT_CODE -eq 0 ] && [ -n "$RUN_RESPONSE" ]; then
                 # Check if response indicates success
                 if echo "$RUN_RESPONSE" | jq . >/dev/null 2>&1; then
                     log "✓ Compliance scan triggered successfully using scan configuration"
@@ -131,12 +137,12 @@ if [ $CURL_EXIT_CODE -eq 0 ] && [ -n "$SCAN_CONFIGS" ]; then
                     exit 0
                 else
                     warning "Scan trigger API returned non-JSON response, falling back to legacy method..."
-                    log "Response: $RUN_RESPONSE"
+                    log "Response: ${RUN_RESPONSE:0:300}"
                 fi
             else
                 warning "Failed to trigger scan using configuration (exit code: $RUN_EXIT_CODE), falling back to legacy method..."
                 if [ -n "$RUN_RESPONSE" ]; then
-                    log "Error response: $RUN_RESPONSE"
+                    log "Error response: ${RUN_RESPONSE:0:300}"
                 fi
             fi
         else
@@ -160,10 +166,8 @@ fi
 
 # Fallback: Get all cluster IDs and trigger legacy compliance runs
 log "Fetching cluster IDs for legacy compliance trigger..."
-set +e
 CLUSTERS_FULL_RESPONSE=$(roxcurl "$ROX_ENDPOINT/v1/clusters" 2>&1)
 CLUSTERS_EXIT_CODE=$?
-set -e
 
 CLUSTERS_HTTP_CODE=$(extract_http_code "$CLUSTERS_FULL_RESPONSE")
 CLUSTERS_RESPONSE=$(extract_body "$CLUSTERS_FULL_RESPONSE")
@@ -213,10 +217,8 @@ fi
 cluster_ids=$(echo "$CLUSTERS_RESPONSE" | jq -r '.clusters[]?.id // empty' 2>/dev/null)
 
 if [ -z "$cluster_ids" ]; then
-    warning "No clusters found in response"
-    log "Response: ${CLUSTERS_RESPONSE:0:200}"
-    log "Attempting to continue anyway..."
-    cluster_ids=""
+    error "No clusters found in response. Check cluster registration: oc get securedcluster -A"
+    log "Response: ${CLUSTERS_RESPONSE:0:300}"
 fi
 
 if [ -n "$cluster_ids" ]; then
@@ -235,46 +237,33 @@ if [ -n "$cluster_ids" ]; then
         runs=$(extract_body "$RUNS_FULL_RESPONSE")
         
         if [ $RUNS_EXIT_CODE -ne 0 ]; then
-            warning "Failed to trigger compliance run for cluster $cluster (exit code: $RUNS_EXIT_CODE, HTTP $RUNS_HTTP_CODE)"
-            if [ -n "$runs" ]; then
-                log "Error response: ${runs:0:200}"
-            fi
-            continue
+            error "Failed to trigger compliance run for cluster $cluster (exit code: $RUNS_EXIT_CODE, HTTP $RUNS_HTTP_CODE). Response: ${runs:0:300}"
         fi
         
         if [ -z "$runs" ]; then
-            warning "Empty response when triggering compliance run for cluster $cluster (HTTP $RUNS_HTTP_CODE)"
-            continue
+            error "Empty response when triggering compliance run for cluster $cluster (HTTP $RUNS_HTTP_CODE)"
         fi
         
         # Check if response is HTML
         if echo "$runs" | grep -qiE "<html|<!DOCTYPE"; then
-            warning "Received HTML instead of JSON when triggering compliance run for cluster $cluster (HTTP $RUNS_HTTP_CODE)"
-            log "Response preview: ${runs:0:200}"
-            continue
+            error "Received HTML instead of JSON when triggering compliance run for cluster $cluster (HTTP $RUNS_HTTP_CODE). Check authentication. Response: ${runs:0:300}"
         fi
         
         # Validate JSON response
         if ! echo "$runs" | jq . >/dev/null 2>&1; then
-            warning "Invalid JSON response when triggering compliance run for cluster $cluster (HTTP $RUNS_HTTP_CODE)"
-            log "Response: ${runs:0:200}"
-            continue
+            error "Invalid JSON response when triggering compliance run for cluster $cluster (HTTP $RUNS_HTTP_CODE). Response: ${runs:0:300}"
         fi
         
         # Check HTTP status code
         if [ "$RUNS_HTTP_CODE" -lt 200 ] || [ "$RUNS_HTTP_CODE" -ge 300 ]; then
-            warning "Compliance run trigger returned HTTP $RUNS_HTTP_CODE for cluster $cluster"
-            log "Response: ${runs:0:200}"
-            continue
+            error "Compliance run trigger returned HTTP $RUNS_HTTP_CODE for cluster $cluster. Response: ${runs:0:300}"
         fi
         
         run_ids=$(echo "$runs" | jq -r '.startedRuns[]?.id // empty' 2>/dev/null)
         num_runs=$(echo "$runs" | jq '.startedRuns | length // 0' 2>/dev/null)
         
         if [ "$num_runs" -eq 0 ] || [ -z "$run_ids" ]; then
-            warning "No compliance runs started for cluster $cluster"
-            log "Response: ${runs:0:200}"
-            continue
+            error "No compliance runs started for cluster $cluster. Response: ${runs:0:300}"
         fi
         
         log "Started $num_runs compliance runs for cluster $cluster"
@@ -283,14 +272,23 @@ if [ -n "$cluster_ids" ]; then
         while true; do
             size="$num_runs"
             for run_id in $run_ids; do
-                set +e
                 RUN_STATUS_FULL_RESPONSE=$(roxcurl "$ROX_ENDPOINT/v1/compliancemanagement/runstatuses" --data-urlencode "run_ids=$run_id" 2>&1)
                 RUN_STATUS_BODY=$(extract_body "$RUN_STATUS_FULL_RESPONSE")
-                run_status=$(echo "$RUN_STATUS_BODY" | jq -r '.runs[0] // empty' 2>/dev/null)
-                set -e
+                
+                if [ -z "$RUN_STATUS_BODY" ]; then
+                    warning "Empty response when checking status for run $run_id, continuing..."
+                    continue
+                fi
+                
+                if ! echo "$RUN_STATUS_BODY" | jq . >/dev/null 2>&1; then
+                    warning "Invalid JSON response when checking status for run $run_id, continuing..."
+                    continue
+                fi
+                
+                run_status=$(echo "$RUN_STATUS_BODY" | jq -r '.runs[0] // empty')
                 
                 if [ -z "$run_status" ] || [ "$run_status" = "null" ]; then
-                    warning "Could not get status for run $run_id"
+                    warning "Could not get status for run $run_id, continuing..."
                     continue
                 fi
                 
@@ -317,13 +315,7 @@ if [ -n "$cluster_ids" ]; then
         done
     done
 else
-    warning "No clusters found to trigger compliance scans"
-    log "This may be normal if clusters are still being registered or if the API endpoint is not fully available"
+    error "No clusters found to trigger compliance scans. Check cluster registration: oc get securedcluster -A"
 fi
 
-if [ "$SCRIPT_FAILED" = true ]; then
-    warning "Compliance scan trigger completed with errors. Review log output for details."
-    exit 1
-else
-    log "✓ Compliance scan trigger process completed successfully!"
-fi
+log "✓ Compliance scan trigger process completed successfully!"

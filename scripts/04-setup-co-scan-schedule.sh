@@ -2,13 +2,14 @@
 # Application Setup API Script for RHACS
 # Fetches cluster ID and creates compliance scan configuration
 
+# Exit immediately on error, show exact error message
+set -euo pipefail
+
 # Colors for logging
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
-
-SCRIPT_FAILED=false
 
 log() {
     echo -e "${GREEN}[API-SETUP]${NC} $1"
@@ -19,9 +20,13 @@ warning() {
 }
 
 error() {
-    echo -e "${RED}[API-SETUP]${NC} $1"
-    SCRIPT_FAILED=true
+    echo -e "${RED}[API-SETUP] ERROR:${NC} $1" >&2
+    echo -e "${RED}[API-SETUP] Script failed at line ${BASH_LINENO[0]}${NC}" >&2
+    exit 1
 }
+
+# Trap to show error details on exit
+trap 'error "Command failed: $(cat <<< "$BASH_COMMAND")"' ERR
 
 # Source environment variables
 if [ -f ~/.bashrc ]; then
@@ -32,28 +37,41 @@ if [ -f ~/.bashrc ]; then
     fi
     
     # Source bashrc with error handling
-    if ! source ~/.bashrc 2>/dev/null; then
-        log "Error loading ~/.bashrc, proceeding with current environment"
+    set +u  # Temporarily disable unbound variable checking
+    if ! source ~/.bashrc; then
+        warning "Error loading ~/.bashrc, proceeding with current environment"
     fi
+    set -u  # Re-enable unbound variable checking
 else
     log "~/.bashrc not found, proceeding with current environment"
 fi
 
 # Validate environment variables
-[ -z "$ROX_ENDPOINT" ] && error "ROX_ENDPOINT not set. Please set it in ~/.bashrc"
-[ -z "$ROX_API_TOKEN" ] && error "ROX_API_TOKEN not set. Please set it in ~/.bashrc"
+if [ -z "$ROX_ENDPOINT" ]; then
+    error "ROX_ENDPOINT not set. Please set it in ~/.bashrc"
+fi
+if [ -z "$ROX_API_TOKEN" ]; then
+    error "ROX_API_TOKEN not set. Please set it in ~/.bashrc"
+fi
 log "✓ Environment variables validated: ROX_ENDPOINT=$ROX_ENDPOINT"
 
 # Ensure jq is installed
-if ! command -v jq &>/dev/null; then
+if ! command -v jq >/dev/null 2>&1; then
     log "Installing jq..."
-    if command -v dnf &>/dev/null; then
-        sudo dnf install -y jq
-    elif command -v apt-get &>/dev/null; then
-        sudo apt-get update && sudo apt-get install -y jq
+    if command -v dnf >/dev/null 2>&1; then
+        if ! sudo dnf install -y jq; then
+            error "Failed to install jq using dnf. Check sudo permissions and package repository."
+        fi
+    elif command -v apt-get >/dev/null 2>&1; then
+        if ! sudo apt-get update && sudo apt-get install -y jq; then
+            error "Failed to install jq using apt-get. Check sudo permissions and package repository."
+        fi
     else
-        error "jq not found and cannot be installed automatically"
+        error "jq not found and cannot be installed automatically. Please install jq manually."
     fi
+    log "✓ jq installed successfully"
+else
+    log "✓ jq is already installed"
 fi
 
 # Ensure ROX_ENDPOINT has https:// prefix
@@ -79,9 +97,13 @@ if [ -z "$CLUSTER_RESPONSE" ]; then
 fi
 
 # Extract cluster ID
-PRODUCTION_CLUSTER_ID=$(echo "$CLUSTER_RESPONSE" | jq -r '.clusters[0].id' 2>/dev/null)
+if ! echo "$CLUSTER_RESPONSE" | jq . >/dev/null 2>&1; then
+    error "Invalid JSON response from cluster API. Response: ${CLUSTER_RESPONSE:0:300}"
+fi
+
+PRODUCTION_CLUSTER_ID=$(echo "$CLUSTER_RESPONSE" | jq -r '.clusters[0].id')
 if [ -z "$PRODUCTION_CLUSTER_ID" ] || [ "$PRODUCTION_CLUSTER_ID" = "null" ]; then
-    error "Failed to extract cluster ID. Response preview: ${CLUSTER_RESPONSE:0:200}..."
+    error "Failed to extract cluster ID. Response: ${CLUSTER_RESPONSE:0:300}"
 fi
 log "✓ Cluster ID: $PRODUCTION_CLUSTER_ID"
 
@@ -92,20 +114,28 @@ EXISTING_CONFIGS=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
     -H "Content-Type: application/json" \
     "$ROX_ENDPOINT/v2/compliance/scan/configurations" 2>&1)
 
-if [ $? -eq 0 ]; then
-    EXISTING_SCAN=$(echo "$EXISTING_CONFIGS" | jq -r '.configurations[] | select(.scanName == "acs-catch-all") | .id' 2>/dev/null)
-    
-    if [ -n "$EXISTING_SCAN" ] && [ "$EXISTING_SCAN" != "null" ]; then
-        log "✓ Scan configuration 'acs-catch-all' already exists (ID: $EXISTING_SCAN)"
-        log "Skipping creation..."
-        SCAN_CONFIG_ID="$EXISTING_SCAN"
-        SKIP_CREATION=true
-    else
-        log "Scan configuration 'acs-catch-all' not found, creating new configuration..."
-        SKIP_CREATION=false
-    fi
+CONFIG_CURL_EXIT_CODE=$?
+if [ $CONFIG_CURL_EXIT_CODE -ne 0 ]; then
+    error "Failed to fetch existing scan configurations (exit code: $CONFIG_CURL_EXIT_CODE). Response: ${EXISTING_CONFIGS:0:300}"
+fi
+
+if [ -z "$EXISTING_CONFIGS" ]; then
+    error "Empty response from scan configurations API"
+fi
+
+if ! echo "$EXISTING_CONFIGS" | jq . >/dev/null 2>&1; then
+    error "Invalid JSON response from scan configurations API. Response: ${EXISTING_CONFIGS:0:300}"
+fi
+
+EXISTING_SCAN=$(echo "$EXISTING_CONFIGS" | jq -r '.configurations[] | select(.scanName == "acs-catch-all") | .id' 2>/dev/null || echo "")
+
+if [ -n "$EXISTING_SCAN" ] && [ "$EXISTING_SCAN" != "null" ]; then
+    log "✓ Scan configuration 'acs-catch-all' already exists (ID: $EXISTING_SCAN)"
+    log "Skipping creation..."
+    SCAN_CONFIG_ID="$EXISTING_SCAN"
+    SKIP_CREATION=true
 else
-    log "Could not fetch existing configurations, proceeding with creation..."
+    log "Scan configuration 'acs-catch-all' not found, creating new configuration..."
     SKIP_CREATION=false
 fi
 
@@ -144,45 +174,50 @@ if [ "$SKIP_CREATION" = "false" ]; then
         ]
     }" \
     "$ROX_ENDPOINT/v2/compliance/scan/configurations" 2>&1)
+    SCAN_CREATE_EXIT_CODE=$?
 
-    if [ $? -eq 0 ]; then
-        log "✓ Compliance scan configuration created successfully"
-        
-        # Get the scan configuration ID from the response
-        SCAN_CONFIG_ID=$(echo "$SCAN_CONFIG_RESPONSE" | jq -r '.id' 2>/dev/null)
-        if [ -z "$SCAN_CONFIG_ID" ] || [ "$SCAN_CONFIG_ID" = "null" ]; then
-            log "Could not extract scan configuration ID from response, trying to get it from configurations list..."
-            
-            # Get scan configurations to find our configuration
-            CONFIGS_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
-                -H "Authorization: Bearer $ROX_API_TOKEN" \
-                -H "Content-Type: application/json" \
-                "$ROX_ENDPOINT/v2/compliance/scan/configurations" 2>&1)
+    if [ $SCAN_CREATE_EXIT_CODE -ne 0 ]; then
+        error "Failed to create compliance scan configuration (exit code: $SCAN_CREATE_EXIT_CODE). Response: ${SCAN_CONFIG_RESPONSE:0:300}"
+    fi
+
+    if [ -z "$SCAN_CONFIG_RESPONSE" ]; then
+        error "Empty response from scan configuration creation API"
+    fi
+
+    if ! echo "$SCAN_CONFIG_RESPONSE" | jq . >/dev/null 2>&1; then
+        error "Invalid JSON response from scan configuration creation API. Response: ${SCAN_CONFIG_RESPONSE:0:300}"
+    fi
+
+    log "✓ Compliance scan configuration created successfully"
     
-            if [ $? -eq 0 ]; then
-                SCAN_CONFIG_ID=$(echo "$CONFIGS_RESPONSE" | jq -r '.configurations[] | select(.scanName == "acs-catch-all") | .id' 2>/dev/null)
-                if [ -n "$SCAN_CONFIG_ID" ] && [ "$SCAN_CONFIG_ID" != "null" ]; then
-                    log "✓ Found scan configuration ID: $SCAN_CONFIG_ID"
-                else
-                    log "Could not find 'acs-catch-all' configuration in the list"
-                    log "Available configurations:"
-                    echo "$CONFIGS_RESPONSE" | jq -r '.configurations[] | .scanName' 2>/dev/null || log "No configurations found"
-                fi
-            else
-                log "Failed to get scan configurations list"
-            fi
+    # Get the scan configuration ID from the response
+    SCAN_CONFIG_ID=$(echo "$SCAN_CONFIG_RESPONSE" | jq -r '.id')
+    if [ -z "$SCAN_CONFIG_ID" ] || [ "$SCAN_CONFIG_ID" = "null" ]; then
+        log "Could not extract scan configuration ID from response, trying to get it from configurations list..."
+        
+        # Get scan configurations to find our configuration
+        CONFIGS_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
+            -H "Authorization: Bearer $ROX_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            "$ROX_ENDPOINT/v2/compliance/scan/configurations" 2>&1)
+        CONFIGS_EXIT_CODE=$?
+
+        if [ $CONFIGS_EXIT_CODE -ne 0 ]; then
+            error "Failed to get scan configurations list (exit code: $CONFIGS_EXIT_CODE). Response: ${CONFIGS_RESPONSE:0:300}"
+        fi
+
+        SCAN_CONFIG_ID=$(echo "$CONFIGS_RESPONSE" | jq -r '.configurations[] | select(.scanName == "acs-catch-all") | .id')
+        if [ -z "$SCAN_CONFIG_ID" ] || [ "$SCAN_CONFIG_ID" = "null" ]; then
+            error "Could not find 'acs-catch-all' configuration in the list. Available configurations: $(echo "$CONFIGS_RESPONSE" | jq -r '.configurations[] | .scanName' 2>/dev/null | tr '\n' ' ' || echo "none")"
         else
-            log "✓ Scan configuration ID: $SCAN_CONFIG_ID"
+            log "✓ Found scan configuration ID: $SCAN_CONFIG_ID"
         fi
     else
-        error "Failed to create compliance scan configuration. Response: $SCAN_CONFIG_RESPONSE"
+        log "✓ Scan configuration ID: $SCAN_CONFIG_ID"
     fi
 fi
 
-if [ "$SCRIPT_FAILED" = true ]; then
-    warning "Compliance scan schedule setup completed with errors. Review the log above for more details."
-else
-    log "Compliance scan schedule setup completed successfully!"
-fi
+log "Compliance scan schedule setup completed successfully!"
 log "Scan configuration ID: $SCAN_CONFIG_ID"
+log "Note: Run script 05-trigger-compliance-scan.sh to trigger an immediate scan"
 log ""
