@@ -78,6 +78,15 @@ trigger_compliance_scan() {
     success "Compliance scan trigger completed successfully"
 }
 
+# Configure RHACS settings (Step 6)
+configure_rhacs_settings() {
+    log "Configuring RHACS settings..."
+    if ! bash "${SCRIPT_DIR}/scripts/06-configure-rhacs-settings.sh"; then
+        error "RHACS configuration script failed. Installation stopped."
+    fi
+    success "RHACS configuration completed successfully"
+}
+
 
 # Main function
 main() {
@@ -107,7 +116,7 @@ main() {
     
     # Verify scripts exist - fail fast if any script is missing
     # Scripts listed in execution order
-    for script in "01-rhacs-setup.sh" "02-compliance-operator-install.sh" "03-deploy-applications.sh" "04-setup-co-scan-schedule.sh" "05-trigger-compliance-scan.sh" ; do
+    for script in "01-rhacs-setup.sh" "02-compliance-operator-install.sh" "03-deploy-applications.sh" "04-setup-co-scan-schedule.sh" "05-trigger-compliance-scan.sh" "06-configure-rhacs-settings.sh" ; do
         if [ ! -f "$SCRIPT_DIR/scripts/$script" ]; then
             error "Required script not found: $SCRIPT_DIR/scripts/$script"
         fi
@@ -120,6 +129,7 @@ main() {
     deploy_applications
     setup_compliance_scan_schedule
     trigger_compliance_scan
+    configure_rhacs_settings
     
     log "========================================================="
     success "Demo Config setup completed successfully!"
@@ -131,6 +141,7 @@ main() {
     log "  3. Application deployment"
     log "  4. Compliance scan schedule setup"
     log "  5. Compliance scan trigger"
+    log "  6. RHACS configuration"
     
     # Display RHACS access information
     log ""
@@ -139,8 +150,11 @@ main() {
     log "========================================================="
     
     # Source bashrc to get the environment variables
+    # Temporarily disable unbound variable checking to avoid errors from /etc/bashrc
     if [ -f ~/.bashrc ]; then
-        source ~/.bashrc
+        set +u  # Temporarily disable unbound variable checking
+        source ~/.bashrc || true
+        set -u  # Re-enable unbound variable checking
     fi
     
     log "RHACS UI:     https://$ROX_ENDPOINT"

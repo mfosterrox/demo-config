@@ -1,0 +1,58 @@
+curl -k -X PUT "https://central-tssc-acs.apps.cluster-2h2hr.dynamic.redhatworkshops.io/v1/config" \
+  -H "Authorization: Bearer $ROX_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+  "config": {
+    "publicConfig": {
+      "loginNotice": {
+        "enabled": false,
+        "text": ""
+      },
+      "header": {
+        "enabled": false,
+        "text": "",
+        "size": "UNSET",
+        "color": "#000000",
+        "backgroundColor": "#FFFFFF"
+      },
+      "footer": {
+        "enabled": false,
+        "text": "",
+        "size": "UNSET",
+        "color": "#000000",
+        "backgroundColor": "#FFFFFF"
+      },
+      "telemetry": {
+        "enabled": true,
+        "lastSetTime": null
+      }
+    },
+    "privateConfig": {
+      "metrics": {
+        "imageVulnerabilities": {
+          "gatheringPeriodMinutes": 5,
+          "descriptors": {
+            "cve_severity":        { "labels": ["Cluster","CVE","IsPlatformWorkload","IsFixable","Severity"] },
+            "deployment_severity": { "labels": ["Cluster","Namespace","Deployment","IsPlatformWorkload","IsFixable","Severity"] },
+            "namespace_severity":  { "labels": ["Cluster","Namespace","IsPlatformWorkload","IsFixable","Severity"] }
+          }
+        },
+        "policyViolations": {
+          "gatheringPeriodMinutes": 3,
+          "descriptors": {
+            "deployment_severity": { "labels": ["Cluster","Namespace","Deployment","IsPlatformComponent","Action","Severity"] },
+            "namespace_severity":  { "labels": ["Cluster","Namespace","IsPlatformComponent","Action","Severity"] }
+          }
+        },
+        "nodeVulnerabilities": {
+          "gatheringPeriodMinutes": 3,
+          "descriptors": {
+            "component_severity": { "labels": ["Cluster","Node","Component","IsFixable","Severity"] },
+            "cve_severity":       { "labels": ["Cluster","CVE","IsFixable","Severity"] },
+            "node_severity":      { "labels": ["Cluster","Node","IsFixable","Severity"] }
+          }
+        }
+      }
+    }
+  }
+}'
