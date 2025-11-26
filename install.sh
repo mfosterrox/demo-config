@@ -6,6 +6,9 @@
 # Exit immediately on error - fail fast if any script fails
 set -euo pipefail
 
+# Trap to catch errors and show which command failed
+trap 'error "Command failed: $BASH_COMMAND"' ERR
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -26,42 +29,52 @@ warning() {
 }
 
 error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+    echo -e "${RED}[ERROR]${NC} $1" >&2
     exit 1
 }
 
 # Run RHACS setup script (Step 1)
 setup_rhacs() {
     log "Running RHACS secured cluster setup..."
-    bash "${SCRIPT_DIR}/scripts/01-rhacs-setup.sh"
+    if ! bash "${SCRIPT_DIR}/scripts/01-rhacs-setup.sh"; then
+        error "RHACS setup script failed. Installation stopped."
+    fi
     success "RHACS setup completed successfully"
 }
 
 # Install Red Hat Compliance Operator (Step 2)
 install_compliance_operator() {
     log "Installing Red Hat Compliance Operator..."
-    bash "${SCRIPT_DIR}/scripts/02-compliance-operator-install.sh"
+    if ! bash "${SCRIPT_DIR}/scripts/02-compliance-operator-install.sh"; then
+        error "Compliance Operator installation script failed. Installation stopped."
+    fi
     success "Compliance Operator installation completed successfully"
 }
 
 # Deploy applications to OpenShift cluster (Step 3)
 deploy_applications() {
     log "Deploying applications to OpenShift cluster..."
-    bash "${SCRIPT_DIR}/scripts/03-deploy-applications.sh"
+    if ! bash "${SCRIPT_DIR}/scripts/03-deploy-applications.sh"; then
+        error "Application deployment script failed. Installation stopped."
+    fi
     success "Application deployment completed successfully"
 }
 
 # Setup compliance scan schedule (Step 4)
 setup_compliance_scan_schedule() {
     log "Setting up compliance scan schedule..."
-    bash "${SCRIPT_DIR}/scripts/04-setup-co-scan-schedule.sh"
+    if ! bash "${SCRIPT_DIR}/scripts/04-setup-co-scan-schedule.sh"; then
+        error "Compliance scan schedule script failed. Installation stopped."
+    fi
     success "Compliance scan schedule setup completed successfully"
 }
 
 # Trigger compliance scan (Step 5)
 trigger_compliance_scan() {
     log "Triggering compliance scan..."
-    bash "${SCRIPT_DIR}/scripts/05-trigger-compliance-scan.sh"
+    if ! bash "${SCRIPT_DIR}/scripts/05-trigger-compliance-scan.sh"; then
+        error "Compliance scan trigger script failed. Installation stopped."
+    fi
     success "Compliance scan trigger completed successfully"
 }
 
@@ -92,13 +105,14 @@ main() {
     
     log "Using script directory: $SCRIPT_DIR"
     
-    # Verify scripts exist (warn but don't fail)
+    # Verify scripts exist - fail fast if any script is missing
     # Scripts listed in execution order
     for script in "01-rhacs-setup.sh" "02-compliance-operator-install.sh" "03-deploy-applications.sh" "04-setup-co-scan-schedule.sh" "05-trigger-compliance-scan.sh" ; do
         if [ ! -f "$SCRIPT_DIR/scripts/$script" ]; then
-            warning "Script not found: $SCRIPT_DIR/scripts/$script - will skip this step"
+            error "Required script not found: $SCRIPT_DIR/scripts/$script"
         fi
     done
+    log "✓ All required scripts found"
     
     # Run setup scripts in order
     setup_rhacs

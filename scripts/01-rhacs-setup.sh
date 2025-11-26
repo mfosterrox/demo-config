@@ -49,7 +49,8 @@ TOKEN_FROM_ENV=false
 if [ -f ~/.bashrc ]; then
     # Extract ROX_API_TOKEN from ~/.bashrc if it exists
     # Handle both double quotes and single quotes, and unquoted values
-    TOKEN_LINE=$(grep "^export ROX_API_TOKEN=" ~/.bashrc 2>/dev/null | head -1)
+    # grep returns 1 if no match (which is OK), so use || true to prevent script failure
+    TOKEN_LINE=$(grep "^export ROX_API_TOKEN=" ~/.bashrc 2>/dev/null | head -1 || true)
     
     if [ -n "$TOKEN_LINE" ]; then
         # Extract token value using awk (more reliable than sed for this)
