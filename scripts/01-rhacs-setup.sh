@@ -42,6 +42,40 @@ normalize_rox_endpoint() {
     echo "$input"
 }
 
+# Function to reload variables from ~/.bashrc
+reload_bashrc_vars() {
+    if [ -f ~/.bashrc ]; then
+        set +u  # Temporarily disable unbound variable checking
+        source ~/.bashrc || true
+        set -u  # Re-enable unbound variable checking
+        
+        # Explicitly extract variables to ensure they're loaded
+        if grep -q "^export ROX_ENDPOINT=" ~/.bashrc; then
+            ROX_ENDPOINT_LINE=$(grep "^export ROX_ENDPOINT=" ~/.bashrc | head -1)
+            ROX_ENDPOINT=$(echo "$ROX_ENDPOINT_LINE" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
+            export ROX_ENDPOINT="$ROX_ENDPOINT"
+        fi
+        
+        if grep -q "^export ROX_API_TOKEN=" ~/.bashrc; then
+            ROX_API_TOKEN_LINE=$(grep "^export ROX_API_TOKEN=" ~/.bashrc | head -1)
+            ROX_API_TOKEN=$(echo "$ROX_API_TOKEN_LINE" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
+            export ROX_API_TOKEN="$ROX_API_TOKEN"
+        fi
+        
+        if grep -q "^export ADMIN_PASSWORD=" ~/.bashrc; then
+            ADMIN_PASSWORD_LINE=$(grep "^export ADMIN_PASSWORD=" ~/.bashrc | head -1)
+            ADMIN_PASSWORD=$(echo "$ADMIN_PASSWORD_LINE" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
+            export ADMIN_PASSWORD="$ADMIN_PASSWORD"
+        fi
+        
+        if grep -q "^export TUTORIAL_HOME=" ~/.bashrc; then
+            TUTORIAL_HOME_LINE=$(grep "^export TUTORIAL_HOME=" ~/.bashrc | head -1)
+            TUTORIAL_HOME=$(echo "$TUTORIAL_HOME_LINE" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
+            export TUTORIAL_HOME="$TUTORIAL_HOME"
+        fi
+    fi
+}
+
 # Check for existing API token in ~/.bashrc
 TOKEN_FROM_BASHRC=false
 TOKEN_FROM_ENV=false
@@ -164,6 +198,8 @@ else
         sed -i '/^export ROX_ENDPOINT=/d' ~/.bashrc
         echo "export ROX_ENDPOINT=\"$ROX_ENDPOINT\"" >> ~/.bashrc
         log "✓ ROX_ENDPOINT saved to ~/.bashrc"
+        # Reload variables from ~/.bashrc to ensure latest values
+        reload_bashrc_vars
     fi
 fi
 
@@ -280,6 +316,8 @@ if [ -z "${ROX_ENDPOINT:-}" ]; then
     echo "export ROX_ENDPOINT=\"$ROX_ENDPOINT\"" >> ~/.bashrc
     export ROX_ENDPOINT="$ROX_ENDPOINT"
     log "✓ ROX_ENDPOINT saved to ~/.bashrc"
+    # Reload variables from ~/.bashrc to ensure latest values
+    reload_bashrc_vars
 fi
 
 # Generate ADMIN_PASSWORD if missing (needed for token generation)
@@ -309,6 +347,8 @@ if [ -z "${ADMIN_PASSWORD:-}" ]; then
     echo "export ADMIN_PASSWORD=\"$ADMIN_PASSWORD\"" >> ~/.bashrc
     export ADMIN_PASSWORD="$ADMIN_PASSWORD"
     log "✓ ADMIN_PASSWORD saved to ~/.bashrc"
+    # Reload variables from ~/.bashrc to ensure latest values
+    reload_bashrc_vars
 fi
 
 # Generate ROX_API_TOKEN if missing (needed by scripts 03, 04, 05)
@@ -395,6 +435,8 @@ if [ -z "${ROX_API_TOKEN:-}" ]; then
     echo "export ROX_API_TOKEN=\"$ROX_API_TOKEN\"" >> ~/.bashrc
     export ROX_API_TOKEN="$ROX_API_TOKEN"
     log "✓ ROX_API_TOKEN saved to ~/.bashrc"
+    # Reload variables from ~/.bashrc to ensure latest values
+    reload_bashrc_vars
 else
     # Ensure it's saved to bashrc (might have been set but not saved)
     if ! grep -q "^export ROX_API_TOKEN=" ~/.bashrc 2>/dev/null; then
@@ -402,6 +444,8 @@ else
         sed -i '/^export ROX_API_TOKEN=/d' ~/.bashrc
         echo "export ROX_API_TOKEN=\"$ROX_API_TOKEN\"" >> ~/.bashrc
         log "✓ ROX_API_TOKEN saved to ~/.bashrc"
+        # Reload variables from ~/.bashrc to ensure latest values
+        reload_bashrc_vars
     fi
 fi
 
@@ -841,6 +885,8 @@ if [ -n "${ADMIN_PASSWORD:-}" ] && ! grep -q "^export ADMIN_PASSWORD=" ~/.bashrc
     sed -i '/^export ADMIN_PASSWORD=/d' ~/.bashrc
     echo "export ADMIN_PASSWORD=\"$ADMIN_PASSWORD\"" >> ~/.bashrc
     log "✓ ADMIN_PASSWORD saved to ~/.bashrc"
+    # Reload variables from ~/.bashrc to ensure latest values
+    reload_bashrc_vars
 fi
 log "✓ All required variables verified in ~/.bashrc"
 
