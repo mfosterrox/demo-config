@@ -52,8 +52,24 @@ reload_bashrc_vars() {
         # Explicitly extract variables to ensure they're loaded
         if grep -q "^export ROX_ENDPOINT=" ~/.bashrc; then
             ROX_ENDPOINT_LINE=$(grep "^export ROX_ENDPOINT=" ~/.bashrc | head -1)
-            ROX_ENDPOINT=$(echo "$ROX_ENDPOINT_LINE" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
-            export ROX_ENDPOINT="$ROX_ENDPOINT"
+            ROX_ENDPOINT_VALUE=$(echo "$ROX_ENDPOINT_LINE" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
+            # Validate that ROX_ENDPOINT is an external route, not internal service name
+            if [[ ! "$ROX_ENDPOINT_VALUE" =~ \.svc ]] && [[ ! "$ROX_ENDPOINT_VALUE" =~ ^central\.tssc-acs$ ]]; then
+                ROX_ENDPOINT="$ROX_ENDPOINT_VALUE"
+                export ROX_ENDPOINT="$ROX_ENDPOINT"
+            else
+                # If bashrc has wrong value, re-extract from route
+                log "ROX_ENDPOINT in ~/.bashrc appears to be internal service name, re-extracting from route..."
+                ROX_ENDPOINT_HOST=$(oc get route central -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null)
+                if [ -n "$ROX_ENDPOINT_HOST" ] && [[ ! "$ROX_ENDPOINT_HOST" =~ \.svc ]]; then
+                    ROX_ENDPOINT="$ROX_ENDPOINT_HOST"
+                    export ROX_ENDPOINT="$ROX_ENDPOINT"
+                    # Update bashrc with correct value
+                    sed -i '/^export ROX_ENDPOINT=/d' ~/.bashrc
+                    echo "export ROX_ENDPOINT=\"$ROX_ENDPOINT\"" >> ~/.bashrc
+                    log "✓ Corrected ROX_ENDPOINT in ~/.bashrc: $ROX_ENDPOINT"
+                fi
+            fi
         fi
         
         if grep -q "^export ROX_API_TOKEN=" ~/.bashrc; then
