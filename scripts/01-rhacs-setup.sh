@@ -190,16 +190,17 @@ if [ -z "${ROX_ENDPOINT:-}" ]; then
     log "ROX_ENDPOINT not found, will extract from Central route after namespace verification..."
     # Will extract after namespace check below
 else
-    # Normalize if already set
-    ROX_ENDPOINT="$(normalize_rox_endpoint "$ROX_ENDPOINT")"
+    # Don't normalize ROX_ENDPOINT - keep it as external route hostname (no port, no protocol)
+    # Remove any protocol prefix if present, but keep hostname as-is
+    ROX_ENDPOINT="${ROX_ENDPOINT#https://}"
+    ROX_ENDPOINT="${ROX_ENDPOINT#http://}"
+    ROX_ENDPOINT="${ROX_ENDPOINT%/}"
     # Ensure it's saved to bashrc (might have been set but not saved)
     if ! grep -q "^export ROX_ENDPOINT=" ~/.bashrc 2>/dev/null; then
         log "Saving existing ROX_ENDPOINT to ~/.bashrc..."
         sed -i '/^export ROX_ENDPOINT=/d' ~/.bashrc
         echo "export ROX_ENDPOINT=\"$ROX_ENDPOINT\"" >> ~/.bashrc
         log "✓ ROX_ENDPOINT saved to ~/.bashrc"
-        # Reload variables from ~/.bashrc to ensure latest values
-        reload_bashrc_vars
     fi
 fi
 
@@ -301,23 +302,26 @@ log "Generating missing environment variables now that Central is ready..."
 if [ -z "${ROX_ENDPOINT:-}" ]; then
     log "ROX_ENDPOINT not found, extracting from Central route..."
     
-    # Extract Central route hostname
+    # Extract Central route hostname (external route, not internal service)
     ROX_ENDPOINT_HOST=$(oc get route central -n "$NAMESPACE" -o jsonpath='{.spec.host}')
     if [ -z "$ROX_ENDPOINT_HOST" ]; then
         error "Failed to extract Central endpoint from route. Check route exists: oc get route central -n $NAMESPACE"
     fi
     
+    # Verify we got the external route, not an internal service name
+    if [[ "$ROX_ENDPOINT_HOST" =~ \.svc$ ]] || [[ "$ROX_ENDPOINT_HOST" =~ ^central\. ]]; then
+        error "Extracted endpoint appears to be internal service name ($ROX_ENDPOINT_HOST), expected external route hostname. Check route: oc get route central -n $NAMESPACE -o yaml"
+    fi
+    
     ROX_ENDPOINT="$ROX_ENDPOINT_HOST"
     log "✓ Extracted ROX_ENDPOINT from route: $ROX_ENDPOINT"
     
-    # Save to ~/.bashrc
+    # Save to ~/.bashrc (save as-is, external route hostname without port)
     log "Saving ROX_ENDPOINT to ~/.bashrc..."
     sed -i '/^export ROX_ENDPOINT=/d' ~/.bashrc
     echo "export ROX_ENDPOINT=\"$ROX_ENDPOINT\"" >> ~/.bashrc
     export ROX_ENDPOINT="$ROX_ENDPOINT"
     log "✓ ROX_ENDPOINT saved to ~/.bashrc"
-    # Reload variables from ~/.bashrc to ensure latest values
-    reload_bashrc_vars
 fi
 
 # Generate ADMIN_PASSWORD if missing (needed for token generation)
@@ -493,9 +497,12 @@ fi
 # Set ADMIN_USERNAME for use in roxctl login
 ADMIN_USERNAME="admin"
 
-# Normalize ROX_ENDPOINT for internal use (but keep hostname-only version in bashrc)
+# Reload variables from ~/.bashrc to ensure we have latest values before using them
+reload_bashrc_vars
+
+# Normalize ROX_ENDPOINT for internal use (add :443 port for API calls)
 ROX_ENDPOINT_NORMALIZED="$(normalize_rox_endpoint "$ROX_ENDPOINT")"
-log "Central endpoint: $ROX_ENDPOINT (normalized: $ROX_ENDPOINT_NORMALIZED)"
+log "Central endpoint: $ROX_ENDPOINT (normalized for API calls: $ROX_ENDPOINT_NORMALIZED)"
 
 # Test connectivity to Central endpoint
 log "Testing connectivity to Central endpoint..."
