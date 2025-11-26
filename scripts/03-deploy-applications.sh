@@ -231,10 +231,14 @@ SCAN_TIMEOUT=30  # 30 seconds timeout
 log "Scanning image: $SCAN_IMAGE (timeout: ${SCAN_TIMEOUT}s)"
 SCAN_OUTPUT_FORMAT="json"
 
-# Ensure ROX_ENDPOINT has https:// prefix for roxctl
+# Prepare endpoint for roxctl: remove https:// prefix and ensure :443 port
 ROX_ENDPOINT_FOR_ROXCTL="$ROX_ENDPOINT"
-if [[ ! "$ROX_ENDPOINT_FOR_ROXCTL" =~ ^https?:// ]]; then
-    ROX_ENDPOINT_FOR_ROXCTL="https://$ROX_ENDPOINT_FOR_ROXCTL"
+# Remove https:// or http:// prefix
+ROX_ENDPOINT_FOR_ROXCTL="${ROX_ENDPOINT_FOR_ROXCTL#https://}"
+ROX_ENDPOINT_FOR_ROXCTL="${ROX_ENDPOINT_FOR_ROXCTL#http://}"
+# Ensure it has :443 port specified
+if [[ ! "$ROX_ENDPOINT_FOR_ROXCTL" =~ :[0-9]+$ ]]; then
+    ROX_ENDPOINT_FOR_ROXCTL="${ROX_ENDPOINT_FOR_ROXCTL}:443"
 fi
 
 log "Running command: timeout $SCAN_TIMEOUT $ROXCTL_CMD --insecure-skip-tls-verify -e \"$ROX_ENDPOINT_FOR_ROXCTL\" --token \"$ROX_API_TOKEN\" image scan --image \"$SCAN_IMAGE\" --force --output \"$SCAN_OUTPUT_FORMAT\""
