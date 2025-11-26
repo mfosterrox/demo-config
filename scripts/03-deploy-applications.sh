@@ -227,27 +227,23 @@ fi
 log "✓ Required environment variables validated: ROX_ENDPOINT and ADMIN_PASSWORD are set"
 
 # Scan specific image
-SCAN_IMAGE="quay.io/jechoisec/ctf-web-to-system-01"
+SCAN_IMAGE="quay.io/mfoster/dvwa"
 SCAN_TIMEOUT=30  # 30 seconds timeout
 log "Scanning image: $SCAN_IMAGE (timeout: ${SCAN_TIMEOUT}s)"
-SCAN_OUTPUT_FORMAT="json"
 
-# Use internal hostname for roxctl commands (matches certificate: central.tssc-acs, central.stackrox, etc.)
-# The external route hostname is not in the certificate SAN list, so we use the internal service name
-# Extract namespace from ROX_ENDPOINT if it contains the namespace pattern (central-<namespace>.apps...)
-# Otherwise default to tssc-acs for this workshop environment
-if [[ "$ROX_ENDPOINT" =~ central-([^.]+)\.apps\. ]]; then
-    NAMESPACE="${BASH_REMATCH[1]}"
-else
-    # Default namespace for this workshop environment
-    NAMESPACE="tssc-acs"
+# Prepare ROX_CENTRAL_ADDRESS from ROX_ENDPOINT (remove https:// prefix, ensure :443 port)
+# Note: We use the external route hostname with --insecure-skip-tls-verify to bypass TLS validation
+# The certificate is valid for internal names (central.tssc-acs, etc.) but not the external route
+ROX_CENTRAL_ADDRESS="$ROX_ENDPOINT"
+ROX_CENTRAL_ADDRESS="${ROX_CENTRAL_ADDRESS#https://}"
+ROX_CENTRAL_ADDRESS="${ROX_CENTRAL_ADDRESS#http://}"
+if [[ ! "$ROX_CENTRAL_ADDRESS" =~ :[0-9]+$ ]]; then
+    ROX_CENTRAL_ADDRESS="${ROX_CENTRAL_ADDRESS}:443"
 fi
-ROX_ENDPOINT_FOR_ROXCTL="central.$NAMESPACE:443"
-log "Using internal hostname for roxctl commands: $ROX_ENDPOINT_FOR_ROXCTL (matches certificate)"
 
-log "Running command: timeout $SCAN_TIMEOUT $ROXCTL_CMD --insecure-skip-tls-verify -e \"$ROX_ENDPOINT_FOR_ROXCTL\" --password \"***\" image scan --image \"$SCAN_IMAGE\" --force --output \"$SCAN_OUTPUT_FORMAT\""
+log "Running command: timeout $SCAN_TIMEOUT $ROXCTL_CMD --insecure-skip-tls-verify -e \"$ROX_CENTRAL_ADDRESS\" image scan --image=$SCAN_IMAGE --severity CRITICAL,IMPORTANT --force -o table"
 
-SCAN_OUTPUT=$(timeout $SCAN_TIMEOUT $ROXCTL_CMD --insecure-skip-tls-verify -e "$ROX_ENDPOINT_FOR_ROXCTL" --password "$ADMIN_PASSWORD" image scan --image "$SCAN_IMAGE" --force --output "$SCAN_OUTPUT_FORMAT" 2>&1)
+SCAN_OUTPUT=$(timeout $SCAN_TIMEOUT $ROXCTL_CMD --insecure-skip-tls-verify -e "$ROX_CENTRAL_ADDRESS" image scan --image=$SCAN_IMAGE --severity CRITICAL,IMPORTANT --force -o table 2>&1)
 SCAN_EXIT_CODE=$?
 
 log "Scan output:"
