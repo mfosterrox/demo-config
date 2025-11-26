@@ -543,8 +543,9 @@ if [ -n "$ROX_API_TOKEN" ]; then
     log "Verifying roxctl connectivity using API token..."
     log "Command: $ROXCTL_CMD central whoami -e \"$ROX_ENDPOINT\" --insecure-skip-tls-verify --token \"$ROX_API_TOKEN\""
     if ! $ROXCTL_CMD central whoami -e "$ROX_ENDPOINT" --insecure-skip-tls-verify "${ROXCTL_AUTH_ARGS[@]}" >/dev/null 2>&1; then
-        warning "roxctl authentication failed for endpoint: $ROX_ENDPOINT"
-        log "Continuing with setup despite roxctl authentication failure. Review the above message for details."
+        # Capture the actual error output for better diagnostics
+        ROXCTL_ERROR=$($ROXCTL_CMD central whoami -e "$ROX_ENDPOINT" --insecure-skip-tls-verify "${ROXCTL_AUTH_ARGS[@]}" 2>&1 || true)
+        error "roxctl authentication failed for endpoint: $ROX_ENDPOINT. Error: $ROXCTL_ERROR"
     else
         log "roxctl authentication verified successfully."
     fi
@@ -599,17 +600,35 @@ if oc get securedcluster secured-cluster-services -n $NAMESPACE >/dev/null 2>&1;
     fi
 else
     # Generate init bundle using external endpoint with -e flag
+    # Init bundle generation requires password authentication, not token
+    if [ -z "${ADMIN_PASSWORD:-}" ]; then
+        error "ADMIN_PASSWORD is required for init bundle generation but is not set. Check secret: oc get secret central-htpasswd -n $NAMESPACE"
+    fi
+    
+    # Ensure endpoint has :443 port specified
+    INIT_ENDPOINT="$ROX_ENDPOINT"
+    if [[ ! "$INIT_ENDPOINT" =~ :[0-9]+$ ]]; then
+        INIT_ENDPOINT="${INIT_ENDPOINT}:443"
+    fi
+    
     log "Generating init bundle for cluster: $CLUSTER_NAME"
-    if $ROXCTL_CMD central init-bundles generate $CLUSTER_NAME \
-      -e "$ROX_ENDPOINT" \
-      "${ROXCTL_AUTH_ARGS[@]}" \
-      --output-secrets cluster_init_bundle.yaml --insecure-skip-tls-verify 2>&1 | grep -q "AlreadyExists"; then
+    log "Using endpoint: $INIT_ENDPOINT"
+    
+    # Capture output to check for errors
+    # Note: -e flag must come before 'central' command
+    INIT_BUNDLE_OUTPUT=$($ROXCTL_CMD -e "$INIT_ENDPOINT" \
+      central init-bundles generate $CLUSTER_NAME \
+      --output-secrets cluster_init_bundle.yaml \
+      --password "$ADMIN_PASSWORD" \
+      --insecure-skip-tls-verify 2>&1) || INIT_BUNDLE_EXIT_CODE=$?
+    
+    # Check if init bundle already exists
+    if echo "$INIT_BUNDLE_OUTPUT" | grep -q "AlreadyExists"; then
         log "Init bundle already exists in RHACS Central"
         INIT_BUNDLE_EXISTS=true
+    elif [ ! -f cluster_init_bundle.yaml ]; then
+        error "Failed to generate init bundle. roxctl output: ${INIT_BUNDLE_OUTPUT:0:500}"
     else
-        if [ ! -f cluster_init_bundle.yaml ]; then
-            error "Failed to generate init bundle"
-        fi
         log "Init bundle generated successfully"
         INIT_BUNDLE_EXISTS=false
     fi
