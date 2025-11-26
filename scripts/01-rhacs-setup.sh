@@ -559,9 +559,6 @@ if ! $ROXCTL_CMD -e "$WHOAMI_ENDPOINT" central whoami --password "$ADMIN_PASSWOR
 else
     log "roxctl authentication verified successfully."
 fi
-else
-    log "ROX_API_TOKEN not set; skipping roxctl whoami connectivity check."
-fi
 
 # Clean up any old SecuredCluster resources from previous installations
 log "Checking for old SecuredCluster resources..."
