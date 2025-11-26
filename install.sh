@@ -3,8 +3,8 @@
 # Demo Config - Simple Setup Script
 # Download and run with: curl -fsSL https://raw.githubusercontent.com/mfosterrox/demo-config/main/install.sh | bash
 
-# Don't exit on error - continue to next step even if a script fails
-set +e
+# Exit immediately on error - fail fast if any script fails
+set -euo pipefail
 
 # Colors
 RED='\033[0;31m'
@@ -27,57 +27,42 @@ warning() {
 
 error() {
     echo -e "${RED}[ERROR]${NC} $1"
-    # Don't exit - just log the error and continue
+    exit 1
 }
 
 # Run RHACS setup script (Step 1)
 setup_rhacs() {
     log "Running RHACS secured cluster setup..."
-    if bash "${SCRIPT_DIR}/scripts/01-rhacs-setup.sh"; then
-        success "RHACS setup completed successfully"
-    else
-        warning "RHACS setup script failed or had errors - continuing to next step"
-    fi
+    bash "${SCRIPT_DIR}/scripts/01-rhacs-setup.sh"
+    success "RHACS setup completed successfully"
 }
 
 # Install Red Hat Compliance Operator (Step 2)
 install_compliance_operator() {
     log "Installing Red Hat Compliance Operator..."
-    if bash "${SCRIPT_DIR}/scripts/02-compliance-operator-install.sh"; then
-        success "Compliance Operator installation completed successfully"
-    else
-        warning "Compliance Operator installation script failed or had errors - continuing to next step"
-    fi
+    bash "${SCRIPT_DIR}/scripts/02-compliance-operator-install.sh"
+    success "Compliance Operator installation completed successfully"
 }
 
 # Deploy applications to OpenShift cluster (Step 3)
 deploy_applications() {
     log "Deploying applications to OpenShift cluster..."
-    if bash "${SCRIPT_DIR}/scripts/03-deploy-applications.sh"; then
-        success "Application deployment completed successfully"
-    else
-        warning "Application deployment script failed or had errors - continuing to next step"
-    fi
+    bash "${SCRIPT_DIR}/scripts/03-deploy-applications.sh"
+    success "Application deployment completed successfully"
 }
 
 # Setup compliance scan schedule (Step 4)
 setup_compliance_scan_schedule() {
     log "Setting up compliance scan schedule..."
-    if bash "${SCRIPT_DIR}/scripts/04-setup-co-scan-schedule.sh"; then
-        success "Compliance scan schedule setup completed successfully"
-    else
-        warning "Compliance scan schedule script failed or had errors - continuing to next step"
-    fi
+    bash "${SCRIPT_DIR}/scripts/04-setup-co-scan-schedule.sh"
+    success "Compliance scan schedule setup completed successfully"
 }
 
 # Trigger compliance scan (Step 5)
 trigger_compliance_scan() {
     log "Triggering compliance scan..."
-    if bash "${SCRIPT_DIR}/scripts/05-trigger-compliance-scan.sh"; then
-        success "Compliance scan trigger completed successfully"
-    else
-        warning "Compliance scan trigger script failed or had errors - continuing to next step"
-    fi
+    bash "${SCRIPT_DIR}/scripts/05-trigger-compliance-scan.sh"
+    success "Compliance scan trigger completed successfully"
 }
 
 
