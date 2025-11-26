@@ -227,7 +227,7 @@ fi
 log "✓ Required environment variables validated: ROX_ENDPOINT and ADMIN_PASSWORD are set"
 
 # Scan specific image
-SCAN_IMAGE="quay.io/mfoster/frontend:latest"
+SCAN_IMAGE="quay.io/jechoisec/ctf-web-to-system-01"
 SCAN_TIMEOUT=30  # 30 seconds timeout
 log "Scanning image: $SCAN_IMAGE (timeout: ${SCAN_TIMEOUT}s)"
 SCAN_OUTPUT_FORMAT="json"
