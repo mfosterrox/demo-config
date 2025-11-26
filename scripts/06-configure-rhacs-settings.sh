@@ -134,38 +134,6 @@ make_api_call() {
     echo "$body"
 }
 
-# Example: Get current system configuration
-log "Fetching current RHACS system configuration..."
-CURRENT_CONFIG=$(make_api_call "GET" "systemconfig" "" "Get system configuration")
-log "✓ Current configuration retrieved"
-
-# Example: Update a configuration setting
-# Uncomment and modify the following section to make actual configuration changes
-# log "Updating RHACS configuration..."
-# UPDATE_DATA='{"key":"value"}'
-# make_api_call "PUT" "systemconfig" "$UPDATE_DATA" "Update system configuration"
-# log "✓ Configuration updated successfully"
-
-# Example: Get cluster configuration
-log "Fetching cluster information..."
-CLUSTERS=$(make_api_call "GET" "clusters" "" "Get clusters")
-CLUSTER_COUNT=$(echo "$CLUSTERS" | jq '.clusters | length' 2>/dev/null || echo "0")
-log "✓ Found $CLUSTER_COUNT cluster(s)"
-
-# Example: Get policy configuration
-log "Fetching policy configuration..."
-POLICIES=$(make_api_call "GET" "policies" "" "Get policies")
-POLICY_COUNT=$(echo "$POLICIES" | jq '.policies | length' 2>/dev/null || echo "0")
-log "✓ Found $POLICY_COUNT policy/policies"
-
-# Configure RHACS system configuration
-log "Configuring RHACS system settings..."
-log "API endpoint: ${API_BASE}/config"
-
-# Get current configuration
-log "Fetching current RHACS configuration..."
-CURRENT_CONFIG_GET=$(make_api_call "GET" "config" "" "Get current configuration")
-log "✓ Current configuration retrieved"
 
 # Prepare configuration payload
 log "Preparing configuration payload..."
