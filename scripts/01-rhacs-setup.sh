@@ -538,17 +538,27 @@ fi
 log "Using token-based authentication for roxctl commands"
 ROXCTL_AUTH_ARGS=(--token "$ROX_API_TOKEN")
 
-# Test roxctl connectivity using available authentication method
-if [ -n "$ROX_API_TOKEN" ]; then
-    log "Verifying roxctl connectivity using API token..."
-    log "Command: $ROXCTL_CMD central whoami -e \"$ROX_ENDPOINT\" --insecure-skip-tls-verify --token \"$ROX_API_TOKEN\""
-    if ! $ROXCTL_CMD central whoami -e "$ROX_ENDPOINT" --insecure-skip-tls-verify "${ROXCTL_AUTH_ARGS[@]}" >/dev/null 2>&1; then
-        # Capture the actual error output for better diagnostics
-        ROXCTL_ERROR=$($ROXCTL_CMD central whoami -e "$ROX_ENDPOINT" --insecure-skip-tls-verify "${ROXCTL_AUTH_ARGS[@]}" 2>&1 || true)
-        error "roxctl authentication failed for endpoint: $ROX_ENDPOINT. Error: $ROXCTL_ERROR"
-    else
-        log "roxctl authentication verified successfully."
-    fi
+# Test roxctl connectivity using password authentication
+# Note: roxctl central whoami requires password authentication, not token
+if [ -z "${ADMIN_PASSWORD:-}" ]; then
+    error "ADMIN_PASSWORD is required for roxctl connectivity check but is not set. Check secret: oc get secret central-htpasswd -n $NAMESPACE"
+fi
+
+# Ensure endpoint has :443 port specified for whoami check
+WHOAMI_ENDPOINT="$ROX_ENDPOINT"
+if [[ ! "$WHOAMI_ENDPOINT" =~ :[0-9]+$ ]]; then
+    WHOAMI_ENDPOINT="${WHOAMI_ENDPOINT}:443"
+fi
+
+log "Verifying roxctl connectivity using password authentication..."
+log "Command: $ROXCTL_CMD -e \"$WHOAMI_ENDPOINT\" central whoami --password \"***\" --insecure-skip-tls-verify"
+if ! $ROXCTL_CMD -e "$WHOAMI_ENDPOINT" central whoami --password "$ADMIN_PASSWORD" --insecure-skip-tls-verify >/dev/null 2>&1; then
+    # Capture the actual error output for better diagnostics
+    ROXCTL_ERROR=$($ROXCTL_CMD -e "$WHOAMI_ENDPOINT" central whoami --password "$ADMIN_PASSWORD" --insecure-skip-tls-verify 2>&1 || true)
+    error "roxctl authentication failed for endpoint: $WHOAMI_ENDPOINT. Error: $ROXCTL_ERROR"
+else
+    log "roxctl authentication verified successfully."
+fi
 else
     log "ROX_API_TOKEN not set; skipping roxctl whoami connectivity check."
 fi
