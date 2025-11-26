@@ -217,13 +217,14 @@ else
     ROXCTL_CMD="roxctl"
 fi
 
-# Verify ROX_ENDPOINT and ROX_API_TOKEN are set
+# Verify ROX_ENDPOINT and ADMIN_PASSWORD are set (required for roxctl image scan)
 if [ -z "$ROX_ENDPOINT" ]; then
-    error "ROX_ENDPOINT not set. Please set it in ~/.bashrc"
+    error "ROX_ENDPOINT not set. Please run script 01-rhacs-setup.sh first to generate required variables."
 fi
-if [ -z "$ROX_API_TOKEN" ]; then
-    error "ROX_API_TOKEN not set. Please set it in ~/.bashrc"
+if [ -z "${ADMIN_PASSWORD:-}" ]; then
+    error "ADMIN_PASSWORD not set. Please run script 01-rhacs-setup.sh first to generate required variables."
 fi
+log "✓ Required environment variables validated: ROX_ENDPOINT and ADMIN_PASSWORD are set"
 
 # Scan specific image
 SCAN_IMAGE="quay.io/mfoster/frontend:latest"
@@ -231,19 +232,22 @@ SCAN_TIMEOUT=30  # 30 seconds timeout
 log "Scanning image: $SCAN_IMAGE (timeout: ${SCAN_TIMEOUT}s)"
 SCAN_OUTPUT_FORMAT="json"
 
-# Prepare endpoint for roxctl: remove https:// prefix and ensure :443 port
-ROX_ENDPOINT_FOR_ROXCTL="$ROX_ENDPOINT"
-# Remove https:// or http:// prefix
-ROX_ENDPOINT_FOR_ROXCTL="${ROX_ENDPOINT_FOR_ROXCTL#https://}"
-ROX_ENDPOINT_FOR_ROXCTL="${ROX_ENDPOINT_FOR_ROXCTL#http://}"
-# Ensure it has :443 port specified
-if [[ ! "$ROX_ENDPOINT_FOR_ROXCTL" =~ :[0-9]+$ ]]; then
-    ROX_ENDPOINT_FOR_ROXCTL="${ROX_ENDPOINT_FOR_ROXCTL}:443"
+# Use internal hostname for roxctl commands (matches certificate: central.tssc-acs, central.stackrox, etc.)
+# The external route hostname is not in the certificate SAN list, so we use the internal service name
+# Extract namespace from ROX_ENDPOINT if it contains the namespace pattern (central-<namespace>.apps...)
+# Otherwise default to tssc-acs for this workshop environment
+if [[ "$ROX_ENDPOINT" =~ central-([^.]+)\.apps\. ]]; then
+    NAMESPACE="${BASH_REMATCH[1]}"
+else
+    # Default namespace for this workshop environment
+    NAMESPACE="tssc-acs"
 fi
+ROX_ENDPOINT_FOR_ROXCTL="central.$NAMESPACE:443"
+log "Using internal hostname for roxctl commands: $ROX_ENDPOINT_FOR_ROXCTL (matches certificate)"
 
-log "Running command: timeout $SCAN_TIMEOUT $ROXCTL_CMD --insecure-skip-tls-verify -e \"$ROX_ENDPOINT_FOR_ROXCTL\" --token \"$ROX_API_TOKEN\" image scan --image \"$SCAN_IMAGE\" --force --output \"$SCAN_OUTPUT_FORMAT\""
+log "Running command: timeout $SCAN_TIMEOUT $ROXCTL_CMD --insecure-skip-tls-verify -e \"$ROX_ENDPOINT_FOR_ROXCTL\" --password \"***\" image scan --image \"$SCAN_IMAGE\" --force --output \"$SCAN_OUTPUT_FORMAT\""
 
-SCAN_OUTPUT=$(timeout $SCAN_TIMEOUT $ROXCTL_CMD --insecure-skip-tls-verify -e "$ROX_ENDPOINT_FOR_ROXCTL" --token "$ROX_API_TOKEN" image scan --image "$SCAN_IMAGE" --force --output "$SCAN_OUTPUT_FORMAT" 2>&1)
+SCAN_OUTPUT=$(timeout $SCAN_TIMEOUT $ROXCTL_CMD --insecure-skip-tls-verify -e "$ROX_ENDPOINT_FOR_ROXCTL" --password "$ADMIN_PASSWORD" image scan --image "$SCAN_IMAGE" --force --output "$SCAN_OUTPUT_FORMAT" 2>&1)
 SCAN_EXIT_CODE=$?
 
 log "Scan output:"
@@ -252,11 +256,9 @@ echo "$SCAN_OUTPUT"
 if [ $SCAN_EXIT_CODE -eq 124 ]; then
     error "Security scan timed out after ${SCAN_TIMEOUT}s for $SCAN_IMAGE. Increase timeout or check network connectivity."
 elif [ $SCAN_EXIT_CODE -ne 0 ]; then
-    error "Security scan failed for $SCAN_IMAGE (exit code: $SCAN_EXIT_CODE). Check ROX_ENDPOINT and ROX_API_TOKEN are correct."
+    error "Security scan failed for $SCAN_IMAGE (exit code: $SCAN_EXIT_CODE). Check ROX_ENDPOINT and ADMIN_PASSWORD are correct. Error output: ${SCAN_OUTPUT:0:500}"
 fi
 log "✓ Security scan completed successfully for $SCAN_IMAGE"
-
-# roxctl is now installed permanently to /usr/local/bin/roxctl
 
 # Final status
 log "Application deployment completed successfully!"
