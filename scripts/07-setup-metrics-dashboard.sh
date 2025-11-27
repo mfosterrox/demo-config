@@ -858,32 +858,33 @@ DASHBOARD_EOF
     PERSES_DASHBOARD_YAML=$(echo "$PERSES_DASHBOARD_YAML" | sed "s/namespace: openshift-cluster-observability-operator/namespace: $OBSERVABILITY_OPERATOR_NAMESPACE/g")
     
     # Create all resources at once (batch creation)
+    # Use oc apply for all resources - it handles both create and update
     log "Creating/updating PersesDatasource 'rhacs-datasource'..."
     if oc get persesdatasource rhacs-datasource -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
+        log "PersesDatasource already exists, updating..."
         echo "$PERSES_DATASOURCE_YAML" | oc apply -f - || error "Failed to update PersesDatasource"
-        log "✓ PersesDatasource updated"
     else
         echo "$PERSES_DATASOURCE_YAML" | oc apply -f - || error "Failed to create PersesDatasource"
-        log "✓ PersesDatasource created"
     fi
+    log "✓ PersesDatasource ready"
     
     log "Creating/updating UIPlugin 'monitoring'..."
     if oc get uplugin monitoring -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
+        log "UIPlugin already exists, updating..."
         echo "$UIPLUGIN_YAML" | oc apply -f - || error "Failed to update UIPlugin"
-        log "✓ UIPlugin updated"
     else
         echo "$UIPLUGIN_YAML" | oc apply -f - || error "Failed to create UIPlugin"
-        log "✓ UIPlugin created"
     fi
+    log "✓ UIPlugin ready"
     
     log "Creating/updating PersesDashboard 'rhacs-dashboard'..."
     if oc get persesdashboard rhacs-dashboard -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
+        log "PersesDashboard already exists, updating..."
         echo "$PERSES_DASHBOARD_YAML" | oc apply -f - || error "Failed to update PersesDashboard"
-        log "✓ PersesDashboard updated"
     else
         echo "$PERSES_DASHBOARD_YAML" | oc apply -f - || error "Failed to create PersesDashboard"
-        log "✓ PersesDashboard created"
     fi
+    log "✓ PersesDashboard ready"
     
     log "✓ All Perses resources created/updated successfully"
     
