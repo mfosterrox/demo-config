@@ -148,8 +148,12 @@ while ! oc get csv -n openshift-compliance 2>/dev/null | grep -q compliance-oper
     WAIT_COUNT=$((WAIT_COUNT + 1))
 done
 
-# Get the CSV name
-CSV_NAME=$(oc get csv -n openshift-compliance | grep compliance-operator | awk '{print $1}')
+# Get the CSV name (get the first one, or the one that's installed)
+CSV_NAME=$(oc get csv -n openshift-compliance -o name 2>/dev/null | grep compliance-operator | head -1 | sed 's|clusterserviceversion.operators.coreos.com/||' || echo "")
+if [ -z "$CSV_NAME" ]; then
+    # Fallback: try getting CSV by label
+    CSV_NAME=$(oc get csv -n openshift-compliance -l operators.coreos.com/compliance-operator.openshift-compliance -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+fi
 if [ -z "$CSV_NAME" ]; then
     error "Failed to find CSV name for compliance-operator"
 fi
@@ -157,8 +161,8 @@ log "Found CSV: $CSV_NAME"
 
 # Wait for CSV to be in Succeeded phase
 log "Waiting for ClusterServiceVersion to be installed..."
-if ! oc wait --for=jsonpath='{.status.phase}'=Succeeded csv/$CSV_NAME -n openshift-compliance --timeout=300s; then
-    CSV_STATUS=$(oc get csv $CSV_NAME -n openshift-compliance -o jsonpath='{.status.phase}' || echo "unknown")
+if ! oc wait --for=jsonpath='{.status.phase}'=Succeeded "csv/$CSV_NAME" -n openshift-compliance --timeout=300s; then
+    CSV_STATUS=$(oc get csv "$CSV_NAME" -n openshift-compliance -o jsonpath='{.status.phase}' 2>/dev/null || echo "unknown")
     error "CSV failed to reach Succeeded phase. Current status: $CSV_STATUS. Check CSV details: oc describe csv $CSV_NAME -n openshift-compliance"
 fi
 log "✓ CSV is in Succeeded phase"
