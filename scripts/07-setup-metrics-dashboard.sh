@@ -455,12 +455,13 @@ if [ "$UIPLUGIN_CRD_AVAILABLE" = true ]; then
 
     log "Prometheus endpoint for datasource: $PROMETHEUS_ENDPOINT"
 
-    # Create PersesDatasource resource
-    log "Creating PersesDatasource resource for RHACS Prometheus..."
+    # Create all Perses resources at once (batch creation)
+    log "Creating all Perses resources (datasource, plugin, dashboard)..."
     
     # Get Prometheus service URL (use HTTP for internal service, port 9090)
     PROMETHEUS_DATASOURCE_URL="http://prometheus-operated.${NAMESPACE}.svc.cluster.local:9090"
     
+    # Create PersesDatasource resource
     PERSES_DATASOURCE_YAML=$(cat <<EOF
 apiVersion: perses.dev/v1alpha1
 kind: PersesDatasource
@@ -488,20 +489,7 @@ spec:
 EOF
     )
     
-    log "Creating PersesDatasource 'rhacs-datasource'..."
-    if oc get persesdatasource rhacs-datasource -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
-        log "PersesDatasource 'rhacs-datasource' already exists, updating..."
-        echo "$PERSES_DATASOURCE_YAML" | oc apply -f - || error "Failed to update PersesDatasource"
-        log "✓ PersesDatasource updated successfully"
-    else
-        log "Creating new PersesDatasource..."
-        echo "$PERSES_DATASOURCE_YAML" | oc create -f - || error "Failed to create PersesDatasource"
-        log "✓ PersesDatasource created successfully"
-    fi
-    
-    # Create UIPlugin resource for monitoring UI with Perses dashboards
-    log "Creating UIPlugin resource for monitoring UI with Perses dashboards..."
-    
+    # Create UIPlugin resource
     UIPLUGIN_YAML=$(cat <<EOF
 apiVersion: $UIPLUGIN_API_VERSION
 kind: UIPlugin
@@ -515,61 +503,8 @@ spec:
   type: Monitoring
 EOF
     )
-
-    # Create UIPlugin
-    log "Creating UIPlugin 'monitoring'..."
-    if oc get uplugin monitoring -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
-        log "UIPlugin 'monitoring' already exists, updating..."
-        echo "$UIPLUGIN_YAML" | oc apply -f - || error "Failed to update UIPlugin"
-        log "✓ UIPlugin updated successfully"
-    else
-        log "Creating new UIPlugin..."
-        echo "$UIPLUGIN_YAML" | oc create -f - || error "Failed to create UIPlugin"
-        log "✓ UIPlugin created successfully"
-    fi
-
-    # Wait for UIPlugin to be ready
-    log "Waiting for UIPlugin to be ready..."
-    UIPLUGIN_TIMEOUT=300
-    UIPLUGIN_ELAPSED=0
-    UIPLUGIN_READY=false
-
-    while [ $UIPLUGIN_ELAPSED -lt $UIPLUGIN_TIMEOUT ]; do
-        UIPLUGIN_STATUS=$(oc get uplugin monitoring -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
-        if [ "$UIPLUGIN_STATUS" = "True" ]; then
-            UIPLUGIN_READY=true
-            log "✓ UIPlugin is Available"
-            break
-        fi
-        sleep 10
-        UIPLUGIN_ELAPSED=$((UIPLUGIN_ELAPSED + 10))
-        log "Waiting for UIPlugin to be ready... (${UIPLUGIN_ELAPSED}s/${UIPLUGIN_TIMEOUT}s)"
-    done
-
-    if [ "$UIPLUGIN_READY" = false ]; then
-        warning "UIPlugin may still be initializing. Checking status..."
-        oc get uplugin monitoring -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o yaml | grep -A 10 "status:" || true
-        warning "Proceeding anyway - UIPlugin may still be deploying..."
-    fi
-
-    # Wait for PersesDatasource to be ready
-    log "Waiting for PersesDatasource to be ready..."
-    sleep 5
-    
-    # Check for Perses pods
-    log "Checking for Perses pods..."
-    sleep 10  # Give operator time to create Perses resources
-    PERSES_PODS=$(oc get pods -n "$OBSERVABILITY_OPERATOR_NAMESPACE" | grep -i perses | grep -v NAME | wc -l || echo "0")
-    if [ "$PERSES_PODS" -gt 0 ]; then
-        log "✓ Found $PERSES_PODS Perses pod(s)"
-        oc get pods -n "$OBSERVABILITY_OPERATOR_NAMESPACE" | grep -i perses || true
-    else
-        warning "Perses pods not found yet. They may still be starting."
-        log "This is normal - Perses deployment may take a few minutes after UIPlugin creation"
-    fi
     
     # Create PersesDashboard resource with RHACS dashboard
-    log "Creating PersesDashboard resource for RHACS..."
     
     # Read the dashboard YAML from a here-doc (large dashboard definition)
     PERSES_DASHBOARD_YAML=$(cat <<'DASHBOARD_EOF'
@@ -922,15 +857,99 @@ DASHBOARD_EOF
     # Replace namespace in dashboard YAML
     PERSES_DASHBOARD_YAML=$(echo "$PERSES_DASHBOARD_YAML" | sed "s/namespace: openshift-cluster-observability-operator/namespace: $OBSERVABILITY_OPERATOR_NAMESPACE/g")
     
+    # Create all resources at once (batch creation)
+    log "Creating PersesDatasource 'rhacs-datasource'..."
+    if oc get persesdatasource rhacs-datasource -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
+        echo "$PERSES_DATASOURCE_YAML" | oc apply -f - || error "Failed to update PersesDatasource"
+    else
+        echo "$PERSES_DATASOURCE_YAML" | oc create -f - || error "Failed to create PersesDatasource"
+    fi
+    
+    log "Creating UIPlugin 'monitoring'..."
+    if oc get uplugin monitoring -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
+        echo "$UIPLUGIN_YAML" | oc apply -f - || error "Failed to update UIPlugin"
+    else
+        echo "$UIPLUGIN_YAML" | oc create -f - || error "Failed to create UIPlugin"
+    fi
+    
     log "Creating PersesDashboard 'rhacs-dashboard'..."
     if oc get persesdashboard rhacs-dashboard -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
-        log "PersesDashboard 'rhacs-dashboard' already exists, updating..."
         echo "$PERSES_DASHBOARD_YAML" | oc apply -f - || error "Failed to update PersesDashboard"
-        log "✓ PersesDashboard updated successfully"
     else
-        log "Creating new PersesDashboard..."
         echo "$PERSES_DASHBOARD_YAML" | oc create -f - || error "Failed to create PersesDashboard"
-        log "✓ PersesDashboard created successfully"
+    fi
+    
+    log "✓ All Perses resources created successfully"
+    
+    # Now verify all resources together
+    log "Waiting for all Perses resources to be ready..."
+    VERIFICATION_TIMEOUT=300
+    VERIFICATION_ELAPSED=0
+    ALL_READY=false
+    
+    while [ $VERIFICATION_ELAPSED -lt $VERIFICATION_TIMEOUT ]; do
+        UIPLUGIN_READY=false
+        PERSES_DATASOURCE_READY=false
+        PERSES_DASHBOARD_READY=false
+        
+        # Check UIPlugin
+        UIPLUGIN_STATUS=$(oc get uplugin monitoring -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
+        if [ "$UIPLUGIN_STATUS" = "True" ]; then
+            UIPLUGIN_READY=true
+        fi
+        
+        # Check PersesDatasource
+        PERSES_DATASOURCE_STATUS=$(oc get persesdatasource rhacs-datasource -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
+        if [ "$PERSES_DATASOURCE_STATUS" = "True" ]; then
+            PERSES_DATASOURCE_READY=true
+        fi
+        
+        # Check PersesDashboard
+        PERSES_DASHBOARD_STATUS=$(oc get persesdashboard rhacs-dashboard -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
+        if [ "$PERSES_DASHBOARD_STATUS" = "True" ]; then
+            PERSES_DASHBOARD_READY=true
+        fi
+        
+        # Log status every 30 seconds
+        READY_COUNT=0
+        [ "$UIPLUGIN_READY" = true ] && READY_COUNT=$((READY_COUNT + 1))
+        [ "$PERSES_DATASOURCE_READY" = true ] && READY_COUNT=$((READY_COUNT + 1))
+        [ "$PERSES_DASHBOARD_READY" = true ] && READY_COUNT=$((READY_COUNT + 1))
+        
+        if [ $READY_COUNT -eq 3 ]; then
+            ALL_READY=true
+            log "✓ All Perses resources are ready"
+            break
+        fi
+        
+        if [ $((VERIFICATION_ELAPSED % 30)) -eq 0 ]; then
+            log "Waiting for resources... (${VERIFICATION_ELAPSED}s/${VERIFICATION_TIMEOUT}s) - Ready: $READY_COUNT/3"
+            log "  UIPlugin: ${UIPLUGIN_STATUS:-pending}"
+            log "  PersesDatasource: ${PERSES_DATASOURCE_STATUS:-pending}"
+            log "  PersesDashboard: ${PERSES_DASHBOARD_STATUS:-pending}"
+        fi
+        
+        sleep 10
+        VERIFICATION_ELAPSED=$((VERIFICATION_ELAPSED + 10))
+    done
+    
+    if [ "$ALL_READY" = false ]; then
+        warning "Some resources may still be initializing. Final status:"
+        oc get uplugin monitoring -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null && log "  UIPlugin: Available" || log "  UIPlugin: Not ready"
+        oc get persesdatasource rhacs-datasource -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null && log "  PersesDatasource: Available" || log "  PersesDatasource: Not ready"
+        oc get persesdashboard rhacs-dashboard -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null && log "  PersesDashboard: Available" || log "  PersesDashboard: Not ready"
+        warning "Proceeding anyway - resources may still be deploying..."
+    fi
+    
+    # Check for Perses pods
+    log "Checking for Perses pods..."
+    PERSES_PODS=$(oc get pods -n "$OBSERVABILITY_OPERATOR_NAMESPACE" | grep -i perses | grep -v NAME | wc -l || echo "0")
+    if [ "$PERSES_PODS" -gt 0 ]; then
+        log "✓ Found $PERSES_PODS Perses pod(s)"
+        oc get pods -n "$OBSERVABILITY_OPERATOR_NAMESPACE" | grep -i perses || true
+    else
+        warning "Perses pods not found yet. They may still be starting."
+        log "This is normal - Perses deployment may take a few minutes after UIPlugin creation"
     fi
 else
     log "Skipping UIPlugin and Perses resources creation - CRD not available"
