@@ -297,6 +297,8 @@ metadata:
 spec:
   alertmanagerConfig:
     disabled: false
+  createClusterRoleBindings: CreateClusterRoleBindings
+  logLevel: info
   prometheusConfig:
     replicas: 1
   resourceSelector:
@@ -410,117 +412,529 @@ else
     warning "Prometheus pods not found yet. They may still be starting."
 fi
 
-# Get Prometheus service endpoint for UIPlugin
-log "Getting Prometheus service endpoint for UIPlugin configuration..."
-PROMETHEUS_SERVICE="prometheus-operated"
-PROMETHEUS_PORT="9091"
-PROMETHEUS_ENDPOINT="${PROMETHEUS_SERVICE}.${NAMESPACE}.svc.cluster.local:${PROMETHEUS_PORT}"
+# Check if UIPlugin CRD exists
+log "Checking for UIPlugin CRD..."
+UIPLUGIN_CRD_AVAILABLE=false
+UIPLUGIN_API_VERSION=""
 
-# Verify Prometheus service exists
-if oc get service "$PROMETHEUS_SERVICE" -n "$NAMESPACE" &>/dev/null; then
-    log "✓ Prometheus service found: $PROMETHEUS_SERVICE"
-    # Try to get actual port from service
-    ACTUAL_PORT=$(oc get service "$PROMETHEUS_SERVICE" -n "$NAMESPACE" -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || echo "$PROMETHEUS_PORT")
-    if [ -n "$ACTUAL_PORT" ] && [ "$ACTUAL_PORT" != "$PROMETHEUS_PORT" ]; then
-        PROMETHEUS_PORT="$ACTUAL_PORT"
-        PROMETHEUS_ENDPOINT="${PROMETHEUS_SERVICE}.${NAMESPACE}.svc.cluster.local:${PROMETHEUS_PORT}"
-        log "Using Prometheus port: $PROMETHEUS_PORT"
-    fi
+if oc get crd uiplugins.observability.openshift.io &>/dev/null; then
+    log "✓ UIPlugin CRD found (observability.openshift.io)"
+    UIPLUGIN_CRD_AVAILABLE=true
+    UIPLUGIN_API_VERSION="observability.openshift.io/v1alpha1"
+elif oc get crd uiplugins.console.openshift.io &>/dev/null; then
+    log "✓ UIPlugin CRD found (console.openshift.io)"
+    UIPLUGIN_CRD_AVAILABLE=true
+    UIPLUGIN_API_VERSION="console.openshift.io/v1"
 else
-    warning "Prometheus service not found, using default endpoint: $PROMETHEUS_ENDPOINT"
+    warning "UIPlugin CRD not found"
+    warning "UIPlugin may not be available in all OpenShift versions"
+    warning "Skipping UIPlugin creation - dashboards will still be available via Prometheus UI"
 fi
 
-log "Prometheus endpoint for UIPlugin: $PROMETHEUS_ENDPOINT"
+# Create UIPlugin resource if CRD is available
+if [ "$UIPLUGIN_CRD_AVAILABLE" = true ]; then
+    # Get Prometheus service endpoint for UIPlugin
+    log "Getting Prometheus service endpoint for UIPlugin configuration..."
+    PROMETHEUS_SERVICE="prometheus-operated"
+    PROMETHEUS_PORT="9091"
+    PROMETHEUS_ENDPOINT="${PROMETHEUS_SERVICE}.${NAMESPACE}.svc.cluster.local:${PROMETHEUS_PORT}"
 
-# Create UIPlugin resource for monitoring UI with Perses dashboards
-log "Creating UIPlugin resource for monitoring UI with Perses dashboards..."
+    # Verify Prometheus service exists
+    if oc get service "$PROMETHEUS_SERVICE" -n "$NAMESPACE" &>/dev/null; then
+        log "✓ Prometheus service found: $PROMETHEUS_SERVICE"
+        # Try to get actual port from service
+        ACTUAL_PORT=$(oc get service "$PROMETHEUS_SERVICE" -n "$NAMESPACE" -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || echo "$PROMETHEUS_PORT")
+        if [ -n "$ACTUAL_PORT" ] && [ "$ACTUAL_PORT" != "$PROMETHEUS_PORT" ]; then
+            PROMETHEUS_PORT="$ACTUAL_PORT"
+            PROMETHEUS_ENDPOINT="${PROMETHEUS_SERVICE}.${NAMESPACE}.svc.cluster.local:${PROMETHEUS_PORT}"
+            log "Using Prometheus port: $PROMETHEUS_PORT"
+        fi
+    else
+        warning "Prometheus service not found, using default endpoint: $PROMETHEUS_ENDPOINT"
+    fi
 
-UIPLUGIN_YAML=$(cat <<EOF
-apiVersion: console.openshift.io/v1
+    log "Prometheus endpoint for datasource: $PROMETHEUS_ENDPOINT"
+
+    # Create PersesDatasource resource
+    log "Creating PersesDatasource resource for RHACS Prometheus..."
+    
+    # Get Prometheus service URL (use HTTP for internal service, port 9090)
+    PROMETHEUS_DATASOURCE_URL="http://prometheus-operated.${NAMESPACE}.svc.cluster.local:9090"
+    
+    PERSES_DATASOURCE_YAML=$(cat <<EOF
+apiVersion: perses.dev/v1alpha1
+kind: PersesDatasource
+metadata:
+  name: rhacs-datasource
+  namespace: $OBSERVABILITY_OPERATOR_NAMESPACE
+spec:
+  client:
+    tls:
+      caCert:
+        certPath: /ca/service-ca.crt
+        type: file
+      enable: true
+  config:
+    default: true
+    display:
+      name: RHACS Prometheus Datasource
+    plugin:
+      kind: PrometheusDatasource
+      spec:
+        proxy:
+          kind: HTTPProxy
+          spec:
+            url: ${PROMETHEUS_DATASOURCE_URL}
+EOF
+    )
+    
+    log "Creating PersesDatasource 'rhacs-datasource'..."
+    if oc get persesdatasource rhacs-datasource -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
+        log "PersesDatasource 'rhacs-datasource' already exists, updating..."
+        echo "$PERSES_DATASOURCE_YAML" | oc apply -f - || error "Failed to update PersesDatasource"
+        log "✓ PersesDatasource updated successfully"
+    else
+        log "Creating new PersesDatasource..."
+        echo "$PERSES_DATASOURCE_YAML" | oc create -f - || error "Failed to create PersesDatasource"
+        log "✓ PersesDatasource created successfully"
+    fi
+    
+    # Create UIPlugin resource for monitoring UI with Perses dashboards
+    log "Creating UIPlugin resource for monitoring UI with Perses dashboards..."
+    
+    UIPLUGIN_YAML=$(cat <<EOF
+apiVersion: $UIPLUGIN_API_VERSION
 kind: UIPlugin
 metadata:
   name: monitoring
   namespace: $OBSERVABILITY_OPERATOR_NAMESPACE
 spec:
-  name: monitoring
-  displayName: Monitoring UI Plugin
-  type: monitoring
-  content:
-    resources:
-      - name: main
-        type: Bundle
-        data: |
-          name: @openshift-console/dynamic-plugin-sdk
-          version: "2.201.0"
-          path: ./index.js
-          entry: ./index.js
-          esm: true
-    dependencies:
-      - name: '@openshift-console/dynamic-plugin-sdk'
-        version: '^2.201.0'
-      - name: '@patternfly/react-core'
-        version: '^5.0.0'
-    plugins:
-      - name: monitoring-plugin
-        options:
-          enabled: true
-          rhacmIntegration: false
-          incidents: true
-          dashboards: true
-          datasource:
-            prometheus:
-              addr: https://${PROMETHEUS_ENDPOINT}
-              bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
-              wauth: false
+  monitoring:
+    perses:
+      enabled: true
+  type: Monitoring
 EOF
-)
+    )
 
-# Create UIPlugin
-log "Creating UIPlugin 'monitoring'..."
-if oc get uplugin monitoring -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
-    log "UIPlugin 'monitoring' already exists, updating..."
-    echo "$UIPLUGIN_YAML" | oc apply -f - || error "Failed to update UIPlugin"
-    log "✓ UIPlugin updated successfully"
-else
-    log "Creating new UIPlugin..."
-    echo "$UIPLUGIN_YAML" | oc create -f - || error "Failed to create UIPlugin"
-    log "✓ UIPlugin created successfully"
-fi
-
-# Wait for UIPlugin to be ready
-log "Waiting for UIPlugin to be ready..."
-UIPLUGIN_TIMEOUT=300
-UIPLUGIN_ELAPSED=0
-UIPLUGIN_READY=false
-
-while [ $UIPLUGIN_ELAPSED -lt $UIPLUGIN_TIMEOUT ]; do
-    UIPLUGIN_STATUS=$(oc get uplugin monitoring -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
-    if [ "$UIPLUGIN_STATUS" = "True" ]; then
-        UIPLUGIN_READY=true
-        log "✓ UIPlugin is Available"
-        break
+    # Create UIPlugin
+    log "Creating UIPlugin 'monitoring'..."
+    if oc get uplugin monitoring -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
+        log "UIPlugin 'monitoring' already exists, updating..."
+        echo "$UIPLUGIN_YAML" | oc apply -f - || error "Failed to update UIPlugin"
+        log "✓ UIPlugin updated successfully"
+    else
+        log "Creating new UIPlugin..."
+        echo "$UIPLUGIN_YAML" | oc create -f - || error "Failed to create UIPlugin"
+        log "✓ UIPlugin created successfully"
     fi
-    sleep 10
-    UIPLUGIN_ELAPSED=$((UIPLUGIN_ELAPSED + 10))
-    log "Waiting for UIPlugin to be ready... (${UIPLUGIN_ELAPSED}s/${UIPLUGIN_TIMEOUT}s)"
-done
 
-if [ "$UIPLUGIN_READY" = false ]; then
-    warning "UIPlugin may still be initializing. Checking status..."
-    oc get uplugin monitoring -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o yaml | grep -A 10 "status:" || true
-    warning "Proceeding anyway - UIPlugin may still be deploying..."
-fi
+    # Wait for UIPlugin to be ready
+    log "Waiting for UIPlugin to be ready..."
+    UIPLUGIN_TIMEOUT=300
+    UIPLUGIN_ELAPSED=0
+    UIPLUGIN_READY=false
 
-# Check for Perses pods
-log "Checking for Perses pods..."
-sleep 10  # Give operator time to create Perses resources
-PERSES_PODS=$(oc get pods -n "$OBSERVABILITY_OPERATOR_NAMESPACE" | grep -i perses | grep -v NAME | wc -l || echo "0")
-if [ "$PERSES_PODS" -gt 0 ]; then
-    log "✓ Found $PERSES_PODS Perses pod(s)"
-    oc get pods -n "$OBSERVABILITY_OPERATOR_NAMESPACE" | grep -i perses || true
+    while [ $UIPLUGIN_ELAPSED -lt $UIPLUGIN_TIMEOUT ]; do
+        UIPLUGIN_STATUS=$(oc get uplugin monitoring -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
+        if [ "$UIPLUGIN_STATUS" = "True" ]; then
+            UIPLUGIN_READY=true
+            log "✓ UIPlugin is Available"
+            break
+        fi
+        sleep 10
+        UIPLUGIN_ELAPSED=$((UIPLUGIN_ELAPSED + 10))
+        log "Waiting for UIPlugin to be ready... (${UIPLUGIN_ELAPSED}s/${UIPLUGIN_TIMEOUT}s)"
+    done
+
+    if [ "$UIPLUGIN_READY" = false ]; then
+        warning "UIPlugin may still be initializing. Checking status..."
+        oc get uplugin monitoring -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o yaml | grep -A 10 "status:" || true
+        warning "Proceeding anyway - UIPlugin may still be deploying..."
+    fi
+
+    # Wait for PersesDatasource to be ready
+    log "Waiting for PersesDatasource to be ready..."
+    sleep 5
+    
+    # Check for Perses pods
+    log "Checking for Perses pods..."
+    sleep 10  # Give operator time to create Perses resources
+    PERSES_PODS=$(oc get pods -n "$OBSERVABILITY_OPERATOR_NAMESPACE" | grep -i perses | grep -v NAME | wc -l || echo "0")
+    if [ "$PERSES_PODS" -gt 0 ]; then
+        log "✓ Found $PERSES_PODS Perses pod(s)"
+        oc get pods -n "$OBSERVABILITY_OPERATOR_NAMESPACE" | grep -i perses || true
+    else
+        warning "Perses pods not found yet. They may still be starting."
+        log "This is normal - Perses deployment may take a few minutes after UIPlugin creation"
+    fi
+    
+    # Create PersesDashboard resource with RHACS dashboard
+    log "Creating PersesDashboard resource for RHACS..."
+    
+    # Read the dashboard YAML from a here-doc (large dashboard definition)
+    PERSES_DASHBOARD_YAML=$(cat <<'DASHBOARD_EOF'
+apiVersion: perses.dev/v1alpha1
+kind: PersesDashboard
+metadata:
+  name: rhacs-dashboard
+  namespace: openshift-cluster-observability-operator
+spec:
+  display:
+    name: Advanced Cluster Security / Overview
+  duration: 30d
+  layouts:
+    - kind: Grid
+      spec:
+        display:
+          collapse:
+            open: true
+          title: Policies
+        items:
+          - content:
+              $ref: '#/spec/panels/total_policy_violations'
+            height: 3
+            width: 6
+            x: 0
+            y: 0
+          - content:
+              $ref: '#/spec/panels/total_policies_enabled'
+            height: 3
+            width: 6
+            x: 0
+            y: 3
+          - content:
+              $ref: '#/spec/panels/violations_by_severity'
+            height: 6
+            width: 6
+            x: 6
+            y: 0
+          - content:
+              $ref: '#/spec/panels/violations_over_time_by_severity'
+            height: 6
+            width: 12
+            x: 12
+            y: 0
+    - kind: Grid
+      spec:
+        display:
+          collapse:
+            open: true
+          title: Vulnerabilities
+        items:
+          - content:
+              $ref: '#/spec/panels/total_vulnerabilities'
+            height: 3
+            width: 6
+            x: 0
+            y: 0
+          - content:
+              $ref: '#/spec/panels/total_user_fixable_vulnerabilities'
+            height: 3
+            width: 6
+            x: 0
+            y: 3
+          - content:
+              $ref: '#/spec/panels/vulnerabilities_by_severity'
+            height: 6
+            width: 6
+            x: 6
+            y: 0
+          - content:
+              $ref: '#/spec/panels/vulnerabilities_by_asset_over_time'
+            height: 6
+            width: 12
+            x: 12
+            y: 0
+          - content:
+              $ref: '#/spec/panels/fixable_user_workload_vulnerabilities_over_time'
+            height: 12
+            width: 12
+            x: 0
+            y: 6
+    - kind: Grid
+      spec:
+        display:
+          title: Cluster health
+        items:
+          - content:
+              $ref: '#/spec/panels/cluster_health'
+            height: 6
+            width: 12
+            x: 0
+            y: 0
+          - content:
+              $ref: '#/spec/panels/cert_expiry'
+            height: 6
+            width: 12
+            x: 12
+            y: 0
+  panels:
+    total_policy_violations:
+      kind: Panel
+      spec:
+        display:
+          name: Total policy violations
+        plugin:
+          kind: StatChart
+          spec:
+            calculation: last
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  query: 'sum(rox_central_policy_violation_namespace_severity{Cluster=~''$Cluster'',Namespace=~''$Namespace''})'
+    vulnerabilities_by_severity:
+      kind: Panel
+      spec:
+        display:
+          name: Vulnerabilities by severity
+        plugin:
+          kind: BarChart
+          spec:
+            calculation: last
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  query: 'sum by (Severity)(rox_central_image_vuln_deployment_severity{Cluster=~''$Cluster'',Namespace=~''$Namespace''})'
+                  seriesNameFormat: '{{Severity}}'
+    cluster_health:
+      kind: Panel
+      spec:
+        display:
+          name: Cluster status
+        plugin:
+          kind: Table
+          spec:
+            columnSettings:
+              - name: Cluster
+              - enableSorting: true
+                name: Status
+              - enableSorting: true
+                name: Upgradability
+              - header: timestamp
+                hide: true
+                name: timestamp
+              - header: value
+                hide: true
+                name: value
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  query: |
+                    group by (Cluster,Status,Upgradability)
+                    (rox_central_health_cluster_info{Cluster=~'$Cluster'})
+    vulnerabilities_by_asset_over_time:
+      kind: Panel
+      spec:
+        display:
+          name: Vulnerabilities by asset over time
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              mode: list
+              position: bottom
+              values: []
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  query: 'sum(rox_central_image_vuln_deployment_severity{Cluster=~''$Cluster'',Namespace=~''$Namespace'',IsPlatformWorkload=''false''})'
+                  seriesNameFormat: User Image vulnerabilities
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  query: 'sum(rox_central_image_vuln_deployment_severity{Cluster=~''$Cluster'',Namespace=~''$Namespace'',IsPlatformWorkload=''true''})'
+                  seriesNameFormat: Platform Image vulnerabilities
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  query: 'sum(rox_central_node_vuln_node_severity{Cluster=~''$Cluster''})'
+                  seriesNameFormat: Node vulnerabilities
+    violations_over_time_by_severity:
+      kind: Panel
+      spec:
+        display:
+          name: Policy violations over time by severity
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              position: bottom
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  query: 'sum by (Severity)(rox_central_policy_violation_namespace_severity{Cluster=~''$Cluster'',Namespace=~''$Namespace''})'
+                  seriesNameFormat: '{{Severity}}'
+    total_policies_enabled:
+      kind: Panel
+      spec:
+        display:
+          name: Total policies enabled
+        plugin:
+          kind: StatChart
+          spec:
+            calculation: last
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  query: 'sum(rox_central_cfg_total_policies{Enabled=''true''})'
+    cert_expiry:
+      kind: Panel
+      spec:
+        display:
+          name: Certificate expiry per component
+        plugin:
+          kind: StatChart
+          spec:
+            calculation: last
+            format:
+              decimalPlaces: 0
+              unit: days
+            thresholds:
+              steps:
+                - color: red
+                  value: 0
+                - color: yellow
+                  value: 7
+                - color: green
+                  value: 30
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  query: sum by (Component)(rox_central_cert_exp_hours / 24)
+                  seriesNameFormat: '{{Component}}'
+    fixable_user_workload_vulnerabilities_over_time:
+      kind: Panel
+      spec:
+        display:
+          name: Fixable user workload vulnerabilities over time
+        plugin:
+          kind: TimeSeriesChart
+          spec:
+            legend:
+              mode: table
+              position: bottom
+              size: small
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  query: 'sum by(Severity)(rox_central_image_vuln_deployment_severity{Cluster=~''$Cluster'',Namespace=~''$Namespace'',IsFixable="true",IsPlatformWorkload="false"})'
+                  seriesNameFormat: '{{Severity}}'
+    total_user_fixable_vulnerabilities:
+      kind: Panel
+      spec:
+        display:
+          name: Total fixable items in user workloads
+        plugin:
+          kind: StatChart
+          spec:
+            calculation: last
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  query: 'sum(rox_central_image_vuln_deployment_severity{Cluster=~''$Cluster'',Namespace=~''$Namespace'',IsFixable="true",IsPlatformWorkload="false"})'
+    violations_by_severity:
+      kind: Panel
+      spec:
+        display:
+          name: Policy violations by severity
+        plugin:
+          kind: BarChart
+          spec:
+            calculation: last
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  query: 'sum by (Severity)(rox_central_policy_violation_namespace_severity{Cluster=~''$Cluster'',Namespace=~''$Namespace''})'
+                  seriesNameFormat: '{{Severity}}'
+    total_vulnerabilities:
+      kind: Panel
+      spec:
+        display:
+          name: Total vulnerable items
+        plugin:
+          kind: StatChart
+          spec:
+            calculation: last
+        queries:
+          - kind: TimeSeriesQuery
+            spec:
+              plugin:
+                kind: PrometheusTimeSeriesQuery
+                spec:
+                  query: 'sum(rox_central_image_vuln_deployment_severity{Cluster=~''$Cluster'',Namespace=~''$Namespace''})'
+  refreshInterval: 1m
+  variables:
+    - kind: ListVariable
+      spec:
+        allowAllValue: true
+        allowMultiple: true
+        name: Cluster
+        plugin:
+          kind: PrometheusLabelValuesVariable
+          spec:
+            labelName: Cluster
+    - kind: ListVariable
+      spec:
+        allowAllValue: true
+        allowMultiple: true
+        name: Namespace
+        plugin:
+          kind: PrometheusLabelValuesVariable
+          spec:
+            labelName: Namespace
+DASHBOARD_EOF
+    )
+    
+    # Replace namespace in dashboard YAML
+    PERSES_DASHBOARD_YAML=$(echo "$PERSES_DASHBOARD_YAML" | sed "s/namespace: openshift-cluster-observability-operator/namespace: $OBSERVABILITY_OPERATOR_NAMESPACE/g")
+    
+    log "Creating PersesDashboard 'rhacs-dashboard'..."
+    if oc get persesdashboard rhacs-dashboard -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
+        log "PersesDashboard 'rhacs-dashboard' already exists, updating..."
+        echo "$PERSES_DASHBOARD_YAML" | oc apply -f - || error "Failed to update PersesDashboard"
+        log "✓ PersesDashboard updated successfully"
+    else
+        log "Creating new PersesDashboard..."
+        echo "$PERSES_DASHBOARD_YAML" | oc create -f - || error "Failed to create PersesDashboard"
+        log "✓ PersesDashboard created successfully"
+    fi
 else
-    warning "Perses pods not found yet. They may still be starting."
-    log "This is normal - Perses deployment may take a few minutes after UIPlugin creation"
+    log "Skipping UIPlugin and Perses resources creation - CRD not available"
+    log "Note: Metrics and dashboards are still available via Prometheus UI"
 fi
 
 # Verify MonitoringStack integration
@@ -539,26 +953,44 @@ log "Summary:"
 log "  - MonitoringStack 'rhacs-monitoring-stack' created in namespace: $NAMESPACE"
 log "  - ScrapeConfig 'rhacs-central-scrape-config' created in namespace: $NAMESPACE"
 log "  - Metrics target: ${CENTRAL_SERVICE_FQDN}:${CENTRAL_SERVICE_PORT}"
-log "  - UIPlugin 'monitoring' created in namespace: $OBSERVABILITY_OPERATOR_NAMESPACE"
-log "  - Perses dashboards enabled for monitoring UI"
+if [ "$UIPLUGIN_CRD_AVAILABLE" = true ]; then
+    log "  - PersesDatasource 'rhacs-datasource' created in namespace: $OBSERVABILITY_OPERATOR_NAMESPACE"
+    log "  - PersesDashboard 'rhacs-dashboard' created in namespace: $OBSERVABILITY_OPERATOR_NAMESPACE"
+    log "  - UIPlugin 'monitoring' created in namespace: $OBSERVABILITY_OPERATOR_NAMESPACE"
+    log "  - Perses dashboards enabled for monitoring UI"
+else
+    log "  - UIPlugin and Perses resources skipped (CRD not available)"
+fi
 log ""
-log "To view metrics and dashboards in OpenShift console:"
+log "To view metrics in OpenShift console:"
 log "  1. Switch to Administrator perspective"
-log "  2. Navigate to: Observe → Metrics (for PromQL queries)"
-log "  3. Navigate to: Observe → Dashboards (for Perses dashboards)"
-log "  4. Search for RHACS metrics (e.g., 'rox_' prefix or 'acs_' prefix)"
-log ""
-log "To create RHACS-specific dashboards:"
-log "  1. Go to Observe → Dashboards"
-log "  2. Click 'Create Dashboard'"
-log "  3. Add panel → Select Prometheus datasource"
-log "  4. Use queries like: sum(acs_violations_total) or rox_* metrics"
+log "  2. Navigate to: Observe → Metrics"
+log "  3. Search for RHACS metrics (e.g., 'rox_' prefix or 'acs_' prefix)"
+if [ "$UIPLUGIN_CRD_AVAILABLE" = true ]; then
+    log ""
+    log "To view Perses dashboards (if UIPlugin is available):"
+    log "  1. Navigate to: Observe → Dashboards"
+    log "  2. Click 'Create Dashboard' to create custom dashboards"
+    log "  3. Add panel → Select Prometheus datasource"
+    log "  4. Use queries like: sum(acs_violations_total) or rox_* metrics"
+else
+    log ""
+    log "Note: Perses dashboards require UIPlugin CRD (Technology Preview)"
+    log "      Access Prometheus UI directly via port-forward:"
+    log "      oc port-forward -n $NAMESPACE svc/prometheus-operated 9090:9090"
+fi
 log ""
 log "To verify MonitoringStack status:"
 log "  oc get monitoringstack rhacs-monitoring-stack -n $NAMESPACE"
 log ""
 log "To verify ScrapeConfig:"
 log "  oc get scrapeconfig rhacs-central-scrape-config -n $NAMESPACE"
+log ""
+log "To verify PersesDatasource:"
+log "  oc get persesdatasource rhacs-datasource -n $OBSERVABILITY_OPERATOR_NAMESPACE"
+log ""
+log "To verify PersesDashboard:"
+log "  oc get persesdashboard rhacs-dashboard -n $OBSERVABILITY_OPERATOR_NAMESPACE"
 log ""
 log "To verify UIPlugin:"
 log "  oc get uplugin monitoring -n $OBSERVABILITY_OPERATOR_NAMESPACE"
