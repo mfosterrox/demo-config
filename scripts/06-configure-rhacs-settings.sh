@@ -183,7 +183,7 @@ CONFIG_PAYLOAD=$(cat <<'EOF'
       "administrationEventsConfig": { "retentionDurationDays": 4 },
       "metrics": {
         "imageVulnerabilities": {
-          "gatheringPeriodMinutes": 5,
+          "gatheringPeriodMinutes": 1,
           "descriptors": {
             "cve_severity": { "labels": ["Cluster","CVE","IsPlatformWorkload","IsFixable","Severity"] },
             "deployment_severity": { "labels": ["Cluster","Namespace","Deployment","IsPlatformWorkload","IsFixable","Severity"] },
@@ -191,14 +191,14 @@ CONFIG_PAYLOAD=$(cat <<'EOF'
           }
         },
         "policyViolations": {
-          "gatheringPeriodMinutes": 3,
+          "gatheringPeriodMinutes": 1,
           "descriptors": {
             "deployment_severity": { "labels": ["Cluster","Namespace","Deployment","IsPlatformComponent","Action","Severity"] },
             "namespace_severity": { "labels": ["Cluster","Namespace","IsPlatformComponent","Action","Severity"] }
           }
         },
         "nodeVulnerabilities": {
-          "gatheringPeriodMinutes": 3,
+          "gatheringPeriodMinutes": 1,
           "descriptors": {
             "component_severity": { "labels": ["Cluster","Node","Component","IsFixable","Severity"] },
             "cve_severity": { "labels": ["Cluster","CVE","IsFixable","Severity"] },
