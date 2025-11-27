@@ -858,28 +858,34 @@ DASHBOARD_EOF
     PERSES_DASHBOARD_YAML=$(echo "$PERSES_DASHBOARD_YAML" | sed "s/namespace: openshift-cluster-observability-operator/namespace: $OBSERVABILITY_OPERATOR_NAMESPACE/g")
     
     # Create all resources at once (batch creation)
-    log "Creating PersesDatasource 'rhacs-datasource'..."
+    log "Creating/updating PersesDatasource 'rhacs-datasource'..."
     if oc get persesdatasource rhacs-datasource -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
         echo "$PERSES_DATASOURCE_YAML" | oc apply -f - || error "Failed to update PersesDatasource"
+        log "✓ PersesDatasource updated"
     else
-        echo "$PERSES_DATASOURCE_YAML" | oc create -f - || error "Failed to create PersesDatasource"
+        echo "$PERSES_DATASOURCE_YAML" | oc apply -f - || error "Failed to create PersesDatasource"
+        log "✓ PersesDatasource created"
     fi
     
-    log "Creating UIPlugin 'monitoring'..."
+    log "Creating/updating UIPlugin 'monitoring'..."
     if oc get uplugin monitoring -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
         echo "$UIPLUGIN_YAML" | oc apply -f - || error "Failed to update UIPlugin"
+        log "✓ UIPlugin updated"
     else
-        echo "$UIPLUGIN_YAML" | oc create -f - || error "Failed to create UIPlugin"
+        echo "$UIPLUGIN_YAML" | oc apply -f - || error "Failed to create UIPlugin"
+        log "✓ UIPlugin created"
     fi
     
-    log "Creating PersesDashboard 'rhacs-dashboard'..."
+    log "Creating/updating PersesDashboard 'rhacs-dashboard'..."
     if oc get persesdashboard rhacs-dashboard -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
         echo "$PERSES_DASHBOARD_YAML" | oc apply -f - || error "Failed to update PersesDashboard"
+        log "✓ PersesDashboard updated"
     else
-        echo "$PERSES_DASHBOARD_YAML" | oc create -f - || error "Failed to create PersesDashboard"
+        echo "$PERSES_DASHBOARD_YAML" | oc apply -f - || error "Failed to create PersesDashboard"
+        log "✓ PersesDashboard created"
     fi
     
-    log "✓ All Perses resources created successfully"
+    log "✓ All Perses resources created/updated successfully"
     
     # Now verify all resources together
     log "Waiting for all Perses resources to be ready..."
