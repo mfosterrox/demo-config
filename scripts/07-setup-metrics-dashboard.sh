@@ -410,6 +410,126 @@ else
     warning "Prometheus pods not found yet. They may still be starting."
 fi
 
+# Get Prometheus service endpoint for UIPlugin
+log "Getting Prometheus service endpoint for UIPlugin configuration..."
+PROMETHEUS_SERVICE="prometheus-operated"
+PROMETHEUS_PORT="9091"
+PROMETHEUS_ENDPOINT="${PROMETHEUS_SERVICE}.${NAMESPACE}.svc.cluster.local:${PROMETHEUS_PORT}"
+
+# Verify Prometheus service exists
+if oc get service "$PROMETHEUS_SERVICE" -n "$NAMESPACE" &>/dev/null; then
+    log "✓ Prometheus service found: $PROMETHEUS_SERVICE"
+    # Try to get actual port from service
+    ACTUAL_PORT=$(oc get service "$PROMETHEUS_SERVICE" -n "$NAMESPACE" -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || echo "$PROMETHEUS_PORT")
+    if [ -n "$ACTUAL_PORT" ] && [ "$ACTUAL_PORT" != "$PROMETHEUS_PORT" ]; then
+        PROMETHEUS_PORT="$ACTUAL_PORT"
+        PROMETHEUS_ENDPOINT="${PROMETHEUS_SERVICE}.${NAMESPACE}.svc.cluster.local:${PROMETHEUS_PORT}"
+        log "Using Prometheus port: $PROMETHEUS_PORT"
+    fi
+else
+    warning "Prometheus service not found, using default endpoint: $PROMETHEUS_ENDPOINT"
+fi
+
+log "Prometheus endpoint for UIPlugin: $PROMETHEUS_ENDPOINT"
+
+# Create UIPlugin resource for monitoring UI with Perses dashboards
+log "Creating UIPlugin resource for monitoring UI with Perses dashboards..."
+
+UIPLUGIN_YAML=$(cat <<EOF
+apiVersion: console.openshift.io/v1
+kind: UIPlugin
+metadata:
+  name: monitoring
+  namespace: $OBSERVABILITY_OPERATOR_NAMESPACE
+spec:
+  name: monitoring
+  displayName: Monitoring UI Plugin
+  type: monitoring
+  content:
+    resources:
+      - name: main
+        type: Bundle
+        data: |
+          name: @openshift-console/dynamic-plugin-sdk
+          version: "2.201.0"
+          path: ./index.js
+          entry: ./index.js
+          esm: true
+    dependencies:
+      - name: '@openshift-console/dynamic-plugin-sdk'
+        version: '^2.201.0'
+      - name: '@patternfly/react-core'
+        version: '^5.0.0'
+    plugins:
+      - name: monitoring-plugin
+        options:
+          enabled: true
+          rhacmIntegration: false
+          incidents: true
+          dashboards: true
+          datasource:
+            prometheus:
+              addr: https://${PROMETHEUS_ENDPOINT}
+              bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+              wauth: false
+EOF
+)
+
+# Create UIPlugin
+log "Creating UIPlugin 'monitoring'..."
+if oc get uplugin monitoring -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
+    log "UIPlugin 'monitoring' already exists, updating..."
+    echo "$UIPLUGIN_YAML" | oc apply -f - || error "Failed to update UIPlugin"
+    log "✓ UIPlugin updated successfully"
+else
+    log "Creating new UIPlugin..."
+    echo "$UIPLUGIN_YAML" | oc create -f - || error "Failed to create UIPlugin"
+    log "✓ UIPlugin created successfully"
+fi
+
+# Wait for UIPlugin to be ready
+log "Waiting for UIPlugin to be ready..."
+UIPLUGIN_TIMEOUT=300
+UIPLUGIN_ELAPSED=0
+UIPLUGIN_READY=false
+
+while [ $UIPLUGIN_ELAPSED -lt $UIPLUGIN_TIMEOUT ]; do
+    UIPLUGIN_STATUS=$(oc get uplugin monitoring -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
+    if [ "$UIPLUGIN_STATUS" = "True" ]; then
+        UIPLUGIN_READY=true
+        log "✓ UIPlugin is Available"
+        break
+    fi
+    sleep 10
+    UIPLUGIN_ELAPSED=$((UIPLUGIN_ELAPSED + 10))
+    log "Waiting for UIPlugin to be ready... (${UIPLUGIN_ELAPSED}s/${UIPLUGIN_TIMEOUT}s)"
+done
+
+if [ "$UIPLUGIN_READY" = false ]; then
+    warning "UIPlugin may still be initializing. Checking status..."
+    oc get uplugin monitoring -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o yaml | grep -A 10 "status:" || true
+    warning "Proceeding anyway - UIPlugin may still be deploying..."
+fi
+
+# Check for Perses pods
+log "Checking for Perses pods..."
+sleep 10  # Give operator time to create Perses resources
+PERSES_PODS=$(oc get pods -n "$OBSERVABILITY_OPERATOR_NAMESPACE" | grep -i perses | grep -v NAME | wc -l || echo "0")
+if [ "$PERSES_PODS" -gt 0 ]; then
+    log "✓ Found $PERSES_PODS Perses pod(s)"
+    oc get pods -n "$OBSERVABILITY_OPERATOR_NAMESPACE" | grep -i perses || true
+else
+    warning "Perses pods not found yet. They may still be starting."
+    log "This is normal - Perses deployment may take a few minutes after UIPlugin creation"
+fi
+
+# Verify MonitoringStack integration
+log "Verifying MonitoringStack integration with UI plugin..."
+if oc get monitoringstack rhacs-monitoring-stack -n "$NAMESPACE" &>/dev/null; then
+    log "✓ MonitoringStack status:"
+    oc get monitoringstack rhacs-monitoring-stack -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null && echo "" || true
+fi
+
 # Provide instructions for accessing metrics
 log "========================================================="
 log "Cluster Observability Operator Setup Completed Successfully"
@@ -419,11 +539,20 @@ log "Summary:"
 log "  - MonitoringStack 'rhacs-monitoring-stack' created in namespace: $NAMESPACE"
 log "  - ScrapeConfig 'rhacs-central-scrape-config' created in namespace: $NAMESPACE"
 log "  - Metrics target: ${CENTRAL_SERVICE_FQDN}:${CENTRAL_SERVICE_PORT}"
+log "  - UIPlugin 'monitoring' created in namespace: $OBSERVABILITY_OPERATOR_NAMESPACE"
+log "  - Perses dashboards enabled for monitoring UI"
 log ""
-log "To view metrics in OpenShift console:"
-log "  1. Navigate to: Developer or Administrator perspective"
-log "  2. Go to: Observe → Metrics"
-log "  3. Search for RHACS metrics (e.g., 'rox_' prefix)"
+log "To view metrics and dashboards in OpenShift console:"
+log "  1. Switch to Administrator perspective"
+log "  2. Navigate to: Observe → Metrics (for PromQL queries)"
+log "  3. Navigate to: Observe → Dashboards (for Perses dashboards)"
+log "  4. Search for RHACS metrics (e.g., 'rox_' prefix or 'acs_' prefix)"
+log ""
+log "To create RHACS-specific dashboards:"
+log "  1. Go to Observe → Dashboards"
+log "  2. Click 'Create Dashboard'"
+log "  3. Add panel → Select Prometheus datasource"
+log "  4. Use queries like: sum(acs_violations_total) or rox_* metrics"
 log ""
 log "To verify MonitoringStack status:"
 log "  oc get monitoringstack rhacs-monitoring-stack -n $NAMESPACE"
@@ -431,13 +560,20 @@ log ""
 log "To verify ScrapeConfig:"
 log "  oc get scrapeconfig rhacs-central-scrape-config -n $NAMESPACE"
 log ""
+log "To verify UIPlugin:"
+log "  oc get uplugin monitoring -n $OBSERVABILITY_OPERATOR_NAMESPACE"
+log ""
 log "To check Prometheus pods:"
 log "  oc get pods -n $NAMESPACE -l app.kubernetes.io/name=prometheus"
 log ""
+log "To check Perses pods:"
+log "  oc get pods -n $OBSERVABILITY_OPERATOR_NAMESPACE | grep perses"
+log ""
 log "Note: It may take a few minutes for Prometheus to start scraping metrics."
+log "      Perses dashboards may take a few minutes to appear after UIPlugin creation."
 log "      Metrics will appear in the OpenShift console once Prometheus has collected data."
 log ""
 log "If the Cluster Observability Operator is not installed, install it from OperatorHub:"
 log "  1. Go to Operators → OperatorHub"
 log "  2. Search for 'Cluster Observability Operator'"
-log "  3. Install it in the openshift-operators namespace"
+log "  3. Install it in the openshift-cluster-observability-operator namespace"
