@@ -164,7 +164,7 @@ if [ "$SKIP_CREATION" = "false" ]; then
             ],
             \"scanSchedule\": {
                 \"intervalType\": \"DAILY\",
-                \"hour\": 0,
+                \"hour\": 12,
                 \"minute\": 0
             },
             \"description\": \"Daily compliance scan for all profiles\"
@@ -220,4 +220,118 @@ fi
     log "Compliance scan schedule setup completed successfully!"
 log "Scan configuration ID: $SCAN_CONFIG_ID"
 log "Note: Run script 05-trigger-compliance-scan.sh to trigger an immediate scan"
+log ""
+
+# Diagnostic: Check if compliance scan results are syncing properly
+log "========================================================="
+log "Diagnosing compliance scan results sync..."
+log "========================================================="
+
+# Get namespace from environment or default
+NAMESPACE="${NAMESPACE:-tssc-acs}"
+
+# Check scan configuration status
+log "Checking scan configuration status..."
+CURRENT_CONFIGS=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
+    -H "Authorization: Bearer $ROX_API_TOKEN" \
+    -H "Content-Type: application/json" \
+    "$ROX_ENDPOINT/v2/compliance/scan/configurations" 2>&1)
+
+if [ -n "$CURRENT_CONFIGS" ] && echo "$CURRENT_CONFIGS" | jq . >/dev/null 2>&1; then
+    LAST_STATUS=$(echo "$CURRENT_CONFIGS" | jq -r ".configurations[] | select(.id == \"$SCAN_CONFIG_ID\") | .lastScanStatus // \"UNKNOWN\"" 2>/dev/null)
+    LAST_SCANNED=$(echo "$CURRENT_CONFIGS" | jq -r ".configurations[] | select(.id == \"$SCAN_CONFIG_ID\") | .lastScanned // \"Never\"" 2>/dev/null)
+    
+    if [ -n "$LAST_STATUS" ] && [ "$LAST_STATUS" != "null" ]; then
+        log "  Scan Status: $LAST_STATUS"
+        log "  Last Scanned: $LAST_SCANNED"
+    fi
+fi
+
+# Check if results are available in RHACS
+log "Checking if scan results are available in RHACS..."
+SCAN_RESULTS=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
+    -H "Authorization: Bearer $ROX_API_TOKEN" \
+    -H "Content-Type: application/json" \
+    "$ROX_ENDPOINT/v2/compliance/scan/results" 2>&1)
+
+RESULTS_AVAILABLE=false
+if [ -n "$SCAN_RESULTS" ] && echo "$SCAN_RESULTS" | jq . >/dev/null 2>&1; then
+    RESULT_COUNT=$(echo "$SCAN_RESULTS" | jq '.results | length' 2>/dev/null || echo "0")
+    if [ "$RESULT_COUNT" -gt 0 ]; then
+        RESULTS_AVAILABLE=true
+        log "  ✓ Found $RESULT_COUNT scan result(s) in RHACS"
+    else
+        log "  ⚠ No scan results found in RHACS API"
+    fi
+else
+    log "  ⚠ Could not check scan results API"
+fi
+
+# Check Compliance Operator status if oc is available
+if command -v oc &>/dev/null && oc whoami &>/dev/null 2>&1; then
+    log "Checking Compliance Operator scan status..."
+    
+    CHECK_RESULTS=$(oc get compliancecheckresult -A 2>/dev/null | grep -v NAME | wc -l || echo "0")
+    if [ "$CHECK_RESULTS" -gt 0 ]; then
+        log "  ✓ Found $CHECK_RESULTS ComplianceCheckResult resources"
+        CO_HAS_RESULTS=true
+    else
+        log "  ⚠ No ComplianceCheckResult resources found"
+        CO_HAS_RESULTS=false
+    fi
+    
+    # Check sensor status
+    log "Checking RHACS sensor status..."
+    SENSOR_PODS=$(oc get pods -n "$NAMESPACE" -l app.kubernetes.io/component=sensor 2>/dev/null | grep -v NAME | wc -l || echo "0")
+    if [ "$SENSOR_PODS" -gt 0 ]; then
+        READY_PODS=$(oc get pods -n "$NAMESPACE" -l app.kubernetes.io/component=sensor -o jsonpath='{range .items[*]}{.status.containerStatuses[0].ready}{"\n"}{end}' 2>/dev/null | grep -c "true" || echo "0")
+        log "  Sensor pods: $READY_PODS/$SENSOR_PODS ready"
+    else
+        log "  ⚠ No sensor pods found in namespace $NAMESPACE"
+    fi
+    
+    # Diagnose sync issue
+    if [ "$CO_HAS_RESULTS" = true ] && [ "$RESULTS_AVAILABLE" = false ]; then
+        log ""
+        warning "ISSUE DETECTED: Compliance Operator has results but RHACS doesn't show them"
+        warning "This indicates a sync issue between Compliance Operator and RHACS"
+        log ""
+        log "SOLUTION: Restart the RHACS sensor to force sync:"
+        log "  oc delete pods -l app.kubernetes.io/component=sensor -n $NAMESPACE"
+        log ""
+        log "After restarting, wait 1-2 minutes and check:"
+        log "  - RHACS UI: Compliance → Coverage tab"
+        log "  - Select your scan configuration to view results"
+    elif [ -n "$LAST_STATUS" ] && [ "$LAST_STATUS" = "COMPLETED" ] && [ "$RESULTS_AVAILABLE" = false ]; then
+        log ""
+        warning "ISSUE DETECTED: Scan shows COMPLETED but results not available in RHACS"
+        warning "The scan completed and sent a report, but results haven't synced to RHACS yet"
+        log ""
+        log "SOLUTION: Restart the RHACS sensor to force sync:"
+        log "  oc delete pods -l app.kubernetes.io/component=sensor -n $NAMESPACE"
+        log ""
+        log "This is common when RHACS was installed before the Compliance Operator."
+        log "After restarting, wait 1-2 minutes and check the Compliance → Coverage tab."
+    elif [ "$RESULTS_AVAILABLE" = true ]; then
+        log ""
+        log "✓ Scan results are available in RHACS"
+        log "  View them in: Compliance → Coverage tab"
+    else
+        log ""
+        log "No scan results found yet. This is normal if:"
+        log "  - No scans have been run yet (run script 05-trigger-compliance-scan.sh)"
+        log "  - Scan is still in progress"
+        log ""
+        log "If scan completed but results don't appear, restart the sensor:"
+        log "  oc delete pods -l app.kubernetes.io/component=sensor -n $NAMESPACE"
+    fi
+else
+    log "  ⚠ OpenShift CLI (oc) not available - skipping Compliance Operator checks"
+    log ""
+    log "If scan results don't appear in the dashboard after completion:"
+    log "  1. Restart RHACS sensor: oc delete pods -l app.kubernetes.io/component=sensor -n $NAMESPACE"
+    log "  2. Wait 1-2 minutes"
+    log "  3. Check Compliance → Coverage tab in RHACS UI"
+fi
+
 log ""
