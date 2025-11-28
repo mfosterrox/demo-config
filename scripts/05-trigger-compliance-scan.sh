@@ -318,4 +318,4 @@ else
     error "No clusters found to trigger compliance scans. Check cluster registration: oc get securedcluster -A"
 fi
 
-log "✓ Compliance scan trigger process completed successfully!"
+    log "✓ Compliance scan trigger process completed successfully!"

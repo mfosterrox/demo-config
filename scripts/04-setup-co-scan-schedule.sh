@@ -128,14 +128,14 @@ if ! echo "$EXISTING_CONFIGS" | jq . >/dev/null 2>&1; then
 fi
 
 EXISTING_SCAN=$(echo "$EXISTING_CONFIGS" | jq -r '.configurations[] | select(.scanName == "acs-catch-all") | .id' 2>/dev/null || echo "")
-
-if [ -n "$EXISTING_SCAN" ] && [ "$EXISTING_SCAN" != "null" ]; then
-    log "✓ Scan configuration 'acs-catch-all' already exists (ID: $EXISTING_SCAN)"
-    log "Skipping creation..."
-    SCAN_CONFIG_ID="$EXISTING_SCAN"
-    SKIP_CREATION=true
-else
-    log "Scan configuration 'acs-catch-all' not found, creating new configuration..."
+    
+    if [ -n "$EXISTING_SCAN" ] && [ "$EXISTING_SCAN" != "null" ]; then
+        log "✓ Scan configuration 'acs-catch-all' already exists (ID: $EXISTING_SCAN)"
+        log "Skipping creation..."
+        SCAN_CONFIG_ID="$EXISTING_SCAN"
+        SKIP_CREATION=true
+    else
+        log "Scan configuration 'acs-catch-all' not found, creating new configuration..."
     SKIP_CREATION=false
 fi
 
@@ -188,20 +188,20 @@ if [ "$SKIP_CREATION" = "false" ]; then
         error "Invalid JSON response from scan configuration creation API. Response: ${SCAN_CONFIG_RESPONSE:0:300}"
     fi
 
-    log "✓ Compliance scan configuration created successfully"
-    
-    # Get the scan configuration ID from the response
-    SCAN_CONFIG_ID=$(echo "$SCAN_CONFIG_RESPONSE" | jq -r '.id')
-    if [ -z "$SCAN_CONFIG_ID" ] || [ "$SCAN_CONFIG_ID" = "null" ]; then
-        log "Could not extract scan configuration ID from response, trying to get it from configurations list..."
+        log "✓ Compliance scan configuration created successfully"
         
-        # Get scan configurations to find our configuration
-        CONFIGS_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
-            -H "Authorization: Bearer $ROX_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            "$ROX_ENDPOINT/v2/compliance/scan/configurations" 2>&1)
+        # Get the scan configuration ID from the response
+    SCAN_CONFIG_ID=$(echo "$SCAN_CONFIG_RESPONSE" | jq -r '.id')
+        if [ -z "$SCAN_CONFIG_ID" ] || [ "$SCAN_CONFIG_ID" = "null" ]; then
+            log "Could not extract scan configuration ID from response, trying to get it from configurations list..."
+            
+            # Get scan configurations to find our configuration
+            CONFIGS_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
+                -H "Authorization: Bearer $ROX_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                "$ROX_ENDPOINT/v2/compliance/scan/configurations" 2>&1)
         CONFIGS_EXIT_CODE=$?
-
+    
         if [ $CONFIGS_EXIT_CODE -ne 0 ]; then
             error "Failed to get scan configurations list (exit code: $CONFIGS_EXIT_CODE). Response: ${CONFIGS_RESPONSE:0:300}"
         fi
@@ -217,7 +217,7 @@ if [ "$SKIP_CREATION" = "false" ]; then
     fi
 fi
 
-log "Compliance scan schedule setup completed successfully!"
+    log "Compliance scan schedule setup completed successfully!"
 log "Scan configuration ID: $SCAN_CONFIG_ID"
 log "Note: Run script 05-trigger-compliance-scan.sh to trigger an immediate scan"
 log ""

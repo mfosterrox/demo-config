@@ -64,16 +64,16 @@ if oc get namespace $NAMESPACE >/dev/null 2>&1; then
             log "Subscription exists but CSV not yet determined, proceeding with installation..."
         else
             CSV_PHASE=$(oc get csv $CURRENT_CSV -n $NAMESPACE -o jsonpath='{.status.phase}')
-            
-            if [ "$CSV_PHASE" = "Succeeded" ]; then
-                log "✓ Compliance Operator is already installed and running"
-                log "  Installed CSV: $CURRENT_CSV"
-                log "  Status: $CSV_PHASE"
-                log "Skipping installation..."
-                exit 0
-            else
-                log "Compliance Operator subscription exists but CSV is in phase: $CSV_PHASE"
-                log "Continuing with installation to ensure proper setup..."
+        
+        if [ "$CSV_PHASE" = "Succeeded" ]; then
+            log "✓ Compliance Operator is already installed and running"
+            log "  Installed CSV: $CURRENT_CSV"
+            log "  Status: $CSV_PHASE"
+            log "Skipping installation..."
+            exit 0
+        else
+            log "Compliance Operator subscription exists but CSV is in phase: $CSV_PHASE"
+            log "Continuing with installation to ensure proper setup..."
             fi
         fi
     else
@@ -205,7 +205,7 @@ fi
 oc get csv -n openshift-compliance -l operators.coreos.com/compliance-operator.openshift-compliance
 
 # Display operator status
-log "Compliance Operator installation completed successfully!"
+    log "Compliance Operator installation completed successfully!"
 log "========================================================="
 log "Namespace: openshift-compliance"
 log "Operator: compliance-operator"
