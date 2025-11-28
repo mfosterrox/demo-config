@@ -91,7 +91,7 @@ log "✓ Central service found"
 
 # Check if Cluster Observability Operator is installed
 log "Checking for Cluster Observability Operator..."
-OBSERVABILITY_OPERATOR_NAMESPACE="openshift-cluster-observability-operator"
+OBSERVABILITY_OPERATOR_NAMESPACE="openshift-operators"
 OBSERVABILITY_OPERATOR_INSTALLED=false
 
 # Check if the operator CRD exists and is established (primary API group)
@@ -116,20 +116,28 @@ elif oc get crd monitoringstacks.monitoring.observability.openshift.io &>/dev/nu
     fi
 else
     # Check if subscription exists but CRD doesn't - operator may be installing or failed
-    if oc get subscription.operators.coreos.com cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
+    if oc get subscription.operators.coreos.com observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null || \
+       oc get subscription.operators.coreos.com cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
         log "Subscription exists but CRD not found. Checking operator status..."
-        CSV_NAME=$(oc get subscription.operators.coreos.com cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.currentCSV}' 2>/dev/null || echo "")
-        INSTALL_PLAN=$(oc get subscription.operators.coreos.com cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.installplan.name}' 2>/dev/null || echo "")
+        # Check both subscription names (old and new)
+        SUB_NAME="observability-operator"
+        if ! oc get subscription.operators.coreos.com "$SUB_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
+            SUB_NAME="cluster-observability-operator"
+        fi
+        CSV_NAME=$(oc get subscription.operators.coreos.com "$SUB_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.currentCSV}' 2>/dev/null || echo "")
+        INSTALL_PLAN=$(oc get subscription.operators.coreos.com "$SUB_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.installplan.name}' 2>/dev/null || echo "")
         
         if [ -z "$CSV_NAME" ] && [ -z "$INSTALL_PLAN" ]; then
             log "⚠ Subscription exists but no CSV or InstallPlan found. Installation may have failed."
             log "Checking subscription conditions..."
-            SUB_CONDITIONS=$(oc get subscription.operators.coreos.com cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[*].message}' 2>/dev/null || echo "")
+            SUB_CONDITIONS=$(oc get subscription.operators.coreos.com "$SUB_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[*].message}' 2>/dev/null || echo "")
             if [ -n "$SUB_CONDITIONS" ]; then
                 log "Subscription conditions: $SUB_CONDITIONS"
             fi
             log "Attempting to reinstall the operator by deleting and recreating the subscription..."
-            oc delete subscription.operators.coreos.com cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" --ignore-not-found=true
+            oc delete subscription.operators.coreos.com "$SUB_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" --ignore-not-found=true
+            oc delete subscription.operators.coreos.com observability-operator -n openshift-operators --ignore-not-found=true
+            oc delete subscription.operators.coreos.com cluster-observability-operator -n openshift-cluster-observability-operator --ignore-not-found=true
             OBSERVABILITY_OPERATOR_INSTALLED=false
         elif [ -n "$CSV_NAME" ]; then
             CSV_STATUS=$(oc get csv "$CSV_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
@@ -152,7 +160,7 @@ if [ "$OBSERVABILITY_OPERATOR_INSTALLED" = false ]; then
     log "Installing Cluster Observability Operator..."
     log "This will install the operator via OperatorHub (OLM)"
     
-    # Create namespace if it doesn't exist
+    # openshift-operators namespace should already exist, but verify
     if ! oc get namespace "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
         log "Creating namespace: $OBSERVABILITY_OPERATOR_NAMESPACE"
         oc create namespace "$OBSERVABILITY_OPERATOR_NAMESPACE" || error "Failed to create namespace $OBSERVABILITY_OPERATOR_NAMESPACE"
@@ -161,15 +169,15 @@ if [ "$OBSERVABILITY_OPERATOR_INSTALLED" = false ]; then
         log "✓ Namespace already exists: $OBSERVABILITY_OPERATOR_NAMESPACE"
     fi
     
-    # Create OperatorGroup if it doesn't exist
-    # For cluster-wide installation, use AllNamespaces install mode
+    # openshift-operators namespace typically has a global OperatorGroup
+    # Check if one exists, create if needed
     if ! oc get operatorgroup -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
         log "Creating OperatorGroup for cluster-wide installation..."
         OPERATORGROUP_YAML=$(cat <<EOF
 apiVersion: operators.coreos.com/v1
 kind: OperatorGroup
 metadata:
-  name: cluster-observability-operator-group
+  name: global-operators
   namespace: $OBSERVABILITY_OPERATOR_NAMESPACE
 spec: {}
 EOF
@@ -181,18 +189,23 @@ EOF
     fi
     
     # Create Subscription
+    # Using the official subscription format from: https://github.com/rhobs/observability-operator/blob/main/hack/olm/subscription.yaml
     log "Creating Subscription for Cluster Observability Operator..."
-    log "Channel: stable, Source: redhat-operators"
+    log "Channel: stable, Source: redhat-operators (or observability-operator if available)"
+    
+    # Try redhat-operators first (for production), fallback to observability-operator catalog
     SUBSCRIPTION_YAML=$(cat <<EOF
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
 metadata:
-  name: cluster-observability-operator
-  namespace: $OBSERVABILITY_OPERATOR_NAMESPACE
+  name: observability-operator
+  namespace: openshift-operators
+  labels:
+    operators.coreos.com/observability-operator.openshift-operators: ""
 spec:
   channel: stable
   installPlanApproval: Automatic
-  name: cluster-observability-operator
+  name: observability-operator
   source: redhat-operators
   sourceNamespace: openshift-marketplace
 EOF
@@ -211,7 +224,7 @@ EOF
     
     while [ $CSV_ELAPSED -lt $CSV_TIMEOUT ]; do
         # Check for CSV in the namespace
-        CSV_NAME=$(oc get csv -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o name 2>/dev/null | grep cluster-observability-operator | head -1 || echo "")
+        CSV_NAME=$(oc get csv -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o name 2>/dev/null | grep -E "(observability-operator|cluster-observability-operator)" | head -1 || echo "")
         if [ -n "$CSV_NAME" ]; then
             CSV_STATUS=$(oc get "$CSV_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
             if [ "$CSV_STATUS" = "Succeeded" ]; then
@@ -233,6 +246,8 @@ EOF
     if [ "$CSV_INSTALLED" = false ]; then
         warning "CSV installation timeout. Checking status..."
         oc get csv -n "$OBSERVABILITY_OPERATOR_NAMESPACE" || true
+        # Check both subscription names
+        oc get subscription.operators.coreos.com observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o yaml | grep -A 10 "status:" 2>/dev/null || \
         oc get subscription.operators.coreos.com cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o yaml | grep -A 10 "status:" || true
         error "Cluster Observability Operator CSV did not install successfully within timeout"
     fi
@@ -240,11 +255,18 @@ EOF
     # Wait for operator deployment to be ready
     log "Waiting for Cluster Observability Operator deployment to be ready..."
     DEPLOYMENT_TIMEOUT=300
-    if oc wait --for=condition=Available deployment/cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" --timeout=${DEPLOYMENT_TIMEOUT}s 2>/dev/null; then
+    # Check for deployment with either name
+    DEPLOYMENT_NAME="observability-operator"
+    if ! oc get deployment "$DEPLOYMENT_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
+        DEPLOYMENT_NAME="cluster-observability-operator"
+    fi
+    
+    if oc wait --for=condition=Available "deployment/$DEPLOYMENT_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" --timeout=${DEPLOYMENT_TIMEOUT}s 2>/dev/null; then
         log "✓ Cluster Observability Operator deployment is ready"
     else
         warning "Operator deployment may still be starting. Checking status..."
-        oc get deployment cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" || true
+        oc get deployment "$DEPLOYMENT_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" || true
+        oc get pods -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -l app=observability-operator || \
         oc get pods -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -l app=cluster-observability-operator || true
         warning "Proceeding anyway - operator may still be initializing..."
     fi
@@ -365,21 +387,25 @@ else
     fi
     
     # Verify operator is running
-    if oc get deployment cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
+    # Check for deployment with either name
+    DEPLOYMENT_NAME="observability-operator"
+    if oc get deployment "$DEPLOYMENT_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
         log "✓ Cluster Observability Operator deployment found"
-        if oc wait --for=condition=Available deployment/cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" --timeout=30s 2>/dev/null; then
+        if oc wait --for=condition=Available "deployment/$DEPLOYMENT_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" --timeout=30s 2>/dev/null; then
+            log "✓ Cluster Observability Operator is ready"
+        else
+            warning "Operator deployment may not be ready yet"
+        fi
+    elif oc get deployment cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
+        DEPLOYMENT_NAME="cluster-observability-operator"
+        log "✓ Cluster Observability Operator deployment found (legacy name)"
+        if oc wait --for=condition=Available "deployment/$DEPLOYMENT_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" --timeout=30s 2>/dev/null; then
             log "✓ Cluster Observability Operator is ready"
         else
             warning "Operator deployment may not be ready yet"
         fi
     else
-        # Check if operator might be in openshift-operators namespace
-        if oc get deployment cluster-observability-operator -n openshift-operators &>/dev/null; then
-            log "✓ Cluster Observability Operator deployment found in openshift-operators namespace"
-            OBSERVABILITY_OPERATOR_NAMESPACE="openshift-operators"
-        else
-            warning "Operator deployment not found. Operator may still be installing..."
-        fi
+        warning "Operator deployment not found. Operator may still be installing..."
     fi
 fi
 
