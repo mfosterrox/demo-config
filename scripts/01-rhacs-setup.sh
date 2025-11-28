@@ -304,7 +304,9 @@ fi
 # Configure Central custom resource for route reencrypt
 log "Configuring Central custom resource for route reencrypt..."
 # Try to find Central resource name (typically "stackrox-central-services")
-CENTRAL_RESOURCE_NAME=$(oc get central -n $NAMESPACE -o name 2>/dev/null | head -1 | sed 's|central/||' || echo "")
+# oc get -o name returns format like "central.platform.stackrox.io/stackrox-central-services"
+# Extract just the name part after the last /
+CENTRAL_RESOURCE_NAME=$(oc get central -n $NAMESPACE -o name 2>/dev/null | head -1 | sed 's|.*/||' || echo "")
 
 if [ -z "$CENTRAL_RESOURCE_NAME" ]; then
     # Try common names
