@@ -107,6 +107,87 @@ if [ -z "$PRODUCTION_CLUSTER_ID" ] || [ "$PRODUCTION_CLUSTER_ID" = "null" ]; the
 fi
 log "✓ Cluster ID: $PRODUCTION_CLUSTER_ID"
 
+# Check if Compliance Operator ProfileBundles are ready
+# This is critical - scans cannot be created until ProfileBundles are processed
+if command -v oc &>/dev/null && oc whoami &>/dev/null 2>&1; then
+    log "Checking Compliance Operator ProfileBundle status..."
+    log "ProfileBundles must be ready before creating scan configurations..."
+    
+    PROFILEBUNDLE_WAIT_TIMEOUT=600  # 10 minutes max wait
+    PROFILEBUNDLE_WAIT_INTERVAL=10  # Check every 10 seconds
+    PROFILEBUNDLE_ELAPSED=0
+    PROFILEBUNDLES_READY=false
+    
+    # Required ProfileBundles for the profiles we're using
+    REQUIRED_BUNDLES=("ocp4" "rhcos4")
+    
+    while [ $PROFILEBUNDLE_ELAPSED -lt $PROFILEBUNDLE_WAIT_TIMEOUT ]; do
+        ALL_READY=true
+        BUNDLE_STATUS=""
+        
+        for bundle in "${REQUIRED_BUNDLES[@]}"; do
+            # Check multiple status fields - different versions use different fields
+            BUNDLE_PHASE=$(oc get profilebundle "$bundle" -n openshift-compliance -o jsonpath='{.status.phase}' 2>/dev/null || echo "NOT_FOUND")
+            BUNDLE_DATASTREAM=$(oc get profilebundle "$bundle" -n openshift-compliance -o jsonpath='{.status.dataStreamStatus}' 2>/dev/null || echo "")
+            
+            if [ "$BUNDLE_PHASE" = "NOT_FOUND" ]; then
+                BUNDLE_STATUS="${BUNDLE_STATUS}  $bundle: Not found\n"
+                ALL_READY=false
+            elif [ "$BUNDLE_PHASE" = "Ready" ] || [ "$BUNDLE_PHASE" = "READY" ]; then
+                BUNDLE_STATUS="${BUNDLE_STATUS}  $bundle: ✓ Ready\n"
+            elif [ -n "$BUNDLE_DATASTREAM" ] && [ "$BUNDLE_DATASTREAM" = "Valid" ] || [ "$BUNDLE_DATASTREAM" = "VALID" ]; then
+                BUNDLE_STATUS="${BUNDLE_STATUS}  $bundle: ✓ Ready (dataStream: Valid)\n"
+            else
+                STATUS_DISPLAY="${BUNDLE_PHASE:-Unknown}"
+                if [ -n "$BUNDLE_DATASTREAM" ] && [ "$BUNDLE_DATASTREAM" != "Valid" ]; then
+                    STATUS_DISPLAY="${STATUS_DISPLAY} (dataStream: ${BUNDLE_DATASTREAM})"
+                fi
+                BUNDLE_STATUS="${BUNDLE_STATUS}  $bundle: ⏳ Processing ($STATUS_DISPLAY)\n"
+                ALL_READY=false
+            fi
+        done
+        
+        if [ "$ALL_READY" = true ]; then
+            PROFILEBUNDLES_READY=true
+            log "✓ All ProfileBundles are ready:"
+            echo -e "$BUNDLE_STATUS"
+            break
+        else
+            if [ $((PROFILEBUNDLE_ELAPSED % 30)) -eq 0 ]; then
+                log "Waiting for ProfileBundles to be ready... (${PROFILEBUNDLE_ELAPSED}s/${PROFILEBUNDLE_WAIT_TIMEOUT}s)"
+                echo -e "$BUNDLE_STATUS"
+            fi
+        fi
+        
+        sleep $PROFILEBUNDLE_WAIT_INTERVAL
+        PROFILEBUNDLE_ELAPSED=$((PROFILEBUNDLE_ELAPSED + PROFILEBUNDLE_WAIT_INTERVAL))
+    done
+    
+    if [ "$PROFILEBUNDLES_READY" = false ]; then
+        warning "ProfileBundles did not become ready within ${PROFILEBUNDLE_WAIT_TIMEOUT}s timeout"
+        log "Current ProfileBundle status:"
+        echo -e "$BUNDLE_STATUS"
+        log ""
+        log "This may indicate:"
+        log "  1. Compliance Operator is still installing/processing"
+        log "  2. ProfileBundles are stuck in processing state"
+        log ""
+        log "Troubleshooting steps:"
+        log "  1. Check Compliance Operator pods: oc get pods -n openshift-compliance"
+        log "  2. Check ProfileBundle status: oc get profilebundle -n openshift-compliance"
+        log "  3. Check ProfileBundle details: oc describe profilebundle ocp4 -n openshift-compliance"
+        log "  4. Check operator logs: oc logs -n openshift-compliance -l name=compliance-operator"
+        log ""
+        warning "Attempting to create scan configuration anyway..."
+        warning "If it fails with 'ProfileBundle still being processed', wait and retry later"
+    fi
+else
+    warning "OpenShift CLI (oc) not available - cannot check ProfileBundle status"
+    warning "If scan creation fails with 'ProfileBundle still being processed', ensure ProfileBundles are ready"
+fi
+
+log ""
+
 # Check if acs-catch-all scan configuration already exists
 log "Checking if 'acs-catch-all' scan configuration already exists..."
 EXISTING_CONFIGS=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
@@ -184,8 +265,33 @@ if [ "$SKIP_CREATION" = "false" ]; then
         error "Empty response from scan configuration creation API"
     fi
 
+    # Check for ProfileBundle processing error
+    if echo "$SCAN_CONFIG_RESPONSE" | grep -qi "ProfileBundle.*still being processed"; then
+        warning "Scan creation failed: ProfileBundle is still being processed"
+        log ""
+        log "This means the Compliance Operator is still processing profile bundles."
+        log "Please wait for ProfileBundles to be ready and retry."
+        log ""
+        log "To check ProfileBundle status:"
+        log "  oc get profilebundle -n openshift-compliance"
+        log "  oc describe profilebundle ocp4 -n openshift-compliance"
+        log ""
+        log "Wait for dataStreamStatus to show 'Valid' before retrying."
+        log ""
+        error "Cannot create scan: ProfileBundles are still being processed. Wait and retry."
+    fi
+
     if ! echo "$SCAN_CONFIG_RESPONSE" | jq . >/dev/null 2>&1; then
-        error "Invalid JSON response from scan configuration creation API. Response: ${SCAN_CONFIG_RESPONSE:0:300}"
+        # Check if it's an error message about ProfileBundle
+        if echo "$SCAN_CONFIG_RESPONSE" | grep -qi "ProfileBundle"; then
+            warning "Scan creation failed with ProfileBundle-related error:"
+            echo "$SCAN_CONFIG_RESPONSE" | head -20
+            log ""
+            log "Check ProfileBundle status: oc get profilebundle -n openshift-compliance"
+            error "ProfileBundle error detected. See above for details."
+        else
+            error "Invalid JSON response from scan configuration creation API. Response: ${SCAN_CONFIG_RESPONSE:0:300}"
+        fi
     fi
 
         log "✓ Compliance scan configuration created successfully"
@@ -296,10 +402,12 @@ if command -v oc &>/dev/null && oc whoami &>/dev/null 2>&1; then
         warning "ISSUE DETECTED: Compliance Operator has results but RHACS doesn't show them"
         warning "This indicates a sync issue between Compliance Operator and RHACS"
         log ""
-        log "SOLUTION: Restart the RHACS sensor to force sync:"
+        log "NOTE: Since Compliance Operator is installed before RHACS (script 01),"
+        log "      sensor restart should not be needed. However, if results still"
+        log "      don't appear, try restarting the sensor:"
         log "  oc delete pods -l app.kubernetes.io/component=sensor -n $NAMESPACE"
         log ""
-        log "After restarting, wait 1-2 minutes and check:"
+        log "After restarting (if needed), wait 1-2 minutes and check:"
         log "  - RHACS UI: Compliance → Coverage tab"
         log "  - Select your scan configuration to view results"
     elif [ -n "$LAST_STATUS" ] && [ "$LAST_STATUS" = "COMPLETED" ] && [ "$RESULTS_AVAILABLE" = false ]; then
@@ -307,11 +415,13 @@ if command -v oc &>/dev/null && oc whoami &>/dev/null 2>&1; then
         warning "ISSUE DETECTED: Scan shows COMPLETED but results not available in RHACS"
         warning "The scan completed and sent a report, but results haven't synced to RHACS yet"
         log ""
-        log "SOLUTION: Restart the RHACS sensor to force sync:"
+        log "NOTE: Since Compliance Operator is installed before RHACS (script 01),"
+        log "      this should be rare. Wait a few minutes for automatic sync."
+        log ""
+        log "If results still don't appear after waiting, restart the sensor:"
         log "  oc delete pods -l app.kubernetes.io/component=sensor -n $NAMESPACE"
         log ""
-        log "This is common when RHACS was installed before the Compliance Operator."
-        log "After restarting, wait 1-2 minutes and check the Compliance → Coverage tab."
+        log "Then check the Compliance → Coverage tab."
     elif [ "$RESULTS_AVAILABLE" = true ]; then
         log ""
         log "✓ Scan results are available in RHACS"
