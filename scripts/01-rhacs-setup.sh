@@ -301,6 +301,39 @@ else
     warning "RHACS operator subscription not found in $OPERATOR_NAMESPACE namespace"
 fi
 
+# Configure Central custom resource for route reencrypt
+log "Configuring Central custom resource for route reencrypt..."
+# Try to find Central resource name (typically "stackrox-central-services")
+CENTRAL_RESOURCE_NAME=$(oc get central -n $NAMESPACE -o name 2>/dev/null | head -1 | sed 's|central/||' || echo "")
+
+if [ -z "$CENTRAL_RESOURCE_NAME" ]; then
+    # Try common names
+    for name in "stackrox-central-services" "central"; do
+        if oc get central "$name" -n $NAMESPACE &>/dev/null; then
+            CENTRAL_RESOURCE_NAME="$name"
+            break
+        fi
+    done
+fi
+
+if [ -n "$CENTRAL_RESOURCE_NAME" ]; then
+    CURRENT_REENCRYPT=$(oc get central "$CENTRAL_RESOURCE_NAME" -n $NAMESPACE -o jsonpath='{.spec.central.exposure.route.reencrypt.enabled}' 2>/dev/null || echo "")
+    
+    if [ "$CURRENT_REENCRYPT" != "true" ]; then
+        log "Enabling route reencrypt on Central custom resource '$CENTRAL_RESOURCE_NAME'..."
+        # Use oc patch to merge the setting
+        oc patch central "$CENTRAL_RESOURCE_NAME" -n $NAMESPACE --type='merge' -p '{"spec":{"central":{"exposure":{"route":{"reencrypt":{"enabled":true}}}}}}' || error "Failed to patch Central custom resource with reencrypt setting"
+        log "✓ Route reencrypt enabled on Central custom resource"
+        
+        # Wait a moment for the operator to process the change
+        sleep 5
+    else
+        log "✓ Route reencrypt already enabled on Central custom resource '$CENTRAL_RESOURCE_NAME'"
+    fi
+else
+    warning "Central custom resource not found in namespace $NAMESPACE. Route reencrypt setting will be applied when Central is created."
+fi
+
 # Check if Central is running
 if ! oc get deployment central -n $NAMESPACE &>/dev/null; then
     error "RHACS Central deployment not found in namespace $NAMESPACE"
