@@ -107,7 +107,8 @@ elif oc get crd monitoringstacks.monitoring.observability.openshift.io &>/dev/nu
 fi
 
 # Check if operator subscription exists
-if oc get subscription cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
+# Use explicit API group to avoid ambiguity with other subscription types
+if oc get subscription.operators.coreos.com cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
     log "✓ Cluster Observability Operator subscription found"
     OBSERVABILITY_OPERATOR_INSTALLED=true
 fi
@@ -198,7 +199,7 @@ EOF
     if [ "$CSV_INSTALLED" = false ]; then
         warning "CSV installation timeout. Checking status..."
         oc get csv -n "$OBSERVABILITY_OPERATOR_NAMESPACE" || true
-        oc get subscription cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o yaml | grep -A 10 "status:" || true
+        oc get subscription.operators.coreos.com cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o yaml | grep -A 10 "status:" || true
         error "Cluster Observability Operator CSV did not install successfully within timeout"
     fi
     
