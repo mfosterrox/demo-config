@@ -95,15 +95,25 @@ log "Checking for Cluster Observability Operator..."
 OBSERVABILITY_OPERATOR_NAMESPACE="openshift-cluster-observability-operator"
 OBSERVABILITY_OPERATOR_INSTALLED=false
 
-# Check if the operator CRD exists (primary API group)
+# Check if the operator CRD exists and is established (primary API group)
 if oc get crd monitoringstacks.monitoring.rhobs &>/dev/null; then
-    log "✓ Cluster Observability Operator CRD found (monitoring.rhobs)"
-    OBSERVABILITY_OPERATOR_INSTALLED=true
-    CRD_API_GROUP="monitoring.rhobs"
+    CRD_CONDITION=$(oc get crd monitoringstacks.monitoring.rhobs -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || echo "")
+    if [ "$CRD_CONDITION" = "True" ]; then
+        log "✓ Cluster Observability Operator CRD found and established (monitoring.rhobs)"
+        OBSERVABILITY_OPERATOR_INSTALLED=true
+        CRD_API_GROUP="monitoring.rhobs"
+    else
+        log "Cluster Observability Operator CRD exists but not yet established (monitoring.rhobs)"
+    fi
 elif oc get crd monitoringstacks.monitoring.observability.openshift.io &>/dev/null; then
-    log "✓ Cluster Observability Operator CRD found (monitoring.observability.openshift.io)"
-    OBSERVABILITY_OPERATOR_INSTALLED=true
-    CRD_API_GROUP="monitoring.observability.openshift.io"
+    CRD_CONDITION=$(oc get crd monitoringstacks.monitoring.observability.openshift.io -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || echo "")
+    if [ "$CRD_CONDITION" = "True" ]; then
+        log "✓ Cluster Observability Operator CRD found and established (monitoring.observability.openshift.io)"
+        OBSERVABILITY_OPERATOR_INSTALLED=true
+        CRD_API_GROUP="monitoring.observability.openshift.io"
+    else
+        log "Cluster Observability Operator CRD exists but not yet established (monitoring.observability.openshift.io)"
+    fi
 fi
 
 # Check if operator subscription exists
@@ -215,43 +225,102 @@ EOF
         warning "Proceeding anyway - operator may still be initializing..."
     fi
     
-    # Wait for CRDs to be registered
-    log "Waiting for CRDs to be registered..."
+    # Wait for CRDs to be registered and established
+    log "Waiting for CRDs to be registered and established..."
     CRD_WAIT_TIMEOUT=120
     CRD_WAIT_ELAPSED=0
-    CRD_AVAILABLE=false
+    CRD_ESTABLISHED=false
     
     while [ $CRD_WAIT_ELAPSED -lt $CRD_WAIT_TIMEOUT ]; do
+        # Check if CRD exists and is established
         if oc get crd monitoringstacks.monitoring.rhobs &>/dev/null; then
-            CRD_AVAILABLE=true
-            CRD_API_GROUP="monitoring.rhobs"
-            log "✓ CRD monitoringstacks.monitoring.rhobs is available"
-            break
+            CRD_CONDITION=$(oc get crd monitoringstacks.monitoring.rhobs -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || echo "")
+            if [ "$CRD_CONDITION" = "True" ]; then
+                CRD_ESTABLISHED=true
+                CRD_API_GROUP="monitoring.rhobs"
+                log "✓ CRD monitoringstacks.monitoring.rhobs is established"
+                break
+            fi
         elif oc get crd monitoringstacks.monitoring.observability.openshift.io &>/dev/null; then
-            CRD_AVAILABLE=true
-            CRD_API_GROUP="monitoring.observability.openshift.io"
-            log "✓ CRD monitoringstacks.monitoring.observability.openshift.io is available"
-            break
+            CRD_CONDITION=$(oc get crd monitoringstacks.monitoring.observability.openshift.io -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || echo "")
+            if [ "$CRD_CONDITION" = "True" ]; then
+                CRD_ESTABLISHED=true
+                CRD_API_GROUP="monitoring.observability.openshift.io"
+                log "✓ CRD monitoringstacks.monitoring.observability.openshift.io is established"
+                break
+            fi
         fi
-        sleep 5
-        CRD_WAIT_ELAPSED=$((CRD_WAIT_ELAPSED + 5))
-        log "Waiting for CRDs... (${CRD_WAIT_ELAPSED}s/${CRD_WAIT_TIMEOUT}s)"
+        
+        if [ "$CRD_ESTABLISHED" = false ]; then
+            sleep 5
+            CRD_WAIT_ELAPSED=$((CRD_WAIT_ELAPSED + 5))
+            if [ $((CRD_WAIT_ELAPSED % 15)) -eq 0 ]; then
+                log "Waiting for CRDs to be established... (${CRD_WAIT_ELAPSED}s/${CRD_WAIT_TIMEOUT}s)"
+            fi
+        fi
     done
     
-    if [ "$CRD_AVAILABLE" = false ]; then
-        error "CRDs not available after waiting. Operator may not be fully installed."
+    if [ "$CRD_ESTABLISHED" = false ]; then
+        # Fallback: check if CRD exists even if not established
+        if oc get crd monitoringstacks.monitoring.rhobs &>/dev/null; then
+            CRD_API_GROUP="monitoring.rhobs"
+            warning "CRD exists but may not be fully established yet. Proceeding anyway..."
+        elif oc get crd monitoringstacks.monitoring.observability.openshift.io &>/dev/null; then
+            CRD_API_GROUP="monitoring.observability.openshift.io"
+            warning "CRD exists but may not be fully established yet. Proceeding anyway..."
+        else
+            error "CRDs not available after waiting. Operator may not be fully installed."
+        fi
     fi
 else
     log "✓ Cluster Observability Operator is already installed"
     
-    # Determine which API group to use
-    if oc get crd monitoringstacks.monitoring.rhobs &>/dev/null; then
-        CRD_API_GROUP="monitoring.rhobs"
-    elif oc get crd monitoringstacks.monitoring.observability.openshift.io &>/dev/null; then
-        CRD_API_GROUP="monitoring.observability.openshift.io"
-    else
-        warning "Could not determine CRD API group, will try both"
-        CRD_API_GROUP="monitoring.rhobs"
+    # Wait for CRDs to be established (not just exist)
+    log "Verifying CRDs are established and ready..."
+    CRD_WAIT_TIMEOUT=120
+    CRD_WAIT_ELAPSED=0
+    CRD_ESTABLISHED=false
+    
+    while [ $CRD_WAIT_ELAPSED -lt $CRD_WAIT_TIMEOUT ]; do
+        # Check if CRD exists and is established
+        if oc get crd monitoringstacks.monitoring.rhobs &>/dev/null; then
+            CRD_CONDITION=$(oc get crd monitoringstacks.monitoring.rhobs -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || echo "")
+            if [ "$CRD_CONDITION" = "True" ]; then
+                CRD_ESTABLISHED=true
+                CRD_API_GROUP="monitoring.rhobs"
+                log "✓ CRD monitoringstacks.monitoring.rhobs is established"
+                break
+            fi
+        elif oc get crd monitoringstacks.monitoring.observability.openshift.io &>/dev/null; then
+            CRD_CONDITION=$(oc get crd monitoringstacks.monitoring.observability.openshift.io -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || echo "")
+            if [ "$CRD_CONDITION" = "True" ]; then
+                CRD_ESTABLISHED=true
+                CRD_API_GROUP="monitoring.observability.openshift.io"
+                log "✓ CRD monitoringstacks.monitoring.observability.openshift.io is established"
+                break
+            fi
+        fi
+        
+        if [ "$CRD_ESTABLISHED" = false ]; then
+            sleep 5
+            CRD_WAIT_ELAPSED=$((CRD_WAIT_ELAPSED + 5))
+            if [ $((CRD_WAIT_ELAPSED % 15)) -eq 0 ]; then
+                log "Waiting for CRDs to be established... (${CRD_WAIT_ELAPSED}s/${CRD_WAIT_TIMEOUT}s)"
+            fi
+        fi
+    done
+    
+    if [ "$CRD_ESTABLISHED" = false ]; then
+        # Fallback: try to determine API group even if not established
+        if oc get crd monitoringstacks.monitoring.rhobs &>/dev/null; then
+            CRD_API_GROUP="monitoring.rhobs"
+            warning "CRD exists but may not be fully established yet"
+        elif oc get crd monitoringstacks.monitoring.observability.openshift.io &>/dev/null; then
+            CRD_API_GROUP="monitoring.observability.openshift.io"
+            warning "CRD exists but may not be fully established yet"
+        else
+            error "CRDs not found. Operator may not be fully installed."
+        fi
     fi
     
     # Verify operator is running
