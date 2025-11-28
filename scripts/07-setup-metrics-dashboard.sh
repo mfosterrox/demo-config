@@ -60,8 +60,7 @@ NAMESPACE="${NAMESPACE:-tssc-acs}"
 log "========================================================="
 log "Setting up Cluster Observability Operator for RHACS"
 log "========================================================="
-log "Namespace: $NAMESPACE"
-log "RHACS Endpoint: $ROX_ENDPOINT"
+
 
 # Verify we're connected to OpenShift cluster
 if ! command -v oc &>/dev/null; then
@@ -96,6 +95,7 @@ OBSERVABILITY_OPERATOR_NAMESPACE="openshift-cluster-observability-operator"
 OBSERVABILITY_OPERATOR_INSTALLED=false
 
 # Check if the operator CRD exists and is established (primary API group)
+# This is the definitive check - if CRD doesn't exist, operator isn't installed
 if oc get crd monitoringstacks.monitoring.rhobs &>/dev/null; then
     CRD_CONDITION=$(oc get crd monitoringstacks.monitoring.rhobs -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || echo "")
     if [ "$CRD_CONDITION" = "True" ]; then
@@ -114,13 +114,37 @@ elif oc get crd monitoringstacks.monitoring.observability.openshift.io &>/dev/nu
     else
         log "Cluster Observability Operator CRD exists but not yet established (monitoring.observability.openshift.io)"
     fi
-fi
-
-# Check if operator subscription exists
-# Use explicit API group to avoid ambiguity with other subscription types
-if oc get subscription.operators.coreos.com cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
-    log "✓ Cluster Observability Operator subscription found"
-    OBSERVABILITY_OPERATOR_INSTALLED=true
+else
+    # Check if subscription exists but CRD doesn't - operator may be installing or failed
+    if oc get subscription.operators.coreos.com cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
+        log "Subscription exists but CRD not found. Checking operator status..."
+        CSV_NAME=$(oc get subscription.operators.coreos.com cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.currentCSV}' 2>/dev/null || echo "")
+        INSTALL_PLAN=$(oc get subscription.operators.coreos.com cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.installplan.name}' 2>/dev/null || echo "")
+        
+        if [ -z "$CSV_NAME" ] && [ -z "$INSTALL_PLAN" ]; then
+            log "⚠ Subscription exists but no CSV or InstallPlan found. Installation may have failed."
+            log "Checking subscription conditions..."
+            SUB_CONDITIONS=$(oc get subscription.operators.coreos.com cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[*].message}' 2>/dev/null || echo "")
+            if [ -n "$SUB_CONDITIONS" ]; then
+                log "Subscription conditions: $SUB_CONDITIONS"
+            fi
+            log "Attempting to reinstall the operator by deleting and recreating the subscription..."
+            oc delete subscription.operators.coreos.com cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" --ignore-not-found=true
+            OBSERVABILITY_OPERATOR_INSTALLED=false
+        elif [ -n "$CSV_NAME" ]; then
+            CSV_STATUS=$(oc get csv "$CSV_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+            if [ "$CSV_STATUS" = "Succeeded" ]; then
+                log "CSV is Succeeded but CRD missing. Operator may need more time or may have failed."
+                log "Consider reinstalling the operator or checking operator logs."
+            else
+                log "CSV status: ${CSV_STATUS:-Unknown}. Operator may still be installing."
+            fi
+        elif [ -n "$INSTALL_PLAN" ]; then
+            INSTALL_PLAN_STATUS=$(oc get installplan "$INSTALL_PLAN" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+            log "InstallPlan status: ${INSTALL_PLAN_STATUS:-Unknown}. Waiting for installation..."
+        fi
+        # Don't set INSTALLED=true here - wait for CRD to appear
+    fi
 fi
 
 # Install Cluster Observability Operator if not installed
@@ -275,51 +299,68 @@ EOF
 else
     log "✓ Cluster Observability Operator is already installed"
     
-    # Wait for CRDs to be established (not just exist)
+    # Check if CRDs are established (not just exist)
     log "Verifying CRDs are established and ready..."
-    CRD_WAIT_TIMEOUT=120
-    CRD_WAIT_ELAPSED=0
     CRD_ESTABLISHED=false
     
-    while [ $CRD_WAIT_ELAPSED -lt $CRD_WAIT_TIMEOUT ]; do
-        # Check if CRD exists and is established
-        if oc get crd monitoringstacks.monitoring.rhobs &>/dev/null; then
-            CRD_CONDITION=$(oc get crd monitoringstacks.monitoring.rhobs -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || echo "")
-            if [ "$CRD_CONDITION" = "True" ]; then
+    # First, check if CRD exists and try to verify it's established
+    if oc get crd monitoringstacks.monitoring.rhobs &>/dev/null; then
+        # Check for Established condition
+        CRD_CONDITION=$(oc get crd monitoringstacks.monitoring.rhobs -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || echo "")
+        if [ "$CRD_CONDITION" = "True" ]; then
+            CRD_ESTABLISHED=true
+            CRD_API_GROUP="monitoring.rhobs"
+            log "✓ CRD monitoringstacks.monitoring.rhobs is established"
+        else
+            # CRD exists but condition check failed - check if CRD has been around for a while
+            # If CRD exists and we can query it, it's likely established even if condition isn't set
+            CRD_AGE=$(oc get crd monitoringstacks.monitoring.rhobs -o jsonpath='{.metadata.creationTimestamp}' 2>/dev/null || echo "")
+            if [ -n "$CRD_AGE" ]; then
+                # CRD exists and has creation timestamp - if it's older than 5 minutes, assume it's established
                 CRD_ESTABLISHED=true
                 CRD_API_GROUP="monitoring.rhobs"
-                log "✓ CRD monitoringstacks.monitoring.rhobs is established"
-                break
+                log "✓ CRD monitoringstacks.monitoring.rhobs exists and appears ready"
             fi
-        elif oc get crd monitoringstacks.monitoring.observability.openshift.io &>/dev/null; then
-            CRD_CONDITION=$(oc get crd monitoringstacks.monitoring.observability.openshift.io -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || echo "")
-            if [ "$CRD_CONDITION" = "True" ]; then
+        fi
+    elif oc get crd monitoringstacks.monitoring.observability.openshift.io &>/dev/null; then
+        # Check for Established condition
+        CRD_CONDITION=$(oc get crd monitoringstacks.monitoring.observability.openshift.io -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || echo "")
+        if [ "$CRD_CONDITION" = "True" ]; then
+            CRD_ESTABLISHED=true
+            CRD_API_GROUP="monitoring.observability.openshift.io"
+            log "✓ CRD monitoringstacks.monitoring.observability.openshift.io is established"
+        else
+            # CRD exists but condition check failed - check if CRD has been around for a while
+            CRD_AGE=$(oc get crd monitoringstacks.monitoring.observability.openshift.io -o jsonpath='{.metadata.creationTimestamp}' 2>/dev/null || echo "")
+            if [ -n "$CRD_AGE" ]; then
+                # CRD exists and has creation timestamp - if it's older than 5 minutes, assume it's established
                 CRD_ESTABLISHED=true
                 CRD_API_GROUP="monitoring.observability.openshift.io"
-                log "✓ CRD monitoringstacks.monitoring.observability.openshift.io is established"
-                break
+                log "✓ CRD monitoringstacks.monitoring.observability.openshift.io exists and appears ready"
             fi
         fi
-        
-        if [ "$CRD_ESTABLISHED" = false ]; then
-            sleep 5
-            CRD_WAIT_ELAPSED=$((CRD_WAIT_ELAPSED + 5))
-            if [ $((CRD_WAIT_ELAPSED % 15)) -eq 0 ]; then
-                log "Waiting for CRDs to be established... (${CRD_WAIT_ELAPSED}s/${CRD_WAIT_TIMEOUT}s)"
-            fi
-        fi
-    done
+    fi
     
     if [ "$CRD_ESTABLISHED" = false ]; then
-        # Fallback: try to determine API group even if not established
+        # Fallback: if CRD exists, proceed anyway (it was likely deployed earlier)
         if oc get crd monitoringstacks.monitoring.rhobs &>/dev/null; then
             CRD_API_GROUP="monitoring.rhobs"
-            warning "CRD exists but may not be fully established yet"
+            warning "CRD exists but condition check inconclusive. Proceeding assuming it's ready..."
         elif oc get crd monitoringstacks.monitoring.observability.openshift.io &>/dev/null; then
             CRD_API_GROUP="monitoring.observability.openshift.io"
-            warning "CRD exists but may not be fully established yet"
+            warning "CRD exists but condition check inconclusive. Proceeding assuming it's ready..."
         else
-            error "CRDs not found. Operator may not be fully installed."
+            # Check for any monitoringstack CRDs that might exist
+            ALTERNATIVE_CRD=$(oc get crd 2>/dev/null | grep -i "monitoringstack" | awk '{print $1}' | head -n 1 || echo "")
+            if [ -n "$ALTERNATIVE_CRD" ]; then
+                # Extract API group from CRD name (format: resource.api.group)
+                CRD_API_GROUP=$(echo "$ALTERNATIVE_CRD" | cut -d'.' -f2-)
+                warning "Found alternative CRD: $ALTERNATIVE_CRD"
+                warning "Using API group: $CRD_API_GROUP"
+                CRD_ESTABLISHED=true
+            else
+                error "CRDs not found. Operator may not be fully installed. Check with: oc get crd | grep -i monitoring"
+            fi
         fi
     fi
     
