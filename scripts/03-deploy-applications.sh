@@ -207,13 +207,7 @@ fi
 # Final status
 log "Application deployment completed successfully!"
 log "========================================================="
-log "Deployments with label $DEMO_LABEL:"
 if ! kubectl get deployments -l "$DEMO_LABEL" -A; then
     error "Failed to retrieve final deployment status"
-fi
-log "========================================================="
-log "Pods with label $DEMO_LABEL:"
-if ! kubectl get pods -l "$DEMO_LABEL" -A; then
-    error "Failed to retrieve final pod status"
 fi
 log "========================================================="

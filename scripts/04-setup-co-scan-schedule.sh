@@ -243,8 +243,8 @@ fi
 
 log ""
 
-# Check if acs-catch-all scan configuration already exists
-log "Checking if 'acs-catch-all' scan configuration already exists..."
+# Check if acs-catch-all scan configuration already exists and has been successfully run
+log "Checking if 'acs-catch-all' scan configuration exists and has been successfully run..."
 EXISTING_CONFIGS=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
     -H "Authorization: Bearer $ROX_API_TOKEN" \
     -H "Content-Type: application/json" \
@@ -265,13 +265,43 @@ fi
 
 EXISTING_SCAN=$(echo "$EXISTING_CONFIGS" | jq -r '.configurations[] | select(.scanName == "acs-catch-all") | .id' 2>/dev/null || echo "")
     
-    if [ -n "$EXISTING_SCAN" ] && [ "$EXISTING_SCAN" != "null" ]; then
-        log "✓ Scan configuration 'acs-catch-all' already exists (ID: $EXISTING_SCAN)"
-        log "Skipping creation..."
+if [ -n "$EXISTING_SCAN" ] && [ "$EXISTING_SCAN" != "null" ]; then
+    log "✓ Scan configuration 'acs-catch-all' exists (ID: $EXISTING_SCAN)"
+    
+    # Check scan status
+    LAST_STATUS=$(echo "$EXISTING_CONFIGS" | jq -r ".configurations[] | select(.id == \"$EXISTING_SCAN\") | .lastScanStatus // \"UNKNOWN\"" 2>/dev/null)
+    LAST_SCANNED=$(echo "$EXISTING_CONFIGS" | jq -r ".configurations[] | select(.id == \"$EXISTING_SCAN\") | .lastScanned // \"Never\"" 2>/dev/null)
+    
+    log "  Scan Status: ${LAST_STATUS:-UNKNOWN}"
+    log "  Last Scanned: ${LAST_SCANNED:-Never}"
+    
+    # Only skip creation if scan has completed successfully
+    if [ "$LAST_STATUS" = "COMPLETED" ] && [ "$LAST_SCANNED" != "Never" ] && [ "$LAST_SCANNED" != "null" ]; then
+        log "✓ Scan has been successfully completed, skipping creation..."
         SCAN_CONFIG_ID="$EXISTING_SCAN"
         SKIP_CREATION=true
     else
-        log "Scan configuration 'acs-catch-all' not found, creating new configuration..."
+        log "⚠ Scan configuration exists but has not been successfully run yet (Status: $LAST_STATUS, Last Scanned: $LAST_SCANNED)"
+        log "  Deleting existing configuration and creating a new one..."
+        
+        # Delete the existing scan configuration
+        DELETE_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X DELETE \
+            -H "Authorization: Bearer $ROX_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            "$ROX_ENDPOINT/v2/compliance/scan/configurations/$EXISTING_SCAN" 2>&1)
+        DELETE_EXIT_CODE=$?
+        
+        if [ $DELETE_EXIT_CODE -eq 0 ]; then
+            log "✓ Deleted existing scan configuration"
+        else
+            warning "Failed to delete existing scan configuration (exit code: $DELETE_EXIT_CODE). Will attempt to create anyway..."
+            warning "Response: ${DELETE_RESPONSE:0:200}"
+        fi
+        
+        SKIP_CREATION=false
+    fi
+else
+    log "Scan configuration 'acs-catch-all' not found, creating new configuration..."
     SKIP_CREATION=false
 fi
 
@@ -376,6 +406,20 @@ if [ "$SKIP_CREATION" = "false" ]; then
     else
         log "✓ Scan configuration ID: $SCAN_CONFIG_ID"
     fi
+fi
+
+# If scan already exists and has completed successfully, skip diagnostics and exit early
+if [ "$SKIP_CREATION" = "true" ]; then
+    log ""
+    log "Compliance scan schedule setup completed successfully!"
+    log "Scan configuration ID: $SCAN_CONFIG_ID"
+    log "✓ Scan 'acs-catch-all' already exists and has been successfully completed"
+    log "  Status: COMPLETED"
+    log "  Last Scanned: $LAST_SCANNED"
+    log ""
+    log "Skipping diagnostic checks as scan is already configured and completed."
+    log ""
+    exit 0
 fi
 
     log "Compliance scan schedule setup completed successfully!"
