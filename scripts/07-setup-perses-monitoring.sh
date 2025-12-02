@@ -68,6 +68,62 @@ log "✓ Cluster admin privileges confirmed"
 
 log "Prerequisites validated successfully"
 
+# Load NAMESPACE from ~/.bashrc (set by previous scripts)
+NAMESPACE=$(load_from_bashrc "NAMESPACE")
+if [ -z "$NAMESPACE" ]; then
+    NAMESPACE="tssc-acs"
+    log "NAMESPACE not found in ~/.bashrc, using default: $NAMESPACE"
+else
+    log "✓ Loaded NAMESPACE from ~/.bashrc: $NAMESPACE"
+fi
+
+# Step 0: Generate TLS certificate for RHACS Prometheus monitoring stack
+log ""
+log "========================================================="
+log "Step 0: Generating TLS certificate for RHACS Prometheus"
+log "========================================================="
+
+# Check if openssl is available
+if ! command -v openssl &>/dev/null; then
+    error "openssl is required but not found. Please install openssl."
+fi
+log "✓ openssl found"
+
+# Check if namespace exists
+if ! oc get namespace "$NAMESPACE" &>/dev/null; then
+    error "Namespace '$NAMESPACE' not found. Please ensure RHACS is installed first."
+fi
+log "✓ Namespace '$NAMESPACE' exists"
+
+# Generate a private key and certificate
+log "Generating TLS private key and certificate..."
+CERT_CN="rhacs-monitoring-stack-prometheus.$NAMESPACE.svc"
+if openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+        -subj "/CN=$CERT_CN" \
+        -keyout tls.key -out tls.crt 2>/dev/null; then
+    log "✓ TLS certificate generated successfully"
+    log "  Subject: $CERT_CN"
+else
+    error "Failed to generate TLS certificate"
+fi
+
+# Create TLS secret in the namespace (replace if exists)
+log "Creating TLS secret 'rhacs-prometheus-tls' in namespace '$NAMESPACE'..."
+if oc get secret rhacs-prometheus-tls -n "$NAMESPACE" &>/dev/null; then
+    log "Secret 'rhacs-prometheus-tls' already exists, replacing..."
+    oc delete secret rhacs-prometheus-tls -n "$NAMESPACE" 2>/dev/null || true
+fi
+
+if oc create secret tls rhacs-prometheus-tls --cert=tls.crt --key=tls.key -n "$NAMESPACE" 2>/dev/null; then
+    log "✓ TLS secret created successfully"
+else
+    error "Failed to create TLS secret"
+fi
+
+# Clean up temporary certificate files
+rm -f tls.key tls.crt
+log "✓ Temporary certificate files cleaned up"
+
 # Step 1: Install Cluster Observability Operator
 log ""
 log "========================================================="
