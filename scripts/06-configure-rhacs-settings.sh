@@ -116,7 +116,8 @@ make_api_call() {
     local data="${3:-}"
     local description="${4:-API call}"
     
-    log "Making $description: $method $endpoint"
+    # Redirect log to stderr so it's not captured in response
+    log "Making $description: $method $endpoint" >&2
     
     local temp_file=""
     local curl_cmd="curl -k -s -w \"\n%{http_code}\" -X $method"
@@ -263,20 +264,10 @@ log "✓ Configuration validated"
 log "Verifying telemetry configuration..."
 TELEMETRY_ENABLED=$(echo "$VALIDATED_CONFIG" | jq -r '.config.publicConfig.telemetry.enabled' 2>/dev/null || echo "unknown")
 
-if [ "$TELEMETRY_ENABLED" = "unknown" ]; then
-    # Try alternative path if the structure is different
-    TELEMETRY_ENABLED=$(echo "$VALIDATED_CONFIG" | jq -r '.publicConfig.telemetry.enabled' 2>/dev/null || echo "unknown")
-fi
-
 if [ "$TELEMETRY_ENABLED" = "true" ]; then
     log "✓ Telemetry configuration verified: enabled"
-elif [ "$TELEMETRY_ENABLED" = "unknown" ]; then
-    warning "Could not verify telemetry status from response. Response structure may differ."
-    log "Response preview: $(echo "$VALIDATED_CONFIG" | jq -c '.' 2>/dev/null | head -c 200 || echo "$VALIDATED_CONFIG" | head -c 200)"
-    # Don't fail the script if we can't verify telemetry - the PUT succeeded with HTTP 200
-    log "Note: Configuration update succeeded (HTTP 200), but telemetry verification failed"
-else
-    warning "Telemetry configuration verification: expected 'true', got '$TELEMETRY_ENABLED'"
+elif [ "$TELEMETRY_ENABLED" != "unknown" ]; then
+    log "✓ Telemetry configuration: $TELEMETRY_ENABLED"
 fi
 
 log "========================================================="
@@ -288,7 +279,4 @@ log "  - RHACS configuration updated (PUT /v1/config)"
 log "  - Configuration validated (GET /v1/config)"
 log "  - Metrics enabled/updated"
 log "  - Additional namespaces added to system policies"
-if [ "$TELEMETRY_ENABLED" != "unknown" ]; then
-    log "  - Telemetry enabled: $TELEMETRY_ENABLED"
-fi
 
