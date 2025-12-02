@@ -106,8 +106,9 @@ if [[ ! "$ROX_ENDPOINT" =~ ^https?:// ]]; then
     log "Added https:// prefix to ROX_ENDPOINT: $ROX_ENDPOINT"
 fi
 
-# API endpoint for compliance management scan
-API_ENDPOINT="${ROX_ENDPOINT}/v1/compliancemanagement/runs"
+# API endpoints
+STANDARDS_ENDPOINT="${ROX_ENDPOINT}/v1/compliancemanagement/standards"
+SCAN_ENDPOINT="${ROX_ENDPOINT}/v1/compliancemanagement/runs"
 
 # Function to make API call
 make_api_call() {
@@ -158,14 +159,61 @@ make_api_call() {
     echo "$body"
 }
 
+# Fetch available compliance standards
+log "Fetching available compliance standards..."
+STANDARDS_RESPONSE=$(make_api_call "GET" "$STANDARDS_ENDPOINT" "" "Fetch compliance standards")
+
+if [ -z "$STANDARDS_RESPONSE" ]; then
+    error "Empty response from compliance standards API"
+fi
+
+# Parse compliance standards
+if ! echo "$STANDARDS_RESPONSE" | jq . >/dev/null 2>&1; then
+    error "Invalid JSON response from compliance standards API. Response: ${STANDARDS_RESPONSE:0:300}"
+fi
+
+# Extract compliance standard IDs
+STANDARD_IDS=$(echo "$STANDARDS_RESPONSE" | jq -r '.standards[]?.id // .[]?.id // empty' 2>/dev/null || echo "")
+
+if [ -z "$STANDARD_IDS" ] || [ "$STANDARD_IDS" = "null" ]; then
+    # Try alternative structure
+    STANDARD_IDS=$(echo "$STANDARDS_RESPONSE" | jq -r '.[]?.id // empty' 2>/dev/null || echo "")
+fi
+
+if [ -z "$STANDARD_IDS" ]; then
+    error "No compliance standards found. Response structure: $(echo "$STANDARDS_RESPONSE" | jq -c '.' 2>/dev/null | head -c 200 || echo "${STANDARDS_RESPONSE:0:200}")"
+fi
+
+# Get the first available standard ID
+COMPLIANCE_STANDARD_ID=$(echo "$STANDARD_IDS" | head -n1)
+
+if [ -z "$COMPLIANCE_STANDARD_ID" ] || [ "$COMPLIANCE_STANDARD_ID" = "null" ]; then
+    error "Could not extract compliance standard ID from response"
+fi
+
+log "✓ Found compliance standard ID: $COMPLIANCE_STANDARD_ID"
+
+# Display all available standards for reference
+log "Available compliance standards:"
+echo "$STANDARDS_RESPONSE" | jq -r '.standards[]? | "  - \(.name // .id): \(.id)"' 2>/dev/null || \
+echo "$STANDARDS_RESPONSE" | jq -r '.[]? | "  - \(.name // .id): \(.id)"' 2>/dev/null || \
+log "  (Unable to parse standard names)"
+
 # Trigger compliance management scan
 log "Triggering compliance management scan..."
-log "Endpoint: $API_ENDPOINT"
+log "Endpoint: $SCAN_ENDPOINT"
+log "Using compliance standard ID: $COMPLIANCE_STANDARD_ID"
+
+# Prepare scan request payload
+SCAN_PAYLOAD=$(cat <<EOF
+{
+  "standardId": "$COMPLIANCE_STANDARD_ID"
+}
+EOF
+)
 
 # Make POST request to trigger the scan
-# The endpoint may accept an empty body or may require specific parameters
-# Starting with empty body, can be adjusted based on API requirements
-SCAN_RESPONSE=$(make_api_call "POST" "$API_ENDPOINT" "" "Trigger compliance management scan")
+SCAN_RESPONSE=$(make_api_call "POST" "$SCAN_ENDPOINT" "$SCAN_PAYLOAD" "Trigger compliance management scan")
 
 log "✓ Compliance management scan triggered successfully"
 
@@ -190,6 +238,8 @@ log "Compliance Management Scan Trigger Completed Successfully"
 log "========================================================="
 log ""
 log "Summary:"
-log "  - Compliance management scan triggered (POST $API_ENDPOINT)"
+log "  - Fetched available compliance standards"
+log "  - Compliance management scan triggered (POST $SCAN_ENDPOINT)"
+log "  - Compliance standard ID used: $COMPLIANCE_STANDARD_ID"
 log "  - Check RHACS UI for scan progress and results"
 
