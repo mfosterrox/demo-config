@@ -203,53 +203,85 @@ else
     log "✓ Using cluster ID: $CLUSTER_ID"
 fi
 
-# Try to fetch available compliance standards (optional)
+# Try to fetch available compliance standards
 COMPLIANCE_STANDARD_ID=""
 log "Attempting to fetch available compliance standards..."
-STANDARDS_RESPONSE=$(curl -k -s -w "\n%{http_code}" -X GET \
-    -H "Authorization: Bearer $ROX_API_TOKEN" \
-    -H "Content-Type: application/json" \
-    "$STANDARDS_ENDPOINT" 2>&1) || true
 
-HTTP_CODE=$(echo "$STANDARDS_RESPONSE" | tail -n1)
-STANDARDS_BODY=$(echo "$STANDARDS_RESPONSE" | head -n -1)
+# Try multiple possible endpoints for compliance standards
+STANDARDS_ENDPOINTS=(
+    "${ROX_ENDPOINT}/v1/compliancemanagement/standards"
+    "${ROX_ENDPOINT}/v1/compliance/standards"
+    "${ROX_ENDPOINT}/v2/compliance/standards"
+)
 
-if [ "$HTTP_CODE" -eq 200 ] && [ -n "$STANDARDS_BODY" ]; then
-    # Parse compliance standards if available
-    if echo "$STANDARDS_BODY" | jq . >/dev/null 2>&1; then
-        # Extract compliance standard IDs
-        STANDARD_IDS=$(echo "$STANDARDS_BODY" | jq -r '.standards[]?.id // .[]?.id // empty' 2>/dev/null || echo "")
-        
-        if [ -z "$STANDARD_IDS" ] || [ "$STANDARD_IDS" = "null" ]; then
-            # Try alternative structure
-            STANDARD_IDS=$(echo "$STANDARDS_BODY" | jq -r '.[]?.id // empty' 2>/dev/null || echo "")
-        fi
-        
-        if [ -n "$STANDARD_IDS" ] && [ "$STANDARD_IDS" != "null" ]; then
-            # Get the first available standard ID
-            COMPLIANCE_STANDARD_ID=$(echo "$STANDARD_IDS" | head -n1)
-            if [ -n "$COMPLIANCE_STANDARD_ID" ] && [ "$COMPLIANCE_STANDARD_ID" != "null" ]; then
-                log "✓ Found compliance standard ID: $COMPLIANCE_STANDARD_ID"
+for STANDARDS_ENDPOINT_TRY in "${STANDARDS_ENDPOINTS[@]}"; do
+    log "Trying endpoint: $STANDARDS_ENDPOINT_TRY"
+    STANDARDS_RESPONSE=$(curl -k -s -w "\n%{http_code}" -X GET \
+        -H "Authorization: Bearer $ROX_API_TOKEN" \
+        -H "Content-Type: application/json" \
+        "$STANDARDS_ENDPOINT_TRY" 2>&1) || true
+    
+    HTTP_CODE=$(echo "$STANDARDS_RESPONSE" | tail -n1)
+    STANDARDS_BODY=$(echo "$STANDARDS_RESPONSE" | head -n -1)
+    
+    if [ "$HTTP_CODE" -eq 200 ] && [ -n "$STANDARDS_BODY" ]; then
+        # Parse compliance standards if available
+        if echo "$STANDARDS_BODY" | jq . >/dev/null 2>&1; then
+            # Extract compliance standard IDs - try multiple JSON structures
+            STANDARD_IDS=$(echo "$STANDARDS_BODY" | jq -r '.standards[]?.id // .standards[]?.metadata.id // .[]?.id // .[]?.metadata.id // empty' 2>/dev/null || echo "")
+            
+            if [ -z "$STANDARD_IDS" ] || [ "$STANDARD_IDS" = "null" ]; then
+                # Try alternative structure
+                STANDARD_IDS=$(echo "$STANDARDS_BODY" | jq -r '.[]?.id // .[]?.metadata.id // empty' 2>/dev/null || echo "")
+            fi
+            
+            if [ -n "$STANDARD_IDS" ] && [ "$STANDARD_IDS" != "null" ]; then
+                # Get the first available standard ID
+                COMPLIANCE_STANDARD_ID=$(echo "$STANDARD_IDS" | head -n1)
+                if [ -n "$COMPLIANCE_STANDARD_ID" ] && [ "$COMPLIANCE_STANDARD_ID" != "null" ]; then
+                    log "✓ Found compliance standard ID: $COMPLIANCE_STANDARD_ID"
+                    break
+                fi
             fi
         fi
     fi
-else
-    log "Compliance standards endpoint not available (HTTP $HTTP_CODE), proceeding without standardId"
+done
+
+# If still no standard ID, try to get it from existing runs
+if [ -z "$COMPLIANCE_STANDARD_ID" ]; then
+    log "Trying to get standard ID from existing compliance runs..."
+    RUNS_RESPONSE=$(curl -k -s -w "\n%{http_code}" -X GET \
+        -H "Authorization: Bearer $ROX_API_TOKEN" \
+        -H "Content-Type: application/json" \
+        "$SCAN_ENDPOINT" 2>&1) || true
+    
+    RUNS_HTTP_CODE=$(echo "$RUNS_RESPONSE" | tail -n1)
+    RUNS_BODY=$(echo "$RUNS_RESPONSE" | head -n -1)
+    
+    if [ "$RUNS_HTTP_CODE" -eq 200 ] && [ -n "$RUNS_BODY" ]; then
+        if echo "$RUNS_BODY" | jq . >/dev/null 2>&1; then
+            # Try to extract standardId from existing runs
+            COMPLIANCE_STANDARD_ID=$(echo "$RUNS_BODY" | jq -r '.runs[0].selection.standardId // .runs[0].standardId // .[0].selection.standardId // .[0].standardId // empty' 2>/dev/null | head -n1)
+            if [ -n "$COMPLIANCE_STANDARD_ID" ] && [ "$COMPLIANCE_STANDARD_ID" != "null" ]; then
+                log "✓ Found compliance standard ID from existing runs: $COMPLIANCE_STANDARD_ID"
+            fi
+        fi
+    fi
+fi
+
+# If we still don't have a standard ID, we must error since API requires it
+if [ -z "$COMPLIANCE_STANDARD_ID" ] || [ "$COMPLIANCE_STANDARD_ID" = "null" ]; then
+    error "Could not determine compliance standard ID. The API requires a valid standardId. Please ensure compliance standards are configured in RHACS."
 fi
 
 # Trigger compliance management scan
 log "Triggering compliance management scan..."
 log "Endpoint: $SCAN_ENDPOINT"
 log "Using cluster ID: $CLUSTER_ID"
-if [ -n "$COMPLIANCE_STANDARD_ID" ]; then
-    log "Using compliance standard ID: $COMPLIANCE_STANDARD_ID"
-else
-    log "No compliance standard ID (using clusterId only)"
-fi
+log "Using compliance standard ID: $COMPLIANCE_STANDARD_ID"
 
 # Prepare scan request payload with selection object
-if [ -n "$COMPLIANCE_STANDARD_ID" ]; then
-    SCAN_PAYLOAD=$(cat <<EOF
+SCAN_PAYLOAD=$(cat <<EOF
 {
   "selection": {
     "clusterId": "$CLUSTER_ID",
@@ -258,16 +290,6 @@ if [ -n "$COMPLIANCE_STANDARD_ID" ]; then
 }
 EOF
 )
-else
-    SCAN_PAYLOAD=$(cat <<EOF
-{
-  "selection": {
-    "clusterId": "$CLUSTER_ID"
-  }
-}
-EOF
-)
-fi
 
 # Make POST request to trigger the scan
 SCAN_RESPONSE=$(make_api_call "POST" "$SCAN_ENDPOINT" "$SCAN_PAYLOAD" "Trigger compliance management scan")
