@@ -2,7 +2,7 @@ apiVersion: perses.dev/v1alpha1
 kind: PersesDatasource
 metadata:
   name: rhacs-datasource
-  namespace: rhacs
+  namespace: tssc-acs
 spec:
   client:
     tls:
