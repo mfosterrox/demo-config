@@ -1,7 +1,6 @@
 #!/bin/bash
-# Setup Metrics Dashboard Script
-# Sets up Cluster Observability Operator to expose RHACS metrics to OpenShift monitoring console
-# Based on: https://github.com/stackrox/monitoring-examples/tree/main/cluster-observability-operator
+# Metrics Dashboard Setup Script
+# Sets up Prometheus operator and metrics dashboard for RHACS
 
 # Exit immediately on error, show exact error message
 set -euo pipefail
@@ -10,7 +9,6 @@ set -euo pipefail
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
 NC='\033[0m'
 
 log() {
@@ -78,1126 +76,239 @@ else
     log "✓ Loaded NAMESPACE from ~/.bashrc: $NAMESPACE"
 fi
 
-# Load required variables (set by script 01)
-ROX_ENDPOINT=$(load_from_bashrc "ROX_ENDPOINT")
+# Prerequisites validation
+log "Validating prerequisites..."
 
-# Validate required environment variables
-if [ -z "${ROX_ENDPOINT:-}" ]; then
-    error "ROX_ENDPOINT is not set. Please run script 01-rhacs-setup.sh first."
+# Check if oc is available and connected
+log "Checking OpenShift CLI connection..."
+if ! command -v oc >/dev/null 2>&1; then
+    error "OpenShift CLI (oc) not found. Please install oc and ensure it's in your PATH."
 fi
 
+if ! oc whoami >/dev/null 2>&1; then
+    error "OpenShift CLI not connected. Please login first with: oc login"
+fi
+log "✓ OpenShift CLI connected as: $(oc whoami)"
+
+# Verify RHACS namespace exists
+if ! oc get ns "$NAMESPACE" &>/dev/null; then
+    error "Namespace '$NAMESPACE' not found. Please ensure RHACS is installed."
+fi
+log "✓ Namespace '$NAMESPACE' exists"
+
+# Step 1: Install Cluster Observability Operator
 log "========================================================="
-log "Setting up Cluster Observability Operator for RHACS"
+log "Step 1: Installing Cluster Observability Operator"
 log "========================================================="
 
+OPERATOR_NAMESPACE="openshift-cluster-observability-operator"
+CSV_NAME="cluster-observability-operator.v1.3.0"
+CSV_FILE="${SCRIPT_DIR}/../clusterserviceversion-cluster-observability-operator.v1.3.0.yaml"
 
-# Verify we're connected to OpenShift cluster
-if ! command -v oc &>/dev/null; then
-    error "OpenShift CLI (oc) is not installed or not in PATH"
-fi
-
-if ! oc whoami &>/dev/null; then
-    error "Not logged into OpenShift cluster. Please run 'oc login' first."
-fi
-
-log "✓ Connected to OpenShift cluster: $(oc whoami --show-server 2>/dev/null || echo 'unknown')"
-
-# Check if RHACS Central is deployed
-log "Verifying RHACS Central deployment..."
-if ! oc get deployment central -n "$NAMESPACE" &>/dev/null; then
-    error "RHACS Central deployment not found in namespace $NAMESPACE"
-fi
-
-log "✓ RHACS Central deployment found"
-
-# Check if Central service exists
-log "Checking for Central service..."
-if ! oc get service central -n "$NAMESPACE" &>/dev/null; then
-    error "Central service not found in namespace $NAMESPACE"
-fi
-
-log "✓ Central service found"
-
-# Check if Cluster Observability Operator is installed
-log "Checking for Cluster Observability Operator..."
-OBSERVABILITY_OPERATOR_NAMESPACE="openshift-operators"
-OBSERVABILITY_OPERATOR_INSTALLED=false
-
-# Check if the operator CRD exists and is established (primary API group)
-# This is the definitive check - if CRD doesn't exist, operator isn't installed
-if oc get crd monitoringstacks.monitoring.rhobs &>/dev/null; then
-    CRD_CONDITION=$(oc get crd monitoringstacks.monitoring.rhobs -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || echo "")
-    if [ "$CRD_CONDITION" = "True" ]; then
-        log "✓ Cluster Observability Operator CRD found and established (monitoring.rhobs)"
-        OBSERVABILITY_OPERATOR_INSTALLED=true
-        CRD_API_GROUP="monitoring.rhobs"
-    else
-        log "Cluster Observability Operator CRD exists but not yet established (monitoring.rhobs)"
+# Check if CSV file exists
+if [ ! -f "$CSV_FILE" ]; then
+    # Try alternative path
+    CSV_FILE="${PROJECT_ROOT}/clusterserviceversion-cluster-observability-operator.v1.3.0.yaml"
+    if [ ! -f "$CSV_FILE" ]; then
+        error "Cluster Observability Operator CSV file not found. Expected at: ${SCRIPT_DIR}/../clusterserviceversion-cluster-observability-operator.v1.3.0.yaml"
     fi
-elif oc get crd monitoringstacks.monitoring.observability.openshift.io &>/dev/null; then
-    CRD_CONDITION=$(oc get crd monitoringstacks.monitoring.observability.openshift.io -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || echo "")
-    if [ "$CRD_CONDITION" = "True" ]; then
-        log "✓ Cluster Observability Operator CRD found and established (monitoring.observability.openshift.io)"
-        OBSERVABILITY_OPERATOR_INSTALLED=true
-        CRD_API_GROUP="monitoring.observability.openshift.io"
+fi
+log "✓ Found CSV file: $CSV_FILE"
+
+# Create operator namespace if it doesn't exist
+if ! oc get ns "$OPERATOR_NAMESPACE" &>/dev/null; then
+    log "Creating namespace '$OPERATOR_NAMESPACE'..."
+    oc create namespace "$OPERATOR_NAMESPACE"
+    log "✓ Namespace '$OPERATOR_NAMESPACE' created"
+else
+    log "✓ Namespace '$OPERATOR_NAMESPACE' already exists"
+fi
+
+# Check if CSV already exists
+if oc get csv "$CSV_NAME" -n "$OPERATOR_NAMESPACE" &>/dev/null; then
+    log "ClusterServiceVersion '$CSV_NAME' already exists in namespace '$OPERATOR_NAMESPACE'"
+    
+    # Check CSV phase
+    CSV_PHASE=$(oc get csv "$CSV_NAME" -n "$OPERATOR_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+    log "Current CSV phase: $CSV_PHASE"
+    
+    if [ "$CSV_PHASE" = "Succeeded" ]; then
+        log "✓ Cluster Observability Operator is already installed and succeeded"
+        SKIP_OPERATOR_INSTALL=true
     else
-        log "Cluster Observability Operator CRD exists but not yet established (monitoring.observability.openshift.io)"
+        log "CSV exists but phase is '$CSV_PHASE', waiting for it to succeed..."
+        SKIP_OPERATOR_INSTALL=false
     fi
 else
-    # Check if subscription exists but CRD doesn't - operator may be installing or failed
-    if oc get subscription.operators.coreos.com observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null || \
-       oc get subscription.operators.coreos.com cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
-        log "Subscription exists but CRD not found. Checking operator status..."
-        # Check both subscription names (old and new)
-        SUB_NAME="observability-operator"
-        if ! oc get subscription.operators.coreos.com "$SUB_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
-            SUB_NAME="cluster-observability-operator"
-        fi
-        CSV_NAME=$(oc get subscription.operators.coreos.com "$SUB_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.currentCSV}' 2>/dev/null || echo "")
-        INSTALL_PLAN=$(oc get subscription.operators.coreos.com "$SUB_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.installplan.name}' 2>/dev/null || echo "")
-        
-        if [ -z "$CSV_NAME" ] && [ -z "$INSTALL_PLAN" ]; then
-            log "⚠ Subscription exists but no CSV or InstallPlan found. Installation may have failed."
-            log "Checking subscription conditions..."
-            SUB_CONDITIONS=$(oc get subscription.operators.coreos.com "$SUB_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[*].message}' 2>/dev/null || echo "")
-            if [ -n "$SUB_CONDITIONS" ]; then
-                log "Subscription conditions: $SUB_CONDITIONS"
-            fi
-            log "Attempting to reinstall the operator by deleting and recreating the subscription..."
-            oc delete subscription.operators.coreos.com "$SUB_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" --ignore-not-found=true
-            oc delete subscription.operators.coreos.com observability-operator -n openshift-operators --ignore-not-found=true
-            oc delete subscription.operators.coreos.com cluster-observability-operator -n openshift-cluster-observability-operator --ignore-not-found=true
-            OBSERVABILITY_OPERATOR_INSTALLED=false
-        elif [ -n "$CSV_NAME" ]; then
-            CSV_STATUS=$(oc get csv "$CSV_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-            if [ "$CSV_STATUS" = "Succeeded" ]; then
-                log "CSV is Succeeded but CRD missing. Operator may need more time or may have failed."
-                log "Consider reinstalling the operator or checking operator logs."
-            else
-                log "CSV status: ${CSV_STATUS:-Unknown}. Operator may still be installing."
-            fi
-        elif [ -n "$INSTALL_PLAN" ]; then
-            INSTALL_PLAN_STATUS=$(oc get installplan "$INSTALL_PLAN" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-            log "InstallPlan status: ${INSTALL_PLAN_STATUS:-Unknown}. Waiting for installation..."
-        fi
-        # Don't set INSTALLED=true here - wait for CRD to appear
-    fi
-fi
-
-# Install Cluster Observability Operator if not installed
-if [ "$OBSERVABILITY_OPERATOR_INSTALLED" = false ]; then
     log "Installing Cluster Observability Operator..."
-    log "This will install the operator via OperatorHub (OLM)"
+    SKIP_OPERATOR_INSTALL=false
+fi
+
+# Install or wait for operator
+if [ "$SKIP_OPERATOR_INSTALL" != "true" ]; then
+    # Apply the CSV
+    log "Applying ClusterServiceVersion..."
+    oc apply -f "$CSV_FILE"
     
-    # openshift-operators namespace should already exist, but verify
-    if ! oc get namespace "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
-        log "Creating namespace: $OBSERVABILITY_OPERATOR_NAMESPACE"
-        oc create namespace "$OBSERVABILITY_OPERATOR_NAMESPACE" || error "Failed to create namespace $OBSERVABILITY_OPERATOR_NAMESPACE"
-        log "✓ Namespace created"
+    if [ $? -eq 0 ]; then
+        log "✓ ClusterServiceVersion applied successfully"
     else
-        log "✓ Namespace already exists: $OBSERVABILITY_OPERATOR_NAMESPACE"
+        error "Failed to apply ClusterServiceVersion"
     fi
     
-    # openshift-operators namespace typically has a global OperatorGroup
-    # Check if one exists, create if needed
-    if ! oc get operatorgroup -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
-        log "Creating OperatorGroup for cluster-wide installation..."
-        OPERATORGROUP_YAML=$(cat <<EOF
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: global-operators
-  namespace: $OBSERVABILITY_OPERATOR_NAMESPACE
-spec: {}
-EOF
-        )
-        echo "$OPERATORGROUP_YAML" | oc create -f - || error "Failed to create OperatorGroup"
-        log "✓ OperatorGroup created (cluster-wide)"
-    else
-        log "✓ OperatorGroup already exists"
-    fi
+    # Wait for CSV to be in Succeeded phase
+    log "Waiting for Cluster Observability Operator to be ready..."
+    log "This may take several minutes..."
     
-    # Create Subscription
-    # Using the official subscription format from: https://github.com/rhobs/observability-operator/blob/main/hack/olm/subscription.yaml
-    log "Creating Subscription for Cluster Observability Operator..."
-    log "Channel: stable, Source: redhat-operators (or observability-operator if available)"
+    TIMEOUT=600  # 10 minutes
+    ELAPSED=0
+    INTERVAL=10
     
-    # Try redhat-operators first (for production), fallback to observability-operator catalog
-    SUBSCRIPTION_YAML=$(cat <<EOF
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: observability-operator
-  namespace: openshift-operators
-  labels:
-    operators.coreos.com/observability-operator.openshift-operators: ""
-spec:
-  channel: stable
-  installPlanApproval: Automatic
-  name: observability-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
-    )
-    
-    echo "$SUBSCRIPTION_YAML" | oc create -f - || error "Failed to create Subscription"
-    log "✓ Subscription created"
-    
-    # Wait for CSV to be installed
-    log "Waiting for Cluster Observability Operator CSV to be installed..."
-    log "This may take 2-5 minutes..."
-    CSV_TIMEOUT=600
-    CSV_WAIT_INTERVAL=10
-    CSV_ELAPSED=0
-    CSV_INSTALLED=false
-    
-    while [ $CSV_ELAPSED -lt $CSV_TIMEOUT ]; do
-        # Check for CSV in the namespace
-        CSV_NAME=$(oc get csv -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o name 2>/dev/null | grep -E "(observability-operator|cluster-observability-operator)" | head -1 || echo "")
-        if [ -n "$CSV_NAME" ]; then
-            CSV_STATUS=$(oc get "$CSV_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-            if [ "$CSV_STATUS" = "Succeeded" ]; then
-                CSV_INSTALLED=true
-                log "✓ Cluster Observability Operator CSV installed successfully (Succeeded)"
-                break
-            elif [ "$CSV_STATUS" = "Failed" ]; then
-                error "CSV installation failed. Check: oc get $CSV_NAME -n $OBSERVABILITY_OPERATOR_NAMESPACE"
-            else
-                log "CSV status: $CSV_STATUS (waiting... ${CSV_ELAPSED}s/${CSV_TIMEOUT}s)"
-            fi
-        else
-            log "Waiting for CSV to appear... (${CSV_ELAPSED}s/${CSV_TIMEOUT}s)"
-        fi
-        sleep $CSV_WAIT_INTERVAL
-        CSV_ELAPSED=$((CSV_ELAPSED + CSV_WAIT_INTERVAL))
-    done
-    
-    if [ "$CSV_INSTALLED" = false ]; then
-        warning "CSV installation timeout. Checking status..."
-        oc get csv -n "$OBSERVABILITY_OPERATOR_NAMESPACE" || true
-        # Check both subscription names
-        oc get subscription.operators.coreos.com observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o yaml | grep -A 10 "status:" 2>/dev/null || \
-        oc get subscription.operators.coreos.com cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o yaml | grep -A 10 "status:" || true
-        error "Cluster Observability Operator CSV did not install successfully within timeout"
-    fi
-    
-    # Wait for operator deployment to be ready
-    log "Waiting for Cluster Observability Operator deployment to be ready..."
-    DEPLOYMENT_TIMEOUT=300
-    # Check for deployment with either name
-    DEPLOYMENT_NAME="observability-operator"
-    if ! oc get deployment "$DEPLOYMENT_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
-        DEPLOYMENT_NAME="cluster-observability-operator"
-    fi
-    
-    if oc wait --for=condition=Available "deployment/$DEPLOYMENT_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" --timeout=${DEPLOYMENT_TIMEOUT}s 2>/dev/null; then
-        log "✓ Cluster Observability Operator deployment is ready"
-    else
-        warning "Operator deployment may still be starting. Checking status..."
-        oc get deployment "$DEPLOYMENT_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" || true
-        oc get pods -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -l app=observability-operator || \
-        oc get pods -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -l app=cluster-observability-operator || true
-        warning "Proceeding anyway - operator may still be initializing..."
-    fi
-    
-    # Wait for CRDs to be registered and established
-    log "Waiting for CRDs to be registered and established..."
-    CRD_WAIT_TIMEOUT=120
-    CRD_WAIT_ELAPSED=0
-    CRD_ESTABLISHED=false
-    
-    while [ $CRD_WAIT_ELAPSED -lt $CRD_WAIT_TIMEOUT ]; do
-        # Check if CRD exists and is established
-        if oc get crd monitoringstacks.monitoring.rhobs &>/dev/null; then
-            CRD_CONDITION=$(oc get crd monitoringstacks.monitoring.rhobs -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || echo "")
-            if [ "$CRD_CONDITION" = "True" ]; then
-                CRD_ESTABLISHED=true
-                CRD_API_GROUP="monitoring.rhobs"
-                log "✓ CRD monitoringstacks.monitoring.rhobs is established"
-                break
-            fi
-        elif oc get crd monitoringstacks.monitoring.observability.openshift.io &>/dev/null; then
-            CRD_CONDITION=$(oc get crd monitoringstacks.monitoring.observability.openshift.io -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || echo "")
-            if [ "$CRD_CONDITION" = "True" ]; then
-                CRD_ESTABLISHED=true
-                CRD_API_GROUP="monitoring.observability.openshift.io"
-                log "✓ CRD monitoringstacks.monitoring.observability.openshift.io is established"
-                break
-            fi
-        fi
+    while [ $ELAPSED -lt $TIMEOUT ]; do
+        CSV_PHASE=$(oc get csv "$CSV_NAME" -n "$OPERATOR_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
         
-        if [ "$CRD_ESTABLISHED" = false ]; then
-            sleep 5
-            CRD_WAIT_ELAPSED=$((CRD_WAIT_ELAPSED + 5))
-            if [ $((CRD_WAIT_ELAPSED % 15)) -eq 0 ]; then
-                log "Waiting for CRDs to be established... (${CRD_WAIT_ELAPSED}s/${CRD_WAIT_TIMEOUT}s)"
-            fi
-        fi
-    done
-    
-    if [ "$CRD_ESTABLISHED" = false ]; then
-        # Fallback: check if CRD exists even if not established
-        if oc get crd monitoringstacks.monitoring.rhobs &>/dev/null; then
-            CRD_API_GROUP="monitoring.rhobs"
-            warning "CRD exists but may not be fully established yet. Proceeding anyway..."
-        elif oc get crd monitoringstacks.monitoring.observability.openshift.io &>/dev/null; then
-            CRD_API_GROUP="monitoring.observability.openshift.io"
-            warning "CRD exists but may not be fully established yet. Proceeding anyway..."
-        else
-            error "CRDs not available after waiting. Operator may not be fully installed."
-        fi
-    fi
-else
-    log "✓ Cluster Observability Operator is already installed"
-    
-    # Check if CRDs are established (not just exist)
-    log "Verifying CRDs are established and ready..."
-    CRD_ESTABLISHED=false
-    
-    # First, check if CRD exists and try to verify it's established
-    if oc get crd monitoringstacks.monitoring.rhobs &>/dev/null; then
-        # Check for Established condition
-        CRD_CONDITION=$(oc get crd monitoringstacks.monitoring.rhobs -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || echo "")
-        if [ "$CRD_CONDITION" = "True" ]; then
-            CRD_ESTABLISHED=true
-            CRD_API_GROUP="monitoring.rhobs"
-            log "✓ CRD monitoringstacks.monitoring.rhobs is established"
-        else
-            # CRD exists but condition check failed - check if CRD has been around for a while
-            # If CRD exists and we can query it, it's likely established even if condition isn't set
-            CRD_AGE=$(oc get crd monitoringstacks.monitoring.rhobs -o jsonpath='{.metadata.creationTimestamp}' 2>/dev/null || echo "")
-            if [ -n "$CRD_AGE" ]; then
-                # CRD exists and has creation timestamp - if it's older than 5 minutes, assume it's established
-                CRD_ESTABLISHED=true
-                CRD_API_GROUP="monitoring.rhobs"
-                log "✓ CRD monitoringstacks.monitoring.rhobs exists and appears ready"
-            fi
-        fi
-    elif oc get crd monitoringstacks.monitoring.observability.openshift.io &>/dev/null; then
-        # Check for Established condition
-        CRD_CONDITION=$(oc get crd monitoringstacks.monitoring.observability.openshift.io -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || echo "")
-        if [ "$CRD_CONDITION" = "True" ]; then
-            CRD_ESTABLISHED=true
-            CRD_API_GROUP="monitoring.observability.openshift.io"
-            log "✓ CRD monitoringstacks.monitoring.observability.openshift.io is established"
-        else
-            # CRD exists but condition check failed - check if CRD has been around for a while
-            CRD_AGE=$(oc get crd monitoringstacks.monitoring.observability.openshift.io -o jsonpath='{.metadata.creationTimestamp}' 2>/dev/null || echo "")
-            if [ -n "$CRD_AGE" ]; then
-                # CRD exists and has creation timestamp - if it's older than 5 minutes, assume it's established
-                CRD_ESTABLISHED=true
-                CRD_API_GROUP="monitoring.observability.openshift.io"
-                log "✓ CRD monitoringstacks.monitoring.observability.openshift.io exists and appears ready"
-            fi
-        fi
-    fi
-    
-    if [ "$CRD_ESTABLISHED" = false ]; then
-        # Fallback: if CRD exists, proceed anyway (it was likely deployed earlier)
-        if oc get crd monitoringstacks.monitoring.rhobs &>/dev/null; then
-            CRD_API_GROUP="monitoring.rhobs"
-            warning "CRD exists but condition check inconclusive. Proceeding assuming it's ready..."
-        elif oc get crd monitoringstacks.monitoring.observability.openshift.io &>/dev/null; then
-            CRD_API_GROUP="monitoring.observability.openshift.io"
-            warning "CRD exists but condition check inconclusive. Proceeding assuming it's ready..."
-        else
-            # Check for any monitoringstack CRDs that might exist
-            ALTERNATIVE_CRD=$(oc get crd 2>/dev/null | grep -i "monitoringstack" | awk '{print $1}' | head -n 1 || echo "")
-            if [ -n "$ALTERNATIVE_CRD" ]; then
-                # Extract API group from CRD name (format: resource.api.group)
-                CRD_API_GROUP=$(echo "$ALTERNATIVE_CRD" | cut -d'.' -f2-)
-                warning "Found alternative CRD: $ALTERNATIVE_CRD"
-                warning "Using API group: $CRD_API_GROUP"
-                CRD_ESTABLISHED=true
-            else
-                error "CRDs not found. Operator may not be fully installed. Check with: oc get crd | grep -i monitoring"
-            fi
-        fi
-    fi
-    
-    # Verify operator is running
-    # Check for deployment with either name
-    DEPLOYMENT_NAME="observability-operator"
-    if oc get deployment "$DEPLOYMENT_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
-        log "✓ Cluster Observability Operator deployment found"
-        if oc wait --for=condition=Available "deployment/$DEPLOYMENT_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" --timeout=30s 2>/dev/null; then
-            log "✓ Cluster Observability Operator is ready"
-        else
-            warning "Operator deployment may not be ready yet"
-        fi
-    elif oc get deployment cluster-observability-operator -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
-        DEPLOYMENT_NAME="cluster-observability-operator"
-        log "✓ Cluster Observability Operator deployment found (legacy name)"
-        if oc wait --for=condition=Available "deployment/$DEPLOYMENT_NAME" -n "$OBSERVABILITY_OPERATOR_NAMESPACE" --timeout=30s 2>/dev/null; then
-            log "✓ Cluster Observability Operator is ready"
-        else
-            warning "Operator deployment may not be ready yet"
-        fi
-    else
-        warning "Operator deployment not found. Operator may still be installing..."
-    fi
-fi
-
-# Create MonitoringStack resource
-log "Creating MonitoringStack resource for RHACS metrics..."
-log "Using API group: ${CRD_API_GROUP:-monitoring.rhobs}"
-
-# Determine API version based on CRD API group
-if [ "${CRD_API_GROUP:-monitoring.rhobs}" = "monitoring.rhobs" ]; then
-    MONITORING_STACK_API_VERSION="monitoring.rhobs/v1alpha1"
-else
-    MONITORING_STACK_API_VERSION="monitoring.observability.openshift.io/v1alpha1"
-fi
-
-MONITORING_STACK_YAML=$(cat <<EOF
-apiVersion: $MONITORING_STACK_API_VERSION
-kind: MonitoringStack
-metadata:
-  name: rhacs-monitoring-stack
-  namespace: $NAMESPACE
-  finalizers:
-    - monitoring.observability.openshift.io/finalizer
-  labels:
-    app: monitoring
-    component: rhacs-metrics
-spec:
-  alertmanagerConfig:
-    disabled: false
-  createClusterRoleBindings: CreateClusterRoleBindings
-  logLevel: info
-  prometheusConfig:
-    replicas: 1
-  resourceSelector:
-    matchLabels:
-      app: central
-  resources:
-    limits:
-      cpu: 500m
-      memory: 512Mi
-    requests:
-      cpu: 100m
-      memory: 256Mi
-  retention: 1d
-EOF
-)
-
-# Create MonitoringStack
-log "Creating MonitoringStack 'rhacs-monitoring-stack'..."
-if oc get monitoringstack rhacs-monitoring-stack -n "$NAMESPACE" &>/dev/null; then
-    log "MonitoringStack 'rhacs-monitoring-stack' already exists, updating..."
-    echo "$MONITORING_STACK_YAML" | oc apply -f - || error "Failed to update MonitoringStack"
-    log "✓ MonitoringStack updated successfully"
-else
-    log "Creating new MonitoringStack..."
-    echo "$MONITORING_STACK_YAML" | oc create -f - || error "Failed to create MonitoringStack"
-    log "✓ MonitoringStack created successfully"
-fi
-
-# Wait for MonitoringStack to be ready
-log "Waiting for MonitoringStack to be ready..."
-sleep 10
-if oc wait --for=condition=Ready monitoringstack/rhacs-monitoring-stack -n "$NAMESPACE" --timeout=120s 2>/dev/null; then
-    log "✓ MonitoringStack is ready"
-else
-    warning "MonitoringStack may still be initializing. This is normal and may take a few minutes."
-fi
-
-# Get Central service details for ScrapeConfig
-CENTRAL_SERVICE_NAME="central"
-CENTRAL_SERVICE_PORT="443"
-CENTRAL_SERVICE_FQDN="${CENTRAL_SERVICE_NAME}.${NAMESPACE}.svc.cluster.local"
-
-log "Central service FQDN: $CENTRAL_SERVICE_FQDN"
-
-# Create ScrapeConfig resource
-log "Creating ScrapeConfig resource for RHACS Central metrics..."
-log "Using API group: ${CRD_API_GROUP:-monitoring.rhobs}"
-
-# Determine API version for ScrapeConfig (usually same as MonitoringStack)
-if [ "${CRD_API_GROUP:-monitoring.rhobs}" = "monitoring.rhobs" ]; then
-    SCRAPE_CONFIG_API_VERSION="monitoring.rhobs/v1alpha1"
-else
-    SCRAPE_CONFIG_API_VERSION="monitoring.observability.openshift.io/v1alpha1"
-fi
-
-SCRAPE_CONFIG_YAML=$(cat <<EOF
-apiVersion: $SCRAPE_CONFIG_API_VERSION
-kind: ScrapeConfig
-metadata:
-  name: rhacs-central-scrape-config
-  namespace: $NAMESPACE
-  labels:
-    app: central
-    component: metrics
-spec:
-  jobName: rhacs-central-metrics
-  scheme: HTTPS
-  staticConfigs:
-    - targets:
-        - "${CENTRAL_SERVICE_FQDN}:${CENTRAL_SERVICE_PORT}"
-  tlsConfig:
-    insecureSkipVerify: true
-EOF
-)
-
-# Create ScrapeConfig
-log "Creating ScrapeConfig 'rhacs-central-scrape-config'..."
-if oc get scrapeconfig rhacs-central-scrape-config -n "$NAMESPACE" &>/dev/null; then
-    log "ScrapeConfig 'rhacs-central-scrape-config' already exists, updating..."
-    echo "$SCRAPE_CONFIG_YAML" | oc apply -f - || error "Failed to update ScrapeConfig"
-    log "✓ ScrapeConfig updated successfully"
-else
-    log "Creating new ScrapeConfig..."
-    echo "$SCRAPE_CONFIG_YAML" | oc create -f - || error "Failed to create ScrapeConfig"
-    log "✓ ScrapeConfig created successfully"
-fi
-
-# Verify resources were created
-log "Verifying resources..."
-if oc get monitoringstack rhacs-monitoring-stack -n "$NAMESPACE" &>/dev/null; then
-    log "✓ MonitoringStack verified"
-    oc get monitoringstack rhacs-monitoring-stack -n "$NAMESPACE" -o yaml | grep -A 5 "status:" || true
-else
-    error "MonitoringStack was not created successfully"
-fi
-
-if oc get scrapeconfig rhacs-central-scrape-config -n "$NAMESPACE" &>/dev/null; then
-    log "✓ ScrapeConfig verified"
-    oc get scrapeconfig rhacs-central-scrape-config -n "$NAMESPACE" -o yaml | grep -A 5 "spec:" || true
-else
-    error "ScrapeConfig was not created successfully"
-fi
-
-# Check Prometheus pods
-log "Checking Prometheus pods..."
-PROMETHEUS_PODS=$(oc get pods -n "$NAMESPACE" -l app.kubernetes.io/name=prometheus 2>/dev/null | grep -v NAME | wc -l || echo "0")
-if [ "$PROMETHEUS_PODS" -gt 0 ]; then
-    log "✓ Found $PROMETHEUS_PODS Prometheus pod(s)"
-    oc get pods -n "$NAMESPACE" -l app.kubernetes.io/name=prometheus || true
-else
-    warning "Prometheus pods not found yet. They may still be starting."
-fi
-
-# Check if UIPlugin CRD exists
-log "Checking for UIPlugin CRD..."
-UIPLUGIN_CRD_AVAILABLE=false
-UIPLUGIN_API_VERSION=""
-
-if oc get crd uiplugins.observability.openshift.io &>/dev/null; then
-    log "✓ UIPlugin CRD found (observability.openshift.io)"
-    UIPLUGIN_CRD_AVAILABLE=true
-    UIPLUGIN_API_VERSION="observability.openshift.io/v1alpha1"
-elif oc get crd uiplugins.console.openshift.io &>/dev/null; then
-    log "✓ UIPlugin CRD found (console.openshift.io)"
-    UIPLUGIN_CRD_AVAILABLE=true
-    UIPLUGIN_API_VERSION="console.openshift.io/v1"
-else
-    warning "UIPlugin CRD not found"
-    warning "UIPlugin may not be available in all OpenShift versions"
-    warning "Skipping UIPlugin creation - dashboards will still be available via Prometheus UI"
-fi
-
-# Create UIPlugin resource if CRD is available
-if [ "$UIPLUGIN_CRD_AVAILABLE" = true ]; then
-    # Get Prometheus service endpoint for UIPlugin
-    log "Getting Prometheus service endpoint for UIPlugin configuration..."
-    PROMETHEUS_SERVICE="prometheus-operated"
-    PROMETHEUS_PORT="9091"
-    PROMETHEUS_ENDPOINT="${PROMETHEUS_SERVICE}.${NAMESPACE}.svc.cluster.local:${PROMETHEUS_PORT}"
-
-    # Verify Prometheus service exists
-    if oc get service "$PROMETHEUS_SERVICE" -n "$NAMESPACE" &>/dev/null; then
-        log "✓ Prometheus service found: $PROMETHEUS_SERVICE"
-        # Try to get actual port from service
-        ACTUAL_PORT=$(oc get service "$PROMETHEUS_SERVICE" -n "$NAMESPACE" -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || echo "$PROMETHEUS_PORT")
-        if [ -n "$ACTUAL_PORT" ] && [ "$ACTUAL_PORT" != "$PROMETHEUS_PORT" ]; then
-            PROMETHEUS_PORT="$ACTUAL_PORT"
-            PROMETHEUS_ENDPOINT="${PROMETHEUS_SERVICE}.${NAMESPACE}.svc.cluster.local:${PROMETHEUS_PORT}"
-            log "Using Prometheus port: $PROMETHEUS_PORT"
-        fi
-    else
-        warning "Prometheus service not found, using default endpoint: $PROMETHEUS_ENDPOINT"
-    fi
-
-    log "Prometheus endpoint for datasource: $PROMETHEUS_ENDPOINT"
-
-    # Create all Perses resources at once (batch creation)
-    log "Creating all Perses resources (datasource, plugin, dashboard)..."
-    
-    # Get Prometheus service URL (use HTTP for internal service, port 9090)
-    PROMETHEUS_DATASOURCE_URL="http://prometheus-operated.${NAMESPACE}.svc.cluster.local:9090"
-    
-    # Create PersesDatasource resource
-    PERSES_DATASOURCE_YAML=$(cat <<EOF
-apiVersion: perses.dev/v1alpha1
-kind: PersesDatasource
-metadata:
-  name: rhacs-datasource
-  namespace: $OBSERVABILITY_OPERATOR_NAMESPACE
-spec:
-  client:
-    tls:
-      caCert:
-        certPath: /ca/service-ca.crt
-        type: file
-      enable: true
-  config:
-    default: true
-    display:
-      name: RHACS Prometheus Datasource
-    plugin:
-      kind: PrometheusDatasource
-      spec:
-        proxy:
-          kind: HTTPProxy
-          spec:
-            url: ${PROMETHEUS_DATASOURCE_URL}
-EOF
-    )
-    
-    # Create UIPlugin resource
-    UIPLUGIN_YAML=$(cat <<EOF
-apiVersion: $UIPLUGIN_API_VERSION
-kind: UIPlugin
-metadata:
-  name: monitoring
-  namespace: $OBSERVABILITY_OPERATOR_NAMESPACE
-spec:
-  monitoring:
-    perses:
-      enabled: true
-  type: Monitoring
-EOF
-    )
-    
-    # Create PersesDashboard resource with RHACS dashboard
-    
-    # Read the dashboard YAML from a here-doc (large dashboard definition)
-    PERSES_DASHBOARD_YAML=$(cat <<'DASHBOARD_EOF'
-apiVersion: perses.dev/v1alpha1
-kind: PersesDashboard
-metadata:
-  name: rhacs-dashboard
-  namespace: openshift-cluster-observability-operator
-spec:
-  display:
-    name: Advanced Cluster Security / Overview
-  duration: 30d
-  layouts:
-    - kind: Grid
-      spec:
-        display:
-          collapse:
-            open: true
-          title: Policies
-        items:
-          - content:
-              $ref: '#/spec/panels/total_policy_violations'
-            height: 3
-            width: 6
-            x: 0
-            y: 0
-          - content:
-              $ref: '#/spec/panels/total_policies_enabled'
-            height: 3
-            width: 6
-            x: 0
-            y: 3
-          - content:
-              $ref: '#/spec/panels/violations_by_severity'
-            height: 6
-            width: 6
-            x: 6
-            y: 0
-          - content:
-              $ref: '#/spec/panels/violations_over_time_by_severity'
-            height: 6
-            width: 12
-            x: 12
-            y: 0
-    - kind: Grid
-      spec:
-        display:
-          collapse:
-            open: true
-          title: Vulnerabilities
-        items:
-          - content:
-              $ref: '#/spec/panels/total_vulnerabilities'
-            height: 3
-            width: 6
-            x: 0
-            y: 0
-          - content:
-              $ref: '#/spec/panels/total_user_fixable_vulnerabilities'
-            height: 3
-            width: 6
-            x: 0
-            y: 3
-          - content:
-              $ref: '#/spec/panels/vulnerabilities_by_severity'
-            height: 6
-            width: 6
-            x: 6
-            y: 0
-          - content:
-              $ref: '#/spec/panels/vulnerabilities_by_asset_over_time'
-            height: 6
-            width: 12
-            x: 12
-            y: 0
-          - content:
-              $ref: '#/spec/panels/fixable_user_workload_vulnerabilities_over_time'
-            height: 12
-            width: 12
-            x: 0
-            y: 6
-    - kind: Grid
-      spec:
-        display:
-          title: Cluster health
-        items:
-          - content:
-              $ref: '#/spec/panels/cluster_health'
-            height: 6
-            width: 12
-            x: 0
-            y: 0
-          - content:
-              $ref: '#/spec/panels/cert_expiry'
-            height: 6
-            width: 12
-            x: 12
-            y: 0
-  panels:
-    total_policy_violations:
-      kind: Panel
-      spec:
-        display:
-          name: Total policy violations
-        plugin:
-          kind: StatChart
-          spec:
-            calculation: last
-        queries:
-          - kind: TimeSeriesQuery
-            spec:
-              plugin:
-                kind: PrometheusTimeSeriesQuery
-                spec:
-                  query: 'sum(rox_central_policy_violation_namespace_severity{Cluster=~''$Cluster'',Namespace=~''$Namespace''})'
-    vulnerabilities_by_severity:
-      kind: Panel
-      spec:
-        display:
-          name: Vulnerabilities by severity
-        plugin:
-          kind: BarChart
-          spec:
-            calculation: last
-        queries:
-          - kind: TimeSeriesQuery
-            spec:
-              plugin:
-                kind: PrometheusTimeSeriesQuery
-                spec:
-                  query: 'sum by (Severity)(rox_central_image_vuln_deployment_severity{Cluster=~''$Cluster'',Namespace=~''$Namespace''})'
-                  seriesNameFormat: '{{Severity}}'
-    cluster_health:
-      kind: Panel
-      spec:
-        display:
-          name: Cluster status
-        plugin:
-          kind: Table
-          spec:
-            columnSettings:
-              - name: Cluster
-              - enableSorting: true
-                name: Status
-              - enableSorting: true
-                name: Upgradability
-              - header: timestamp
-                hide: true
-                name: timestamp
-              - header: value
-                hide: true
-                name: value
-        queries:
-          - kind: TimeSeriesQuery
-            spec:
-              plugin:
-                kind: PrometheusTimeSeriesQuery
-                spec:
-                  query: |
-                    group by (Cluster,Status,Upgradability)
-                    (rox_central_health_cluster_info{Cluster=~'$Cluster'})
-    vulnerabilities_by_asset_over_time:
-      kind: Panel
-      spec:
-        display:
-          name: Vulnerabilities by asset over time
-        plugin:
-          kind: TimeSeriesChart
-          spec:
-            legend:
-              mode: list
-              position: bottom
-              values: []
-        queries:
-          - kind: TimeSeriesQuery
-            spec:
-              plugin:
-                kind: PrometheusTimeSeriesQuery
-                spec:
-                  query: 'sum(rox_central_image_vuln_deployment_severity{Cluster=~''$Cluster'',Namespace=~''$Namespace'',IsPlatformWorkload=''false''})'
-                  seriesNameFormat: User Image vulnerabilities
-          - kind: TimeSeriesQuery
-            spec:
-              plugin:
-                kind: PrometheusTimeSeriesQuery
-                spec:
-                  query: 'sum(rox_central_image_vuln_deployment_severity{Cluster=~''$Cluster'',Namespace=~''$Namespace'',IsPlatformWorkload=''true''})'
-                  seriesNameFormat: Platform Image vulnerabilities
-          - kind: TimeSeriesQuery
-            spec:
-              plugin:
-                kind: PrometheusTimeSeriesQuery
-                spec:
-                  query: 'sum(rox_central_node_vuln_node_severity{Cluster=~''$Cluster''})'
-                  seriesNameFormat: Node vulnerabilities
-    violations_over_time_by_severity:
-      kind: Panel
-      spec:
-        display:
-          name: Policy violations over time by severity
-        plugin:
-          kind: TimeSeriesChart
-          spec:
-            legend:
-              position: bottom
-        queries:
-          - kind: TimeSeriesQuery
-            spec:
-              plugin:
-                kind: PrometheusTimeSeriesQuery
-                spec:
-                  query: 'sum by (Severity)(rox_central_policy_violation_namespace_severity{Cluster=~''$Cluster'',Namespace=~''$Namespace''})'
-                  seriesNameFormat: '{{Severity}}'
-    total_policies_enabled:
-      kind: Panel
-      spec:
-        display:
-          name: Total policies enabled
-        plugin:
-          kind: StatChart
-          spec:
-            calculation: last
-        queries:
-          - kind: TimeSeriesQuery
-            spec:
-              plugin:
-                kind: PrometheusTimeSeriesQuery
-                spec:
-                  query: 'sum(rox_central_cfg_total_policies{Enabled=''true''})'
-    cert_expiry:
-      kind: Panel
-      spec:
-        display:
-          name: Certificate expiry per component
-        plugin:
-          kind: StatChart
-          spec:
-            calculation: last
-            format:
-              decimalPlaces: 0
-              unit: days
-            thresholds:
-              steps:
-                - color: red
-                  value: 0
-                - color: yellow
-                  value: 7
-                - color: green
-                  value: 30
-        queries:
-          - kind: TimeSeriesQuery
-            spec:
-              plugin:
-                kind: PrometheusTimeSeriesQuery
-                spec:
-                  query: sum by (Component)(rox_central_cert_exp_hours / 24)
-                  seriesNameFormat: '{{Component}}'
-    fixable_user_workload_vulnerabilities_over_time:
-      kind: Panel
-      spec:
-        display:
-          name: Fixable user workload vulnerabilities over time
-        plugin:
-          kind: TimeSeriesChart
-          spec:
-            legend:
-              mode: table
-              position: bottom
-              size: small
-        queries:
-          - kind: TimeSeriesQuery
-            spec:
-              plugin:
-                kind: PrometheusTimeSeriesQuery
-                spec:
-                  query: 'sum by(Severity)(rox_central_image_vuln_deployment_severity{Cluster=~''$Cluster'',Namespace=~''$Namespace'',IsFixable="true",IsPlatformWorkload="false"})'
-                  seriesNameFormat: '{{Severity}}'
-    total_user_fixable_vulnerabilities:
-      kind: Panel
-      spec:
-        display:
-          name: Total fixable items in user workloads
-        plugin:
-          kind: StatChart
-          spec:
-            calculation: last
-        queries:
-          - kind: TimeSeriesQuery
-            spec:
-              plugin:
-                kind: PrometheusTimeSeriesQuery
-                spec:
-                  query: 'sum(rox_central_image_vuln_deployment_severity{Cluster=~''$Cluster'',Namespace=~''$Namespace'',IsFixable="true",IsPlatformWorkload="false"})'
-    violations_by_severity:
-      kind: Panel
-      spec:
-        display:
-          name: Policy violations by severity
-        plugin:
-          kind: BarChart
-          spec:
-            calculation: last
-        queries:
-          - kind: TimeSeriesQuery
-            spec:
-              plugin:
-                kind: PrometheusTimeSeriesQuery
-                spec:
-                  query: 'sum by (Severity)(rox_central_policy_violation_namespace_severity{Cluster=~''$Cluster'',Namespace=~''$Namespace''})'
-                  seriesNameFormat: '{{Severity}}'
-    total_vulnerabilities:
-      kind: Panel
-      spec:
-        display:
-          name: Total vulnerable items
-        plugin:
-          kind: StatChart
-          spec:
-            calculation: last
-        queries:
-          - kind: TimeSeriesQuery
-            spec:
-              plugin:
-                kind: PrometheusTimeSeriesQuery
-                spec:
-                  query: 'sum(rox_central_image_vuln_deployment_severity{Cluster=~''$Cluster'',Namespace=~''$Namespace''})'
-  refreshInterval: 1m
-  variables:
-    - kind: ListVariable
-      spec:
-        allowAllValue: true
-        allowMultiple: true
-        name: Cluster
-        plugin:
-          kind: PrometheusLabelValuesVariable
-          spec:
-            labelName: Cluster
-    - kind: ListVariable
-      spec:
-        allowAllValue: true
-        allowMultiple: true
-        name: Namespace
-        plugin:
-          kind: PrometheusLabelValuesVariable
-          spec:
-            labelName: Namespace
-DASHBOARD_EOF
-    )
-    
-    # Replace namespace in dashboard YAML
-    PERSES_DASHBOARD_YAML=$(echo "$PERSES_DASHBOARD_YAML" | sed "s/namespace: openshift-cluster-observability-operator/namespace: $OBSERVABILITY_OPERATOR_NAMESPACE/g")
-    
-    # Create all resources at once (batch creation)
-    # Use oc apply for all resources - it handles both create and update
-    log "Creating/updating PersesDatasource 'rhacs-datasource'..."
-    if oc get persesdatasource rhacs-datasource -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
-        log "PersesDatasource already exists, updating..."
-        echo "$PERSES_DATASOURCE_YAML" | oc apply -f - || error "Failed to update PersesDatasource"
-    else
-        echo "$PERSES_DATASOURCE_YAML" | oc apply -f - || error "Failed to create PersesDatasource"
-    fi
-    log "✓ PersesDatasource ready"
-    
-    log "Creating/updating UIPlugin 'monitoring'..."
-    if oc get uplugin monitoring -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
-        log "UIPlugin already exists, updating..."
-        echo "$UIPLUGIN_YAML" | oc apply -f - || error "Failed to update UIPlugin"
-    else
-        echo "$UIPLUGIN_YAML" | oc apply -f - || error "Failed to create UIPlugin"
-    fi
-    log "✓ UIPlugin ready"
-    
-    log "Creating/updating PersesDashboard 'rhacs-dashboard'..."
-    if oc get persesdashboard rhacs-dashboard -n "$OBSERVABILITY_OPERATOR_NAMESPACE" &>/dev/null; then
-        log "PersesDashboard already exists, updating..."
-        echo "$PERSES_DASHBOARD_YAML" | oc apply -f - || error "Failed to update PersesDashboard"
-    else
-        echo "$PERSES_DASHBOARD_YAML" | oc apply -f - || error "Failed to create PersesDashboard"
-    fi
-    log "✓ PersesDashboard ready"
-    
-    log "✓ All Perses resources created/updated successfully"
-    
-    # Now verify all resources together
-    log "Waiting for all Perses resources to be ready..."
-    VERIFICATION_TIMEOUT=300
-    VERIFICATION_ELAPSED=0
-    ALL_READY=false
-    
-    while [ $VERIFICATION_ELAPSED -lt $VERIFICATION_TIMEOUT ]; do
-        UIPLUGIN_READY=false
-        PERSES_DATASOURCE_READY=false
-        PERSES_DASHBOARD_READY=false
-        
-        # Check UIPlugin
-        UIPLUGIN_STATUS=$(oc get uplugin monitoring -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
-        if [ "$UIPLUGIN_STATUS" = "True" ]; then
-            UIPLUGIN_READY=true
-        fi
-        
-        # Check PersesDatasource
-        PERSES_DATASOURCE_STATUS=$(oc get persesdatasource rhacs-datasource -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
-        if [ "$PERSES_DATASOURCE_STATUS" = "True" ]; then
-            PERSES_DATASOURCE_READY=true
-        fi
-        
-        # Check PersesDashboard
-        PERSES_DASHBOARD_STATUS=$(oc get persesdashboard rhacs-dashboard -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
-        if [ "$PERSES_DASHBOARD_STATUS" = "True" ]; then
-            PERSES_DASHBOARD_READY=true
-        fi
-        
-        # Log status every 30 seconds
-        READY_COUNT=0
-        [ "$UIPLUGIN_READY" = true ] && READY_COUNT=$((READY_COUNT + 1))
-        [ "$PERSES_DATASOURCE_READY" = true ] && READY_COUNT=$((READY_COUNT + 1))
-        [ "$PERSES_DASHBOARD_READY" = true ] && READY_COUNT=$((READY_COUNT + 1))
-        
-        if [ $READY_COUNT -eq 3 ]; then
-            ALL_READY=true
-            log "✓ All Perses resources are ready"
+        if [ "$CSV_PHASE" = "Succeeded" ]; then
+            log "✓ Cluster Observability Operator installed successfully (phase: $CSV_PHASE)"
             break
+        elif [ "$CSV_PHASE" = "Failed" ]; then
+            CSV_MESSAGE=$(oc get csv "$CSV_NAME" -n "$OPERATOR_NAMESPACE" -o jsonpath='{.status.message}' 2>/dev/null || echo "Unknown error")
+            error "Cluster Observability Operator installation failed. Phase: $CSV_PHASE, Message: $CSV_MESSAGE"
         fi
         
-        if [ $((VERIFICATION_ELAPSED % 30)) -eq 0 ]; then
-            log "Waiting for resources... (${VERIFICATION_ELAPSED}s/${VERIFICATION_TIMEOUT}s) - Ready: $READY_COUNT/3"
-            log "  UIPlugin: ${UIPLUGIN_STATUS:-pending}"
-            log "  PersesDatasource: ${PERSES_DATASOURCE_STATUS:-pending}"
-            log "  PersesDashboard: ${PERSES_DASHBOARD_STATUS:-pending}"
+        if [ $((ELAPSED % 30)) -eq 0 ]; then
+            log "Waiting for operator installation... (${ELAPSED}s/${TIMEOUT}s, phase: ${CSV_PHASE})"
         fi
         
-        sleep 10
-        VERIFICATION_ELAPSED=$((VERIFICATION_ELAPSED + 10))
+        sleep $INTERVAL
+        ELAPSED=$((ELAPSED + INTERVAL))
     done
     
-    if [ "$ALL_READY" = false ]; then
-        warning "Some resources may still be initializing. Final status:"
-        oc get uplugin monitoring -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null && log "  UIPlugin: Available" || log "  UIPlugin: Not ready"
-        oc get persesdatasource rhacs-datasource -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null && log "  PersesDatasource: Available" || log "  PersesDatasource: Not ready"
-        oc get persesdashboard rhacs-dashboard -n "$OBSERVABILITY_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null && log "  PersesDashboard: Available" || log "  PersesDashboard: Not ready"
-        warning "Proceeding anyway - resources may still be deploying..."
+    if [ $ELAPSED -ge $TIMEOUT ]; then
+        CSV_PHASE=$(oc get csv "$CSV_NAME" -n "$OPERATOR_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+        warning "Cluster Observability Operator installation did not complete within timeout. Current phase: $CSV_PHASE"
+        log "You may need to check the operator status manually: oc get csv $CSV_NAME -n $OPERATOR_NAMESPACE"
     fi
-    
-    # Check for Perses pods
-    log "Checking for Perses pods..."
-    PERSES_PODS=$(oc get pods -n "$OBSERVABILITY_OPERATOR_NAMESPACE" | grep -i perses | grep -v NAME | wc -l || echo "0")
-    if [ "$PERSES_PODS" -gt 0 ]; then
-        log "✓ Found $PERSES_PODS Perses pod(s)"
-        oc get pods -n "$OBSERVABILITY_OPERATOR_NAMESPACE" | grep -i perses || true
+fi
+
+# Verify operator deployments are running
+log "Verifying operator deployments..."
+DEPLOYMENTS=("observability-operator" "obo-prometheus-operator" "perses-operator")
+ALL_READY=true
+
+for deployment in "${DEPLOYMENTS[@]}"; do
+    if oc get deployment "$deployment" -n "$OPERATOR_NAMESPACE" &>/dev/null; then
+        if oc wait --for=condition=Available deployment/"$deployment" -n "$OPERATOR_NAMESPACE" --timeout=60s &>/dev/null; then
+            log "✓ Deployment '$deployment' is ready"
+        else
+            warning "Deployment '$deployment' is not ready yet"
+            ALL_READY=false
+        fi
     else
-        warning "Perses pods not found yet. They may still be starting."
-        log "This is normal - Perses deployment may take a few minutes after UIPlugin creation"
+        log "Deployment '$deployment' not found (may be created later)"
     fi
-else
-    log "Skipping UIPlugin and Perses resources creation - CRD not available"
-    log "Note: Metrics and dashboards are still available via Prometheus UI"
-fi
+done
 
-# Verify MonitoringStack integration
-log "Verifying MonitoringStack integration with UI plugin..."
-if oc get monitoringstack rhacs-monitoring-stack -n "$NAMESPACE" &>/dev/null; then
-    log "✓ MonitoringStack status:"
-    oc get monitoringstack rhacs-monitoring-stack -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null && echo "" || true
-fi
-
-# Provide instructions for accessing metrics
 log "========================================================="
-log "Cluster Observability Operator Setup Completed Successfully"
+log "Step 1 Completed: Cluster Observability Operator installed"
+log "========================================================="
+log ""
+
+# Step 2: Create Prometheus permission set ConfigMap
+log "========================================================="
+log "Step 2: Creating Prometheus permission set ConfigMap"
+log "========================================================="
+
+CONFIGMAP_NAME="sample-stackrox-prometheus-declarative-configuration"
+
+# Check if ConfigMap already exists
+if oc get configmap "$CONFIGMAP_NAME" -n "$NAMESPACE" &>/dev/null; then
+    log "ConfigMap '$CONFIGMAP_NAME' already exists in namespace '$NAMESPACE'"
+    log "Checking if update is needed..."
+    
+    # Check if the ConfigMap has the expected content
+    EXISTING_DATA=$(oc get configmap "$CONFIGMAP_NAME" -n "$NAMESPACE" -o jsonpath='{.data.prometheus\.yaml}' 2>/dev/null || echo "")
+    
+    if [ -n "$EXISTING_DATA" ] && echo "$EXISTING_DATA" | grep -q "Prometheus Server"; then
+        log "✓ ConfigMap already contains Prometheus Server configuration, skipping creation"
+    else
+        log "ConfigMap exists but may need update, deleting and recreating..."
+        oc delete configmap "$CONFIGMAP_NAME" -n "$NAMESPACE" --ignore-not-found=true
+        sleep 2
+    fi
+fi
+
+# Create the ConfigMap
+log "Creating ConfigMap '$CONFIGMAP_NAME' in namespace '$NAMESPACE'..."
+cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: $CONFIGMAP_NAME
+  namespace: $NAMESPACE
+data:
+  prometheus.yaml: |
+    ---
+    name: Prometheus Server
+    description: Sample permission set for Prometheus server access
+    resources:
+    - resource: Administration
+      access: READ_ACCESS
+    - resource: Alert
+      access: READ_ACCESS
+    - resource: Cluster
+      access: READ_ACCESS
+    - resource: Deployment
+      access: READ_ACCESS
+    - resource: Image
+      access: READ_ACCESS
+    - resource: Integration
+      access: READ_ACCESS
+    - resource: Namespace
+      access: READ_ACCESS
+    - resource: Node
+      access: READ_ACCESS
+    - resource: WorkflowAdministration
+      access: READ_ACCESS
+    ---
+    name: Prometheus Server
+    description: Sample role for Prometheus server access
+    accessScope: Unrestricted
+    permissionSet: Prometheus Server
+EOF
+
+if [ $? -eq 0 ]; then
+    log "✓ ConfigMap '$CONFIGMAP_NAME' created successfully"
+else
+    error "Failed to create ConfigMap '$CONFIGMAP_NAME'"
+fi
+
+# Verify ConfigMap was created
+if oc get configmap "$CONFIGMAP_NAME" -n "$NAMESPACE" &>/dev/null; then
+    log "✓ Verified ConfigMap exists in namespace '$NAMESPACE'"
+    
+    # Display ConfigMap content for verification
+    log "ConfigMap content preview:"
+    oc get configmap "$CONFIGMAP_NAME" -n "$NAMESPACE" -o jsonpath='{.data.prometheus\.yaml}' | head -n 10
+    echo ""
+else
+    error "ConfigMap verification failed - ConfigMap not found after creation"
+fi
+
+log "========================================================="
+log "Step 2 Completed: Prometheus permission set ConfigMap created"
+log "========================================================="
+log ""
+log "========================================================="
+log "Metrics Dashboard Setup Completed Successfully"
 log "========================================================="
 log ""
 log "Summary:"
-log "  - MonitoringStack 'rhacs-monitoring-stack' created in namespace: $NAMESPACE"
-log "  - ScrapeConfig 'rhacs-central-scrape-config' created in namespace: $NAMESPACE"
-log "  - Metrics target: ${CENTRAL_SERVICE_FQDN}:${CENTRAL_SERVICE_PORT}"
-if [ "$UIPLUGIN_CRD_AVAILABLE" = true ]; then
-    log "  - PersesDatasource 'rhacs-datasource' created in namespace: $OBSERVABILITY_OPERATOR_NAMESPACE"
-    log "  - PersesDashboard 'rhacs-dashboard' created in namespace: $OBSERVABILITY_OPERATOR_NAMESPACE"
-    log "  - UIPlugin 'monitoring' created in namespace: $OBSERVABILITY_OPERATOR_NAMESPACE"
-    log "  - Perses dashboards enabled for monitoring UI"
-else
-    log "  - UIPlugin and Perses resources skipped (CRD not available)"
-fi
+log "  - Cluster Observability Operator installed in namespace: $OPERATOR_NAMESPACE"
+log "  - Created ConfigMap: $CONFIGMAP_NAME"
+log "  - ConfigMap namespace: $NAMESPACE"
+log "  - Contains Prometheus Server permission set and role configuration"
 log ""
-log "To view metrics in OpenShift console:"
-log "  1. Switch to Administrator perspective"
-log "  2. Navigate to: Observe → Metrics"
-log "  3. Search for RHACS metrics (e.g., 'rox_' prefix or 'acs_' prefix)"
-if [ "$UIPLUGIN_CRD_AVAILABLE" = true ]; then
-    log ""
-    log "To view Perses dashboards (if UIPlugin is available):"
-    log "  1. Navigate to: Observe → Dashboards"
-    log "  2. Click 'Create Dashboard' to create custom dashboards"
-    log "  3. Add panel → Select Prometheus datasource"
-    log "  4. Use queries like: sum(acs_violations_total) or rox_* metrics"
-else
-    log ""
-    log "Note: Perses dashboards require UIPlugin CRD (Technology Preview)"
-    log "      Access Prometheus UI directly via port-forward:"
-    log "      oc port-forward -n $NAMESPACE svc/prometheus-operated 9090:9090"
-fi
-log ""
-log "To verify MonitoringStack status:"
-log "  oc get monitoringstack rhacs-monitoring-stack -n $NAMESPACE"
-log ""
-log "To verify ScrapeConfig:"
-log "  oc get scrapeconfig rhacs-central-scrape-config -n $NAMESPACE"
-log ""
-log "To verify PersesDatasource:"
-log "  oc get persesdatasource rhacs-datasource -n $OBSERVABILITY_OPERATOR_NAMESPACE"
-log ""
-log "To verify PersesDashboard:"
-log "  oc get persesdashboard rhacs-dashboard -n $OBSERVABILITY_OPERATOR_NAMESPACE"
-log ""
-log "To verify UIPlugin:"
-log "  oc get uplugin monitoring -n $OBSERVABILITY_OPERATOR_NAMESPACE"
-log ""
-log "To check Prometheus pods:"
-log "  oc get pods -n $NAMESPACE -l app.kubernetes.io/name=prometheus"
-log ""
-log "To check Perses pods:"
-log "  oc get pods -n $OBSERVABILITY_OPERATOR_NAMESPACE | grep perses"
-log ""
-log "Note: It may take a few minutes for Prometheus to start scraping metrics."
-log "      Perses dashboards may take a few minutes to appear after UIPlugin creation."
-log "      Metrics will appear in the OpenShift console once Prometheus has collected data."
-log ""
-log "If the Cluster Observability Operator is not installed, install it from OperatorHub:"
-log "  1. Go to Operators → OperatorHub"
-log "  2. Search for 'Cluster Observability Operator'"
-log "  3. Install it in the openshift-cluster-observability-operator namespace"
+log "Next steps:"
+log "  - Configure Prometheus to scrape RHACS metrics"
+log "  - Set up Perses dashboard for visualization"
+
