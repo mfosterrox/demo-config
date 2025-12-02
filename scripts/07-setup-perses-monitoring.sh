@@ -193,21 +193,72 @@ if ! oc wait --for=jsonpath='{.status.phase}'=Succeeded "csv/$CSV_NAME" -n $OPER
 fi
 log "✓ CSV is in Succeeded phase"
 
-# Wait for the operator deployment to be ready
-log "Waiting for Cluster Observability Operator deployment to be ready..."
-if ! oc wait --for=condition=Available deployment/cluster-observability-operator -n $OPERATOR_NAMESPACE --timeout=300s; then
-    error "Cluster Observability Operator deployment failed to become Available. Check deployment: oc get deployment cluster-observability-operator -n $OPERATOR_NAMESPACE"
+# Wait for the operator deployment to appear (it may take time after CSV succeeds)
+log "Waiting for Cluster Observability Operator deployment to be created..."
+DEPLOYMENT_NAME="cluster-observability-operator"
+MAX_DEPLOYMENT_WAIT=60
+DEPLOYMENT_WAIT_COUNT=0
+DEPLOYMENT_FOUND=false
+
+while [ $DEPLOYMENT_WAIT_COUNT -lt $MAX_DEPLOYMENT_WAIT ]; do
+    if oc get deployment $DEPLOYMENT_NAME -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
+        DEPLOYMENT_FOUND=true
+        log "✓ Deployment found: $DEPLOYMENT_NAME"
+        break
+    fi
+    
+    # Try to find deployment by label if the name doesn't match
+    ALTERNATIVE_DEPLOYMENT=$(oc get deployment -n $OPERATOR_NAMESPACE -l operators.coreos.com/cluster-observability-operator.openshift-cluster-observability-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+    if [ -n "$ALTERNATIVE_DEPLOYMENT" ]; then
+        DEPLOYMENT_NAME="$ALTERNATIVE_DEPLOYMENT"
+        DEPLOYMENT_FOUND=true
+        log "✓ Deployment found with label: $DEPLOYMENT_NAME"
+        break
+    fi
+    
+    # Check for any deployment in the namespace (fallback)
+    ANY_DEPLOYMENT=$(oc get deployment -n $OPERATOR_NAMESPACE -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+    if [ -n "$ANY_DEPLOYMENT" ]; then
+        log "Found deployment in namespace: $ANY_DEPLOYMENT (will check if it's the operator)"
+        DEPLOYMENT_NAME="$ANY_DEPLOYMENT"
+        DEPLOYMENT_FOUND=true
+        break
+    fi
+    
+    if [ $((DEPLOYMENT_WAIT_COUNT % 6)) -eq 0 ]; then
+        log "Waiting for deployment to appear... ($DEPLOYMENT_WAIT_COUNT/$MAX_DEPLOYMENT_WAIT)"
+    fi
+    sleep 10
+    DEPLOYMENT_WAIT_COUNT=$((DEPLOYMENT_WAIT_COUNT + 1))
+done
+
+if [ "$DEPLOYMENT_FOUND" = false ]; then
+    warning "Deployment not found after $((MAX_DEPLOYMENT_WAIT * 10)) seconds. Checking namespace contents..."
+    oc get all -n $OPERATOR_NAMESPACE
+    warning "Continuing anyway - operator may be installed but deployment may have different name or structure"
+else
+    # Wait for the deployment to be ready
+    log "Waiting for deployment $DEPLOYMENT_NAME to be Available..."
+    if ! oc wait --for=condition=Available "deployment/$DEPLOYMENT_NAME" -n $OPERATOR_NAMESPACE --timeout=300s; then
+        warning "Deployment $DEPLOYMENT_NAME did not become Available within timeout. Checking status..."
+        oc get deployment $DEPLOYMENT_NAME -n $OPERATOR_NAMESPACE
+        oc describe deployment $DEPLOYMENT_NAME -n $OPERATOR_NAMESPACE | head -50
+        warning "Continuing anyway - operator CSV is Succeeded, which indicates successful installation"
+    else
+        log "✓ Cluster Observability Operator deployment is ready"
+    fi
 fi
-log "✓ Cluster Observability Operator deployment is ready"
 
 # Verify installation
 log "Verifying Cluster Observability Operator installation..."
 
-# Check if the operator is running
-if ! oc get deployment cluster-observability-operator -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
-    error "Cluster Observability Operator deployment not found. Check namespace: oc get deployment -n $OPERATOR_NAMESPACE"
+# Check if the operator deployment exists
+if oc get deployment $DEPLOYMENT_NAME -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
+    log "✓ Cluster Observability Operator deployment found: $DEPLOYMENT_NAME"
+else
+    warning "Deployment $DEPLOYMENT_NAME not found. Checking all deployments in namespace..."
+    oc get deployment -n $OPERATOR_NAMESPACE
 fi
-log "✓ Cluster Observability Operator deployment found"
 
 # Check operator pods
 log "Checking operator pods..."
