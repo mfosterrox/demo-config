@@ -107,6 +107,7 @@ if [[ ! "$ROX_ENDPOINT" =~ ^https?:// ]]; then
 fi
 
 # API endpoints
+CLUSTERS_ENDPOINT="${ROX_ENDPOINT}/v1/clusters"
 STANDARDS_ENDPOINT="${ROX_ENDPOINT}/v1/compliancemanagement/standards"
 SCAN_ENDPOINT="${ROX_ENDPOINT}/v1/compliancemanagement/runs"
 
@@ -159,6 +160,48 @@ make_api_call() {
     echo "$body"
 }
 
+# Fetch cluster ID - try to match by name first, then fall back to first connected cluster
+log "Fetching cluster ID..."
+CLUSTER_RESPONSE=$(make_api_call "GET" "$CLUSTERS_ENDPOINT" "" "Fetch clusters")
+
+if [ -z "$CLUSTER_RESPONSE" ]; then
+    error "Empty response from cluster API"
+fi
+
+# Parse cluster response
+if ! echo "$CLUSTER_RESPONSE" | jq . >/dev/null 2>&1; then
+    error "Invalid JSON response from cluster API. Response: ${CLUSTER_RESPONSE:0:300}"
+fi
+
+# Try to find cluster by name "ads-cluster" first (set by script 01)
+EXPECTED_CLUSTER_NAME="ads-cluster"
+CLUSTER_ID=$(echo "$CLUSTER_RESPONSE" | jq -r ".clusters[] | select(.name == \"$EXPECTED_CLUSTER_NAME\") | .id" 2>/dev/null | head -1)
+
+if [ -z "$CLUSTER_ID" ] || [ "$CLUSTER_ID" = "null" ]; then
+    log "Cluster '$EXPECTED_CLUSTER_NAME' not found, looking for any connected cluster..."
+    # Fall back to first connected/healthy cluster
+    CLUSTER_ID=$(echo "$CLUSTER_RESPONSE" | jq -r '.clusters[] | select(.healthStatus.overallHealthStatus == "HEALTHY" or .healthStatus.overallHealthStatus == "UNHEALTHY" or .healthStatus == null) | .id' 2>/dev/null | head -1)
+    
+    if [ -z "$CLUSTER_ID" ] || [ "$CLUSTER_ID" = "null" ]; then
+        # Last resort: use first cluster
+        CLUSTER_ID=$(echo "$CLUSTER_RESPONSE" | jq -r '.clusters[0].id' 2>/dev/null)
+    fi
+fi
+
+if [ -z "$CLUSTER_ID" ] || [ "$CLUSTER_ID" = "null" ]; then
+    error "Failed to find a valid cluster ID. Available clusters: $(echo "$CLUSTER_RESPONSE" | jq -r '.clusters[] | "\(.name): \(.id)"' 2>/dev/null | tr '\n' ' ' || echo "none")"
+fi
+
+# Verify cluster exists and get its name for logging
+CLUSTER_NAME=$(echo "$CLUSTER_RESPONSE" | jq -r ".clusters[] | select(.id == \"$CLUSTER_ID\") | .name" 2>/dev/null | head -1)
+CLUSTER_HEALTH=$(echo "$CLUSTER_RESPONSE" | jq -r ".clusters[] | select(.id == \"$CLUSTER_ID\") | .healthStatus.overallHealthStatus // \"UNKNOWN\"" 2>/dev/null | head -1)
+
+if [ -n "$CLUSTER_NAME" ] && [ "$CLUSTER_NAME" != "null" ]; then
+    log "✓ Found cluster: $CLUSTER_NAME (ID: $CLUSTER_ID, Health: ${CLUSTER_HEALTH:-UNKNOWN})"
+else
+    log "✓ Using cluster ID: $CLUSTER_ID"
+fi
+
 # Fetch available compliance standards
 log "Fetching available compliance standards..."
 STANDARDS_RESPONSE=$(make_api_call "GET" "$STANDARDS_ENDPOINT" "" "Fetch compliance standards")
@@ -202,12 +245,16 @@ log "  (Unable to parse standard names)"
 # Trigger compliance management scan
 log "Triggering compliance management scan..."
 log "Endpoint: $SCAN_ENDPOINT"
+log "Using cluster ID: $CLUSTER_ID"
 log "Using compliance standard ID: $COMPLIANCE_STANDARD_ID"
 
-# Prepare scan request payload
+# Prepare scan request payload with selection object
 SCAN_PAYLOAD=$(cat <<EOF
 {
-  "standardId": "$COMPLIANCE_STANDARD_ID"
+  "selection": {
+    "clusterId": "$CLUSTER_ID",
+    "standardId": "$COMPLIANCE_STANDARD_ID"
+  }
 }
 EOF
 )
@@ -238,8 +285,10 @@ log "Compliance Management Scan Trigger Completed Successfully"
 log "========================================================="
 log ""
 log "Summary:"
+log "  - Fetched cluster ID: $CLUSTER_ID ($CLUSTER_NAME)"
 log "  - Fetched available compliance standards"
 log "  - Compliance management scan triggered (POST $SCAN_ENDPOINT)"
+log "  - Cluster ID used: $CLUSTER_ID"
 log "  - Compliance standard ID used: $COMPLIANCE_STANDARD_ID"
 log "  - Check RHACS UI for scan progress and results"
 
