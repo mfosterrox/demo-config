@@ -203,54 +203,53 @@ else
     log "✓ Using cluster ID: $CLUSTER_ID"
 fi
 
-# Fetch available compliance standards
-log "Fetching available compliance standards..."
-STANDARDS_RESPONSE=$(make_api_call "GET" "$STANDARDS_ENDPOINT" "" "Fetch compliance standards")
+# Try to fetch available compliance standards (optional)
+COMPLIANCE_STANDARD_ID=""
+log "Attempting to fetch available compliance standards..."
+STANDARDS_RESPONSE=$(curl -k -s -w "\n%{http_code}" -X GET \
+    -H "Authorization: Bearer $ROX_API_TOKEN" \
+    -H "Content-Type: application/json" \
+    "$STANDARDS_ENDPOINT" 2>&1) || true
 
-if [ -z "$STANDARDS_RESPONSE" ]; then
-    error "Empty response from compliance standards API"
+HTTP_CODE=$(echo "$STANDARDS_RESPONSE" | tail -n1)
+STANDARDS_BODY=$(echo "$STANDARDS_RESPONSE" | head -n -1)
+
+if [ "$HTTP_CODE" -eq 200 ] && [ -n "$STANDARDS_BODY" ]; then
+    # Parse compliance standards if available
+    if echo "$STANDARDS_BODY" | jq . >/dev/null 2>&1; then
+        # Extract compliance standard IDs
+        STANDARD_IDS=$(echo "$STANDARDS_BODY" | jq -r '.standards[]?.id // .[]?.id // empty' 2>/dev/null || echo "")
+        
+        if [ -z "$STANDARD_IDS" ] || [ "$STANDARD_IDS" = "null" ]; then
+            # Try alternative structure
+            STANDARD_IDS=$(echo "$STANDARDS_BODY" | jq -r '.[]?.id // empty' 2>/dev/null || echo "")
+        fi
+        
+        if [ -n "$STANDARD_IDS" ] && [ "$STANDARD_IDS" != "null" ]; then
+            # Get the first available standard ID
+            COMPLIANCE_STANDARD_ID=$(echo "$STANDARD_IDS" | head -n1)
+            if [ -n "$COMPLIANCE_STANDARD_ID" ] && [ "$COMPLIANCE_STANDARD_ID" != "null" ]; then
+                log "✓ Found compliance standard ID: $COMPLIANCE_STANDARD_ID"
+            fi
+        fi
+    fi
+else
+    log "Compliance standards endpoint not available (HTTP $HTTP_CODE), proceeding without standardId"
 fi
-
-# Parse compliance standards
-if ! echo "$STANDARDS_RESPONSE" | jq . >/dev/null 2>&1; then
-    error "Invalid JSON response from compliance standards API. Response: ${STANDARDS_RESPONSE:0:300}"
-fi
-
-# Extract compliance standard IDs
-STANDARD_IDS=$(echo "$STANDARDS_RESPONSE" | jq -r '.standards[]?.id // .[]?.id // empty' 2>/dev/null || echo "")
-
-if [ -z "$STANDARD_IDS" ] || [ "$STANDARD_IDS" = "null" ]; then
-    # Try alternative structure
-    STANDARD_IDS=$(echo "$STANDARDS_RESPONSE" | jq -r '.[]?.id // empty' 2>/dev/null || echo "")
-fi
-
-if [ -z "$STANDARD_IDS" ]; then
-    error "No compliance standards found. Response structure: $(echo "$STANDARDS_RESPONSE" | jq -c '.' 2>/dev/null | head -c 200 || echo "${STANDARDS_RESPONSE:0:200}")"
-fi
-
-# Get the first available standard ID
-COMPLIANCE_STANDARD_ID=$(echo "$STANDARD_IDS" | head -n1)
-
-if [ -z "$COMPLIANCE_STANDARD_ID" ] || [ "$COMPLIANCE_STANDARD_ID" = "null" ]; then
-    error "Could not extract compliance standard ID from response"
-fi
-
-log "✓ Found compliance standard ID: $COMPLIANCE_STANDARD_ID"
-
-# Display all available standards for reference
-log "Available compliance standards:"
-echo "$STANDARDS_RESPONSE" | jq -r '.standards[]? | "  - \(.name // .id): \(.id)"' 2>/dev/null || \
-echo "$STANDARDS_RESPONSE" | jq -r '.[]? | "  - \(.name // .id): \(.id)"' 2>/dev/null || \
-log "  (Unable to parse standard names)"
 
 # Trigger compliance management scan
 log "Triggering compliance management scan..."
 log "Endpoint: $SCAN_ENDPOINT"
 log "Using cluster ID: $CLUSTER_ID"
-log "Using compliance standard ID: $COMPLIANCE_STANDARD_ID"
+if [ -n "$COMPLIANCE_STANDARD_ID" ]; then
+    log "Using compliance standard ID: $COMPLIANCE_STANDARD_ID"
+else
+    log "No compliance standard ID (using clusterId only)"
+fi
 
 # Prepare scan request payload with selection object
-SCAN_PAYLOAD=$(cat <<EOF
+if [ -n "$COMPLIANCE_STANDARD_ID" ]; then
+    SCAN_PAYLOAD=$(cat <<EOF
 {
   "selection": {
     "clusterId": "$CLUSTER_ID",
@@ -259,6 +258,16 @@ SCAN_PAYLOAD=$(cat <<EOF
 }
 EOF
 )
+else
+    SCAN_PAYLOAD=$(cat <<EOF
+{
+  "selection": {
+    "clusterId": "$CLUSTER_ID"
+  }
+}
+EOF
+)
+fi
 
 # Make POST request to trigger the scan
 SCAN_RESPONSE=$(make_api_call "POST" "$SCAN_ENDPOINT" "$SCAN_PAYLOAD" "Trigger compliance management scan")
@@ -287,9 +296,10 @@ log "========================================================="
 log ""
 log "Summary:"
 log "  - Fetched cluster ID: $CLUSTER_ID ($CLUSTER_NAME)"
-log "  - Fetched available compliance standards"
 log "  - Compliance management scan triggered (POST $SCAN_ENDPOINT)"
 log "  - Cluster ID used: $CLUSTER_ID"
-log "  - Compliance standard ID used: $COMPLIANCE_STANDARD_ID"
+if [ -n "$COMPLIANCE_STANDARD_ID" ]; then
+    log "  - Compliance standard ID used: $COMPLIANCE_STANDARD_ID"
+fi
 log "  - Check RHACS UI for scan progress and results"
 
