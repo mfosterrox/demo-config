@@ -115,14 +115,12 @@ function roxcurl() {
         -w "\n%{http_code}" "$@"
 }
 
-# Function to wait for scan completion with retry logic
+# Function to wait for scan completion
 function wait_for_scan_completion() {
     local config_id="$1"
     local max_wait_time=${SCAN_WAIT_TIMEOUT:-600}  # Default 10 minutes
     local check_interval=10  # Check every 10 seconds
     local elapsed=0
-    local max_retries=3
-    local retry_count=0
     
     log "Waiting for compliance scan to complete (timeout: ${max_wait_time}s)..."
     
@@ -176,36 +174,8 @@ function wait_for_scan_completion() {
             return 0
         elif [[ "$SCAN_STATUS" == "FAILED" ]] || [[ "$SCAN_STATUS" == "ERROR" ]]; then
             warning "Scan failed with status: $SCAN_STATUS"
-            if [ $retry_count -lt $max_retries ]; then
-                retry_count=$((retry_count + 1))
-                log "Retrying scan (attempt $retry_count/$max_retries)..."
-                retry_scan "$config_id"
-                # Update config_id to the new one created by retry_scan
-                config_id="$SCAN_CONFIG_ID"
-                elapsed=0  # Reset timer for retry
-                continue
-            else
-                error "Scan failed after $max_retries retry attempts"
-            fi
+            error "Scan failed. Check RHACS UI for details."
         else
-            # Unknown status - check if scan is stuck
-            if [ $elapsed -ge 300 ]; then  # After 5 minutes, check if stuck
-                log "Scan has been in '$SCAN_STATUS' state for ${elapsed}s, checking if stuck..."
-                if [[ "$SCAN_STATUS" == "Scanning now" ]] || [ -z "$LAST_SCANNED" ] || [ "$LAST_SCANNED" = "null" ]; then
-                    warning "Scan appears to be stuck. Attempting recovery..."
-                    if [ $retry_count -lt $max_retries ]; then
-                        retry_count=$((retry_count + 1))
-                        log "Retrying scan (attempt $retry_count/$max_retries)..."
-                        retry_scan "$config_id"
-                        # Update config_id to the new one created by retry_scan
-                        config_id="$SCAN_CONFIG_ID"
-                        elapsed=0  # Reset timer for retry
-                        continue
-                    else
-                        error "Scan appears stuck and retry limit reached"
-                    fi
-                fi
-            fi
             sleep $check_interval
             elapsed=$((elapsed + check_interval))
         fi
@@ -213,171 +183,7 @@ function wait_for_scan_completion() {
     
     # Timeout reached
     warning "Scan did not complete within ${max_wait_time}s timeout"
-    if [ $retry_count -lt $max_retries ]; then
-        retry_count=$((retry_count + 1))
-        log "Retrying scan (attempt $retry_count/$max_retries)..."
-        retry_scan "$config_id"
-        # Update config_id and continue waiting
-        config_id="$SCAN_CONFIG_ID"
-        elapsed=0
-        # Continue the loop with new config_id
-        while [ $elapsed -lt $max_wait_time ]; do
-            CONFIG_STATUS=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
-                -H "Authorization: Bearer $ROX_API_TOKEN" \
-                -H "Content-Type: application/json" \
-                "$ROX_ENDPOINT/v2/compliance/scan/configurations" 2>&1)
-            
-            if [ -z "$CONFIG_STATUS" ] || ! echo "$CONFIG_STATUS" | jq . >/dev/null 2>&1; then
-                sleep $check_interval
-                elapsed=$((elapsed + check_interval))
-                continue
-            fi
-            
-            SCAN_STATUS=$(echo "$CONFIG_STATUS" | jq -r ".configurations[]? | select(.id == \"$config_id\") | .lastScanStatus // \"UNKNOWN\"" 2>/dev/null)
-            
-            if [[ "$SCAN_STATUS" == "COMPLETED" ]] || [[ "$SCAN_STATUS" == "SUCCESS" ]] || [[ "$SCAN_STATUS" == "FINISHED" ]]; then
-                log "✓ Compliance scan completed successfully after retry!"
-                return 0
-            elif [[ "$SCAN_STATUS" == "Scanning now" ]] || [[ "$SCAN_STATUS" == "RUNNING" ]] || [[ "$SCAN_STATUS" == "IN_PROGRESS" ]]; then
-                if [ $((elapsed % 60)) -eq 0 ]; then
-                    log "Scan still in progress after retry... (${elapsed}s/${max_wait_time}s)"
-                fi
-                sleep $check_interval
-                elapsed=$((elapsed + check_interval))
-            else
-                sleep $check_interval
-                elapsed=$((elapsed + check_interval))
-            fi
-        done
-        error "Scan did not complete after retry within timeout"
-    else
-        error "Scan did not complete after $max_retries retry attempts"
-    fi
-}
-
-# Function to retry scan by deleting and recreating configuration
-function retry_scan() {
-    local config_id="$1"
-    
-    log "Deleting stuck scan configuration (ID: $config_id)..."
-    DELETE_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X DELETE \
-        -H "Authorization: Bearer $ROX_API_TOKEN" \
-        -H "Content-Type: application/json" \
-        "$ROX_ENDPOINT/v2/compliance/scan/configurations/$config_id" 2>&1)
-    DELETE_EXIT_CODE=$?
-    
-    if [ $DELETE_EXIT_CODE -eq 0 ]; then
-        log "✓ Scan configuration deleted successfully"
-    else
-        warning "Failed to delete scan configuration (exit code: $DELETE_EXIT_CODE)"
-        log "Response: ${DELETE_RESPONSE:0:300}"
-    fi
-    
-    # Wait a bit before recreating
-    sleep 5
-    
-    log "Recreating scan configuration..."
-    # Get cluster ID first - try to match by name, then fall back to first connected cluster
-    CLUSTER_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
-        -H "Authorization: Bearer $ROX_API_TOKEN" \
-        -H "Content-Type: application/json" \
-        "$ROX_ENDPOINT/v1/clusters" 2>&1)
-    
-    if [ -z "$CLUSTER_RESPONSE" ] || ! echo "$CLUSTER_RESPONSE" | jq . >/dev/null 2>&1; then
-        error "Failed to fetch cluster ID for retry"
-    fi
-    
-    # Try to find cluster by name "ads-cluster" first
-    EXPECTED_CLUSTER_NAME="ads-cluster"
-    PRODUCTION_CLUSTER_ID=$(echo "$CLUSTER_RESPONSE" | jq -r ".clusters[] | select(.name == \"$EXPECTED_CLUSTER_NAME\") | .id" 2>/dev/null | head -1)
-    
-    if [ -z "$PRODUCTION_CLUSTER_ID" ] || [ "$PRODUCTION_CLUSTER_ID" = "null" ]; then
-        # Fall back to first connected/healthy cluster
-        PRODUCTION_CLUSTER_ID=$(echo "$CLUSTER_RESPONSE" | jq -r '.clusters[] | select(.healthStatus.overallHealthStatus == "HEALTHY" or .healthStatus.overallHealthStatus == "UNHEALTHY" or .healthStatus == null) | .id' 2>/dev/null | head -1)
-        
-        if [ -z "$PRODUCTION_CLUSTER_ID" ] || [ "$PRODUCTION_CLUSTER_ID" = "null" ]; then
-            # Last resort: use first cluster
-            PRODUCTION_CLUSTER_ID=$(echo "$CLUSTER_RESPONSE" | jq -r '.clusters[0].id' 2>/dev/null)
-        fi
-    fi
-    
-    if [ -z "$PRODUCTION_CLUSTER_ID" ] || [ "$PRODUCTION_CLUSTER_ID" = "null" ]; then
-        error "Failed to find a valid cluster ID for retry. Available clusters: $(echo "$CLUSTER_RESPONSE" | jq -r '.clusters[] | "\(.name): \(.id)"' 2>/dev/null | tr '\n' ' ' || echo "none")"
-    fi
-    
-    CLUSTER_NAME=$(echo "$CLUSTER_RESPONSE" | jq -r ".clusters[] | select(.id == \"$PRODUCTION_CLUSTER_ID\") | .name" 2>/dev/null | head -1)
-    log "Using cluster: ${CLUSTER_NAME:-$PRODUCTION_CLUSTER_ID} (ID: $PRODUCTION_CLUSTER_ID)"
-    
-    # Recreate configuration
-    RECREATE_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X POST \
-        -H "Authorization: Bearer $ROX_API_TOKEN" \
-        -H "Content-Type: application/json" \
-        --data-raw "{
-        \"scanName\": \"acs-catch-all\",
-        \"scanConfig\": {
-            \"oneTimeScan\": false,
-            \"profiles\": [
-                \"ocp4-cis\",
-                \"ocp4-cis-node\",
-                \"ocp4-e8\",
-                \"ocp4-high\",
-                \"ocp4-high-node\",
-                \"ocp4-nerc-cip\",
-                \"ocp4-nerc-cip-node\",
-                \"ocp4-pci-dss\",
-                \"ocp4-pci-dss-node\",
-                \"ocp4-stig\",
-                \"ocp4-stig-node\"
-            ],
-            \"scanSchedule\": {
-                \"intervalType\": \"DAILY\",
-                \"hour\": 0,
-                \"minute\": 0
-            },
-            \"description\": \"Daily compliance scan for all profiles\"
-        },
-        \"clusters\": [
-            \"$PRODUCTION_CLUSTER_ID\"
-        ]
-    }" \
-    "$ROX_ENDPOINT/v2/compliance/scan/configurations" 2>&1)
-    
-    if [ -z "$RECREATE_RESPONSE" ] || ! echo "$RECREATE_RESPONSE" | jq . >/dev/null 2>&1; then
-        error "Failed to recreate scan configuration"
-    fi
-    
-    NEW_CONFIG_ID=$(echo "$RECREATE_RESPONSE" | jq -r '.id')
-    if [ -z "$NEW_CONFIG_ID" ] || [ "$NEW_CONFIG_ID" = "null" ]; then
-        error "Failed to extract new scan configuration ID"
-    fi
-    
-    log "✓ Scan configuration recreated (new ID: $NEW_CONFIG_ID)"
-    
-    # Trigger new scan
-    log "Triggering new compliance scan..."
-    TRIGGER_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X POST \
-        -H "Authorization: Bearer $ROX_API_TOKEN" \
-        -H "Content-Type: application/json" \
-        --data-raw "{\"scanConfigId\": \"$NEW_CONFIG_ID\"}" \
-        "$ROX_ENDPOINT/v2/compliance/scan/configurations/reports/run" 2>&1)
-    
-    if [ -z "$TRIGGER_RESPONSE" ] || ! echo "$TRIGGER_RESPONSE" | jq . >/dev/null 2>&1; then
-        error "Failed to trigger new scan after retry"
-    fi
-    
-    log "✓ New scan triggered successfully"
-    # Update the global config_id for the caller
-    SCAN_CONFIG_ID="$NEW_CONFIG_ID"
-}
-
-# Function to extract HTTP status code from curl response
-function extract_http_code() {
-    echo "$1" | tail -n1
-}
-
-# Function to extract response body from curl response
-function extract_body() {
-    echo "$1" | head -n -1
+    log "Scan may still be in progress. Check RHACS UI for status."
 }
 
 # Try to trigger using scan configuration first (preferred method)
