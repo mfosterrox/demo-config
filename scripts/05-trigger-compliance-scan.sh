@@ -1,0 +1,195 @@
+#!/bin/bash
+# Compliance Management Scan Trigger Script
+# Triggers a compliance management scan in Red Hat Advanced Cluster Security
+
+# Exit immediately on error, show exact error message
+set -euo pipefail
+
+# Colors for logging
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+log() {
+    echo -e "${GREEN}[COMPLIANCE-SCAN]${NC} $1"
+}
+
+warning() {
+    echo -e "${YELLOW}[COMPLIANCE-SCAN]${NC} $1"
+}
+
+error() {
+    echo -e "${RED}[COMPLIANCE-SCAN] ERROR:${NC} $1" >&2
+    echo -e "${RED}[COMPLIANCE-SCAN] Script failed at line ${BASH_LINENO[0]}${NC}" >&2
+    exit 1
+}
+
+# Trap to show error details on exit
+trap 'error "Command failed: $(cat <<< "$BASH_COMMAND")"' ERR
+
+# Function to load variable from ~/.bashrc if it exists
+load_from_bashrc() {
+    local var_name="$1"
+    
+    # First check if variable is already set in environment
+    local env_value=$(eval "echo \${${var_name}:-}")
+    if [ -n "$env_value" ]; then
+        export "${var_name}=${env_value}"
+        echo "$env_value"
+        return 0
+    fi
+    
+    # Otherwise, try to load from ~/.bashrc
+    if [ -f ~/.bashrc ] && grep -q "^export ${var_name}=" ~/.bashrc; then
+        local var_line=$(grep "^export ${var_name}=" ~/.bashrc | head -1)
+        local var_value=$(echo "$var_line" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
+        export "${var_name}=${var_value}"
+        echo "$var_value"
+    fi
+}
+
+# Load environment variables from ~/.bashrc (set by script 01)
+log "Loading environment variables from ~/.bashrc..."
+
+# Ensure ~/.bashrc exists
+if [ ! -f ~/.bashrc ]; then
+    error "~/.bashrc not found. Please run script 01-rhacs-setup.sh first to initialize environment variables."
+fi
+
+# Clean up any malformed source commands in bashrc
+if grep -q "^source $" ~/.bashrc; then
+    log "Cleaning up malformed source commands in ~/.bashrc..."
+    sed -i '/^source $/d' ~/.bashrc
+fi
+
+# Load SCRIPT_DIR and PROJECT_ROOT (set by script 01)
+SCRIPT_DIR=$(load_from_bashrc "SCRIPT_DIR")
+PROJECT_ROOT=$(load_from_bashrc "PROJECT_ROOT")
+
+# Load required variables (set by script 01)
+ROX_ENDPOINT=$(load_from_bashrc "ROX_ENDPOINT")
+ROX_API_TOKEN=$(load_from_bashrc "ROX_API_TOKEN")
+
+# Validate required environment variables
+if [ -z "${ROX_API_TOKEN:-}" ]; then
+    error "ROX_API_TOKEN not set. Please run script 01-rhacs-setup.sh first to generate required variables."
+fi
+
+if [ -z "${ROX_ENDPOINT:-}" ]; then
+    error "ROX_ENDPOINT not set. Please run script 01-rhacs-setup.sh first to generate required variables."
+fi
+log "✓ Required environment variables validated: ROX_ENDPOINT=$ROX_ENDPOINT"
+
+# Ensure jq is installed
+if ! command -v jq >/dev/null 2>&1; then
+    log "Installing jq..."
+    if command -v dnf >/dev/null 2>&1; then
+        if ! sudo dnf install -y jq; then
+            error "Failed to install jq using dnf. Check sudo permissions and package repository."
+        fi
+    elif command -v apt-get >/dev/null 2>&1; then
+        if ! sudo apt-get update && sudo apt-get install -y jq; then
+            error "Failed to install jq using apt-get. Check sudo permissions and package repository."
+        fi
+    else
+        error "jq is required for this script to work correctly. Please install jq manually."
+    fi
+    log "✓ jq installed successfully"
+else
+    log "✓ jq is already installed"
+fi
+
+# Ensure ROX_ENDPOINT has https:// prefix
+if [[ ! "$ROX_ENDPOINT" =~ ^https?:// ]]; then
+    ROX_ENDPOINT="https://$ROX_ENDPOINT"
+    log "Added https:// prefix to ROX_ENDPOINT: $ROX_ENDPOINT"
+fi
+
+# API endpoint for compliance management scan
+API_ENDPOINT="${ROX_ENDPOINT}/v1/compliancemanagement/runs"
+
+# Function to make API call
+make_api_call() {
+    local method=$1
+    local endpoint=$2
+    local data="${3:-}"
+    local description="${4:-API call}"
+    
+    log "Making $description: $method $endpoint"
+    
+    local temp_file=""
+    local curl_cmd="curl -k -s -w \"\n%{http_code}\" -X $method"
+    curl_cmd="$curl_cmd -H \"Authorization: Bearer $ROX_API_TOKEN\""
+    curl_cmd="$curl_cmd -H \"Content-Type: application/json\""
+    
+    if [ -n "$data" ]; then
+        # For multi-line JSON, use a temporary file to avoid quoting issues
+        if echo "$data" | grep -q $'\n'; then
+            temp_file=$(mktemp)
+            echo "$data" > "$temp_file"
+            curl_cmd="$curl_cmd --data-binary @\"$temp_file\""
+        else
+            # Single-line data can use -d directly
+            curl_cmd="$curl_cmd -d '$data'"
+        fi
+    fi
+    
+    curl_cmd="$curl_cmd \"$endpoint\""
+    
+    local response=$(eval "$curl_cmd" 2>&1)
+    local exit_code=$?
+    local http_code=$(echo "$response" | tail -n1)
+    local body=$(echo "$response" | head -n -1)
+    
+    # Clean up temp file if used
+    if [ -n "$temp_file" ] && [ -f "$temp_file" ]; then
+        rm -f "$temp_file"
+    fi
+    
+    if [ $exit_code -ne 0 ]; then
+        error "$description failed (curl exit code: $exit_code). Response: ${body:0:500}"
+    fi
+    
+    if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+        error "$description failed (HTTP $http_code). Response: ${body:0:500}"
+    fi
+    
+    echo "$body"
+}
+
+# Trigger compliance management scan
+log "Triggering compliance management scan..."
+log "Endpoint: $API_ENDPOINT"
+
+# Make POST request to trigger the scan
+# The endpoint may accept an empty body or may require specific parameters
+# Starting with empty body, can be adjusted based on API requirements
+SCAN_RESPONSE=$(make_api_call "POST" "$API_ENDPOINT" "" "Trigger compliance management scan")
+
+log "✓ Compliance management scan triggered successfully"
+
+# Parse and display response if available
+if [ -n "$SCAN_RESPONSE" ]; then
+    if echo "$SCAN_RESPONSE" | jq . >/dev/null 2>&1; then
+        log "Scan response:"
+        echo "$SCAN_RESPONSE" | jq '.' 2>/dev/null || echo "$SCAN_RESPONSE"
+        
+        # Try to extract scan ID or status if present
+        SCAN_ID=$(echo "$SCAN_RESPONSE" | jq -r '.id // .scanId // .runId // empty' 2>/dev/null || echo "")
+        if [ -n "$SCAN_ID" ] && [ "$SCAN_ID" != "null" ]; then
+            log "✓ Scan ID: $SCAN_ID"
+        fi
+    else
+        log "Response received: $SCAN_RESPONSE"
+    fi
+fi
+
+log "========================================================="
+log "Compliance Management Scan Trigger Completed Successfully"
+log "========================================================="
+log ""
+log "Summary:"
+log "  - Compliance management scan triggered (POST $API_ENDPOINT)"
+log "  - Check RHACS UI for scan progress and results"
+
