@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: sample-stackrox-prometheus-declarative-configuration
+  name: rhacs-prometheus-declarative-configuration
   namespace: tssc-acs
 data:
   prometheus.yaml: |
