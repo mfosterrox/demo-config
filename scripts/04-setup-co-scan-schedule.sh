@@ -298,6 +298,43 @@ if [ -n "$EXISTING_SCAN" ] && [ "$EXISTING_SCAN" != "null" ]; then
             warning "Response: ${DELETE_RESPONSE:0:200}"
         fi
         
+        # Wait for the underlying ScanSettingBinding to be fully deleted
+        # This is necessary because deleting the scan config triggers deletion of Kubernetes resources
+        if command -v oc &>/dev/null && oc whoami &>/dev/null 2>&1; then
+            log "Waiting for underlying ScanSettingBinding resource to be fully deleted..."
+            SCANSETTINGBINDING_WAIT_TIMEOUT=60
+            SCANSETTINGBINDING_ELAPSED=0
+            SCANSETTINGBINDING_WAIT_INTERVAL=2
+            
+            while [ $SCANSETTINGBINDING_ELAPSED -lt $SCANSETTINGBINDING_WAIT_TIMEOUT ]; do
+                if ! oc get scansettingbinding acs-catch-all -n openshift-compliance &>/dev/null 2>&1; then
+                    log "✓ ScanSettingBinding 'acs-catch-all' has been fully deleted"
+                    break
+                fi
+                
+                # Check if it's in "being deleted" state
+                DELETION_TIMESTAMP=$(oc get scansettingbinding acs-catch-all -n openshift-compliance -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null || echo "")
+                if [ -n "$DELETION_TIMESTAMP" ] && [ "$DELETION_TIMESTAMP" != "null" ]; then
+                    log "  ScanSettingBinding is being deleted... (${SCANSETTINGBINDING_ELAPSED}s elapsed)"
+                else
+                    log "  ScanSettingBinding still exists, waiting for deletion to start..."
+                fi
+                
+                sleep $SCANSETTINGBINDING_WAIT_INTERVAL
+                SCANSETTINGBINDING_ELAPSED=$((SCANSETTINGBINDING_ELAPSED + SCANSETTINGBINDING_WAIT_INTERVAL))
+            done
+            
+            if oc get scansettingbinding acs-catch-all -n openshift-compliance &>/dev/null 2>&1; then
+                warning "ScanSettingBinding still exists after ${SCANSETTINGBINDING_WAIT_TIMEOUT}s timeout"
+                warning "This may cause issues when creating the new scan configuration"
+                log "You may need to manually delete it: oc delete scansettingbinding acs-catch-all -n openshift-compliance"
+            fi
+        else
+            log "OpenShift CLI (oc) not available - cannot verify ScanSettingBinding deletion"
+            log "Waiting 10 seconds for resources to be cleaned up..."
+            sleep 10
+        fi
+        
         SKIP_CREATION=false
     fi
 else
