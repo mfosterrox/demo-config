@@ -1,6 +1,7 @@
 #!/bin/bash
 # Red Hat Compliance Operator Installation Script
 # Installs the Red Hat Compliance Operator using all defaults
+# This script also initializes all environment variables needed by other scripts
 
 # Exit immediately on error, show exact error message
 set -euo pipefail
@@ -30,6 +31,121 @@ error() {
 
 # Trap to show error details on exit
 trap 'error "Command failed: $(cat <<< "$BASH_COMMAND")"' ERR
+
+# Function to save variable to ~/.bashrc
+save_to_bashrc() {
+    local var_name="$1"
+    local var_value="$2"
+    
+    # Remove existing export line for this variable
+    if [ -f ~/.bashrc ]; then
+        sed -i "/^export ${var_name}=/d" ~/.bashrc
+    fi
+    
+    # Append export statement to ~/.bashrc
+    echo "export ${var_name}=\"${var_value}\"" >> ~/.bashrc
+    export "${var_name}=${var_value}"
+}
+
+# Function to load variable from ~/.bashrc if it exists
+load_from_bashrc() {
+    local var_name="$1"
+    
+    # First check if variable is already set in environment
+    local env_value=$(eval "echo \${${var_name}:-}")
+    if [ -n "$env_value" ]; then
+        echo "$env_value"
+        return 0
+    fi
+    
+    # Otherwise, try to load from ~/.bashrc
+    if [ -f ~/.bashrc ] && grep -q "^export ${var_name}=" ~/.bashrc; then
+        local var_line=$(grep "^export ${var_name}=" ~/.bashrc | head -1)
+        local var_value=$(echo "$var_line" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
+        export "${var_name}=${var_value}"
+        echo "$var_value"
+    fi
+}
+
+# Initialize environment variables
+log "========================================================="
+log "Initializing environment variables"
+log "========================================================="
+
+# Ensure ~/.bashrc exists
+if [ ! -f ~/.bashrc ]; then
+    log "Creating ~/.bashrc file..."
+    touch ~/.bashrc
+fi
+
+# Clean up any malformed source commands in bashrc
+if grep -q "^source $" ~/.bashrc; then
+    log "Cleaning up malformed source commands in ~/.bashrc..."
+    sed -i '/^source $/d' ~/.bashrc
+fi
+
+# Set up SCRIPT_DIR and PROJECT_ROOT (always set these based on current script location)
+log "Setting up SCRIPT_DIR and PROJECT_ROOT..."
+save_to_bashrc "SCRIPT_DIR" "$SCRIPT_DIR"
+save_to_bashrc "PROJECT_ROOT" "$PROJECT_ROOT"
+log "✓ SCRIPT_DIR=$SCRIPT_DIR"
+log "✓ PROJECT_ROOT=$PROJECT_ROOT"
+
+# Set up NAMESPACE (default to tssc-acs for RHACS, but can be overridden)
+if [ -z "${NAMESPACE:-}" ]; then
+    EXISTING_NAMESPACE=$(load_from_bashrc "NAMESPACE")
+    if [ -n "$EXISTING_NAMESPACE" ]; then
+        NAMESPACE="$EXISTING_NAMESPACE"
+        log "✓ Loaded NAMESPACE from ~/.bashrc: $NAMESPACE"
+    else
+        NAMESPACE="tssc-acs"
+        save_to_bashrc "NAMESPACE" "$NAMESPACE"
+        log "✓ Set NAMESPACE default: $NAMESPACE"
+    fi
+else
+    save_to_bashrc "NAMESPACE" "$NAMESPACE"
+    log "✓ NAMESPACE already set: $NAMESPACE"
+fi
+
+# Load existing variables from ~/.bashrc if they exist (set by other scripts)
+log "Loading existing variables from ~/.bashrc..."
+
+# Load ROX_ENDPOINT if it exists
+EXISTING_ROX_ENDPOINT=$(load_from_bashrc "ROX_ENDPOINT")
+if [ -n "$EXISTING_ROX_ENDPOINT" ]; then
+    log "✓ Loaded ROX_ENDPOINT from ~/.bashrc"
+else
+    log "  ROX_ENDPOINT not found (will be set by script 02-rhacs-setup.sh)"
+fi
+
+# Load ROX_API_TOKEN if it exists
+EXISTING_ROX_API_TOKEN=$(load_from_bashrc "ROX_API_TOKEN")
+if [ -n "$EXISTING_ROX_API_TOKEN" ]; then
+    log "✓ Loaded ROX_API_TOKEN from ~/.bashrc"
+else
+    log "  ROX_API_TOKEN not found (will be set by script 02-rhacs-setup.sh)"
+fi
+
+# Load TUTORIAL_HOME if it exists
+EXISTING_TUTORIAL_HOME=$(load_from_bashrc "TUTORIAL_HOME")
+if [ -n "$EXISTING_TUTORIAL_HOME" ]; then
+    log "✓ Loaded TUTORIAL_HOME from ~/.bashrc"
+else
+    log "  TUTORIAL_HOME not found (will be set by script 03-deploy-applications.sh)"
+fi
+
+# Load ADMIN_PASSWORD if it exists
+EXISTING_ADMIN_PASSWORD=$(load_from_bashrc "ADMIN_PASSWORD")
+if [ -n "$EXISTING_ADMIN_PASSWORD" ]; then
+    log "✓ Loaded ADMIN_PASSWORD from ~/.bashrc"
+else
+    log "  ADMIN_PASSWORD not found (will be set by script 02-rhacs-setup.sh)"
+fi
+
+log "========================================================="
+log "Environment variables initialized"
+log "========================================================="
+log ""
 
 # Prerequisites validation
 log "Validating prerequisites..."

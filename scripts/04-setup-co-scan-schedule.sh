@@ -28,30 +28,55 @@ error() {
 # Trap to show error details on exit
 trap 'error "Command failed: $(cat <<< "$BASH_COMMAND")"' ERR
 
-# Source environment variables
-if [ -f ~/.bashrc ]; then
-    # Clean up malformed source commands in bashrc before sourcing
-    if grep -q "^source $" ~/.bashrc; then
-        log "Cleaning up malformed source commands in ~/.bashrc..."
-        sed -i '/^source $/d' ~/.bashrc
+# Function to load variable from ~/.bashrc if it exists
+load_from_bashrc() {
+    local var_name="$1"
+    
+    # First check if variable is already set in environment
+    local env_value=$(eval "echo \${${var_name}:-}")
+    if [ -n "$env_value" ]; then
+        export "${var_name}=${env_value}"
+        echo "$env_value"
+        return 0
     fi
     
-    # Source bashrc with error handling
-    set +u  # Temporarily disable unbound variable checking
-    if ! source ~/.bashrc; then
-        warning "Error loading ~/.bashrc, proceeding with current environment"
+    # Otherwise, try to load from ~/.bashrc
+    if [ -f ~/.bashrc ] && grep -q "^export ${var_name}=" ~/.bashrc; then
+        local var_line=$(grep "^export ${var_name}=" ~/.bashrc | head -1)
+        local var_value=$(echo "$var_line" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
+        export "${var_name}=${var_value}"
+        echo "$var_value"
     fi
-    set -u  # Re-enable unbound variable checking
-else
-    log "~/.bashrc not found, proceeding with current environment"
+}
+
+# Load environment variables from ~/.bashrc (set by script 01)
+log "Loading environment variables from ~/.bashrc..."
+
+# Ensure ~/.bashrc exists
+if [ ! -f ~/.bashrc ]; then
+    error "~/.bashrc not found. Please run script 01-compliance-operator-install.sh first to initialize environment variables."
 fi
 
-# Validate required environment variables (should be set by script 01)
+# Clean up any malformed source commands in bashrc
+if grep -q "^source $" ~/.bashrc; then
+    log "Cleaning up malformed source commands in ~/.bashrc..."
+    sed -i '/^source $/d' ~/.bashrc
+fi
+
+# Load SCRIPT_DIR and PROJECT_ROOT (set by script 01)
+SCRIPT_DIR=$(load_from_bashrc "SCRIPT_DIR")
+PROJECT_ROOT=$(load_from_bashrc "PROJECT_ROOT")
+
+# Load required variables (set by script 02)
+ROX_ENDPOINT=$(load_from_bashrc "ROX_ENDPOINT")
+ROX_API_TOKEN=$(load_from_bashrc "ROX_API_TOKEN")
+
+# Validate required environment variables
 if [ -z "$ROX_ENDPOINT" ]; then
-    error "ROX_ENDPOINT not set. Please run script 01-rhacs-setup.sh first to generate required variables."
+    error "ROX_ENDPOINT not set. Please run script 02-rhacs-setup.sh first to generate required variables."
 fi
 if [ -z "$ROX_API_TOKEN" ]; then
-    error "ROX_API_TOKEN not set. Please run script 01-rhacs-setup.sh first to generate required variables."
+    error "ROX_API_TOKEN not set. Please run script 02-rhacs-setup.sh first to generate required variables."
 fi
 log "✓ Required environment variables validated: ROX_ENDPOINT=$ROX_ENDPOINT"
 

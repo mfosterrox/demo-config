@@ -5,9 +5,6 @@
 # Exit immediately on error, show exact error message
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -31,6 +28,60 @@ error() {
 # Trap to show error details on exit
 trap 'error "Command failed: $(cat <<< "$BASH_COMMAND")"' ERR
 
+# Function to load variable from ~/.bashrc if it exists
+load_from_bashrc() {
+    local var_name="$1"
+    
+    # First check if variable is already set in environment
+    local env_value=$(eval "echo \${${var_name}:-}")
+    if [ -n "$env_value" ]; then
+        export "${var_name}=${env_value}"
+        echo "$env_value"
+        return 0
+    fi
+    
+    # Otherwise, try to load from ~/.bashrc
+    if [ -f ~/.bashrc ] && grep -q "^export ${var_name}=" ~/.bashrc; then
+        local var_line=$(grep "^export ${var_name}=" ~/.bashrc | head -1)
+        local var_value=$(echo "$var_line" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
+        export "${var_name}=${var_value}"
+        echo "$var_value"
+    fi
+}
+
+# Load environment variables from ~/.bashrc (set by script 01)
+log "Loading environment variables from ~/.bashrc..."
+
+# Ensure ~/.bashrc exists
+if [ ! -f ~/.bashrc ]; then
+    error "~/.bashrc not found. Please run script 01-compliance-operator-install.sh first to initialize environment variables."
+fi
+
+# Clean up any malformed source commands in bashrc
+if grep -q "^source $" ~/.bashrc; then
+    log "Cleaning up malformed source commands in ~/.bashrc..."
+    sed -i '/^source $/d' ~/.bashrc
+fi
+
+# Load SCRIPT_DIR and PROJECT_ROOT (set by script 01)
+SCRIPT_DIR=$(load_from_bashrc "SCRIPT_DIR")
+PROJECT_ROOT=$(load_from_bashrc "PROJECT_ROOT")
+
+# Load NAMESPACE (set by script 01, defaults to tssc-acs)
+NAMESPACE=$(load_from_bashrc "NAMESPACE")
+if [ -z "$NAMESPACE" ]; then
+    NAMESPACE="tssc-acs"
+    log "NAMESPACE not found in ~/.bashrc, using default: $NAMESPACE"
+else
+    log "✓ Loaded NAMESPACE from ~/.bashrc: $NAMESPACE"
+fi
+
+# Load other variables that may exist (set by previous script runs)
+ROX_ENDPOINT=$(load_from_bashrc "ROX_ENDPOINT")
+ROX_API_TOKEN=$(load_from_bashrc "ROX_API_TOKEN")
+ADMIN_PASSWORD=$(load_from_bashrc "ADMIN_PASSWORD")
+TUTORIAL_HOME=$(load_from_bashrc "TUTORIAL_HOME")
+
 normalize_rox_endpoint() {
     local input="$1"
     input="${input#https://}"
@@ -42,84 +93,7 @@ normalize_rox_endpoint() {
     echo "$input"
 }
 
-# Function to reload variables from ~/.bashrc
-reload_bashrc_vars() {
-    if [ -f ~/.bashrc ]; then
-        set +u  # Temporarily disable unbound variable checking
-        source ~/.bashrc || true
-        set -u  # Re-enable unbound variable checking
-        
-        # Explicitly extract variables to ensure they're loaded
-        if grep -q "^export ROX_ENDPOINT=" ~/.bashrc; then
-            ROX_ENDPOINT_LINE=$(grep "^export ROX_ENDPOINT=" ~/.bashrc | head -1)
-            ROX_ENDPOINT_VALUE=$(echo "$ROX_ENDPOINT_LINE" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
-            # Validate that ROX_ENDPOINT is an external route, not internal service name
-            if [[ ! "$ROX_ENDPOINT_VALUE" =~ \.svc ]] && [[ ! "$ROX_ENDPOINT_VALUE" =~ ^central\.tssc-acs$ ]]; then
-                ROX_ENDPOINT="$ROX_ENDPOINT_VALUE"
-                export ROX_ENDPOINT="$ROX_ENDPOINT"
-            else
-                # If bashrc has wrong value, re-extract from route
-                log "ROX_ENDPOINT in ~/.bashrc appears to be internal service name, re-extracting from route..."
-                ROX_ENDPOINT_HOST=$(oc get route central -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null)
-                if [ -n "$ROX_ENDPOINT_HOST" ] && [[ ! "$ROX_ENDPOINT_HOST" =~ \.svc ]]; then
-                    ROX_ENDPOINT="$ROX_ENDPOINT_HOST"
-                    export ROX_ENDPOINT="$ROX_ENDPOINT"
-                    # Update bashrc with correct value
-                    sed -i '/^export ROX_ENDPOINT=/d' ~/.bashrc
-                    echo "export ROX_ENDPOINT=\"$ROX_ENDPOINT\"" >> ~/.bashrc
-                    log "✓ Corrected ROX_ENDPOINT in ~/.bashrc: $ROX_ENDPOINT"
-                fi
-            fi
-        fi
-        
-        if grep -q "^export ROX_API_TOKEN=" ~/.bashrc; then
-            ROX_API_TOKEN_LINE=$(grep "^export ROX_API_TOKEN=" ~/.bashrc | head -1)
-            ROX_API_TOKEN=$(echo "$ROX_API_TOKEN_LINE" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
-            export ROX_API_TOKEN="$ROX_API_TOKEN"
-        fi
-        
-        if grep -q "^export ADMIN_PASSWORD=" ~/.bashrc; then
-            ADMIN_PASSWORD_LINE=$(grep "^export ADMIN_PASSWORD=" ~/.bashrc | head -1)
-            ADMIN_PASSWORD=$(echo "$ADMIN_PASSWORD_LINE" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
-            export ADMIN_PASSWORD="$ADMIN_PASSWORD"
-        fi
-        
-        if grep -q "^export TUTORIAL_HOME=" ~/.bashrc; then
-            TUTORIAL_HOME_LINE=$(grep "^export TUTORIAL_HOME=" ~/.bashrc | head -1)
-            TUTORIAL_HOME=$(echo "$TUTORIAL_HOME_LINE" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
-            export TUTORIAL_HOME="$TUTORIAL_HOME"
-        fi
-    fi
-}
-
-# Check for existing API token in ~/.bashrc
-TOKEN_FROM_BASHRC=false
-TOKEN_FROM_ENV=false
-
-if [ -f ~/.bashrc ]; then
-    # Extract ROX_API_TOKEN from ~/.bashrc if it exists
-    # Handle both double quotes and single quotes, and unquoted values
-    # grep returns 1 if no match (which is OK), so use || true to prevent script failure
-    TOKEN_LINE=$(grep "^export ROX_API_TOKEN=" ~/.bashrc 2>/dev/null | head -1 || true)
-    
-    if [ -n "$TOKEN_LINE" ]; then
-        # Extract token value using awk (more reliable than sed for this)
-        # Handles: export ROX_API_TOKEN="value", export ROX_API_TOKEN='value', export ROX_API_TOKEN=value
-        EXISTING_TOKEN=$(echo "$TOKEN_LINE" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
-        
-        if [ -n "$EXISTING_TOKEN" ] && [ "$EXISTING_TOKEN" != "=" ]; then
-            ROX_API_TOKEN="$EXISTING_TOKEN"
-            TOKEN_FROM_BASHRC=true
-            log "Found existing ROX_API_TOKEN in ~/.bashrc"
-        fi
-    fi
-fi
-
-# Note: If bashrc was sourced earlier, ROX_API_TOKEN may already be in environment
-# But we've now explicitly checked bashrc, so we'll use that value
-
 # Configuration variables
-NAMESPACE="tssc-acs"
 CLUSTER_NAME="ads-cluster"
 TOKEN_NAME="setup-script-$(date +%d-%m-%Y_%H-%M-%S)"
 TOKEN_ROLE="Admin"
@@ -133,71 +107,6 @@ if ! oc whoami; then
     error "OpenShift CLI not connected. Please login first with: oc login"
 fi
 log "✓ OpenShift CLI connected as: $(oc whoami)"
-
-# Load existing environment variables from ~/.bashrc if available
-if [ -f ~/.bashrc ]; then
-    if grep -q "^source $" ~/.bashrc; then
-        warning "Cleaning up malformed source commands in ~/.bashrc..."
-        sed -i '/^source $/d' ~/.bashrc
-    fi
-    
-    set +u  # Temporarily disable unbound variable checking for sourcing
-    if source ~/.bashrc; then
-        log "Loaded environment variables from ~/.bashrc"
-    else
-        warning "Failed to source ~/.bashrc, continuing with current environment"
-    fi
-    set -u  # Re-enable unbound variable checking
-    
-    # Validate required variables for subsequent scripts
-    log "Validating required environment variables for all scripts..."
-    MISSING_VARS=()
-    
-    # Variables required by scripts 03, 04, 05
-    if [ -z "${ROX_ENDPOINT:-}" ]; then
-        MISSING_VARS+=("ROX_ENDPOINT")
-    else
-        log "✓ ROX_ENDPOINT is set"
-    fi
-    
-    if [ -z "${ROX_API_TOKEN:-}" ]; then
-        MISSING_VARS+=("ROX_API_TOKEN")
-    else
-        log "✓ ROX_API_TOKEN is set"
-    fi
-    
-    # Optional variables (will be set by this script if missing)
-    if [ -z "${ADMIN_PASSWORD:-}" ]; then
-        log "  ADMIN_PASSWORD not set (will be extracted from secret by this script)"
-    else
-        log "✓ ADMIN_PASSWORD is set"
-    fi
-    
-    if [ -z "${TUTORIAL_HOME:-}" ]; then
-        log "  TUTORIAL_HOME not set (will be set by script 03-deploy-applications.sh)"
-    else
-        log "✓ TUTORIAL_HOME is set"
-    fi
-    
-    # Report missing required variables and generate them
-    if [ ${#MISSING_VARS[@]} -gt 0 ]; then
-        warning "Missing required environment variables: ${MISSING_VARS[*]}"
-        warning "These variables are required by:"
-        for var in "${MISSING_VARS[@]}"; do
-            case "$var" in
-                ROX_ENDPOINT)
-                    warning "  - $var: Required by scripts 03, 04, 05"
-                    ;;
-                ROX_API_TOKEN)
-                    warning "  - $var: Required by scripts 03, 04, 05"
-                    ;;
-            esac
-        done
-        log "Generating missing variables and saving to ~/.bashrc..."
-    else
-        log "✓ All required environment variables are present"
-    fi
-else
     warning "~/.bashrc not found, will create it with required variables"
 fi
 
@@ -367,8 +276,6 @@ if [ -z "${ADMIN_PASSWORD:-}" ]; then
     echo "export ADMIN_PASSWORD=\"$ADMIN_PASSWORD\"" >> ~/.bashrc
     export ADMIN_PASSWORD="$ADMIN_PASSWORD"
     log "✓ ADMIN_PASSWORD saved to ~/.bashrc"
-    # Reload variables from ~/.bashrc to ensure latest values
-    reload_bashrc_vars
 fi
 
 # Generate ROX_API_TOKEN if missing (needed by scripts 03, 04, 05)
@@ -455,8 +362,6 @@ if [ -z "${ROX_API_TOKEN:-}" ]; then
     echo "export ROX_API_TOKEN=\"$ROX_API_TOKEN\"" >> ~/.bashrc
     export ROX_API_TOKEN="$ROX_API_TOKEN"
     log "✓ ROX_API_TOKEN saved to ~/.bashrc"
-    # Reload variables from ~/.bashrc to ensure latest values
-    reload_bashrc_vars
 else
     # Ensure it's saved to bashrc (might have been set but not saved)
     if ! grep -q "^export ROX_API_TOKEN=" ~/.bashrc 2>/dev/null; then
@@ -464,8 +369,6 @@ else
         sed -i '/^export ROX_API_TOKEN=/d' ~/.bashrc
         echo "export ROX_API_TOKEN=\"$ROX_API_TOKEN\"" >> ~/.bashrc
         log "✓ ROX_API_TOKEN saved to ~/.bashrc"
-        # Reload variables from ~/.bashrc to ensure latest values
-        reload_bashrc_vars
     fi
 fi
 
@@ -512,9 +415,6 @@ fi
 # Variables should now all be set and saved to ~/.bashrc
 # Set ADMIN_USERNAME for use in roxctl login
 ADMIN_USERNAME="admin"
-
-# Reload variables from ~/.bashrc to ensure we have latest values before using them
-reload_bashrc_vars
 
 # Normalize ROX_ENDPOINT for internal use (add :443 port for API calls)
 ROX_ENDPOINT_NORMALIZED="$(normalize_rox_endpoint "$ROX_ENDPOINT")"
