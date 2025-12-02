@@ -87,13 +87,13 @@ configure_rhacs_settings() {
     success "RHACS configuration completed successfully"
 }
 
-# Setup metrics dashboard in OpenShift console (Step 7)
-setup_metrics_dashboard() {
-    log "Setting up metrics dashboard..."
-    if ! bash "${SCRIPT_DIR}/scripts/07-setup-metrics-dashboard.sh"; then
-        error "Metrics dashboard setup script failed. Installation stopped."
+# Setup Perses monitoring (Step 7)
+setup_perses_monitoring() {
+    log "Setting up Perses monitoring..."
+    if ! bash "${SCRIPT_DIR}/scripts/07-setup-perses-monitoring.sh"; then
+        error "Perses monitoring setup script failed. Installation stopped."
     fi
-    success "Metrics dashboard setup completed successfully"
+    success "Perses monitoring setup completed successfully"
 }
 
 
@@ -125,7 +125,7 @@ main() {
     
     # Verify scripts exist - fail fast if any script is missing
     # Scripts listed in execution order
-    for script in "01-rhacs-setup.sh" "02-compliance-operator-install.sh" "03-deploy-applications.sh" "04-setup-co-scan-schedule.sh" "05-trigger-compliance-scan.sh" "06-configure-rhacs-settings.sh" "07-setup-metrics-dashboard.sh"; do
+    for script in "01-rhacs-setup.sh" "02-compliance-operator-install.sh" "03-deploy-applications.sh" "04-setup-co-scan-schedule.sh" "05-trigger-compliance-scan.sh" "06-configure-rhacs-settings.sh" "07-setup-perses-monitoring.sh"; do
         if [ ! -f "$SCRIPT_DIR/scripts/$script" ]; then
             error "Required script not found: $SCRIPT_DIR/scripts/$script"
         fi
@@ -139,7 +139,7 @@ main() {
     setup_compliance_scan_schedule
     trigger_compliance_scan
     configure_rhacs_settings
-    setup_metrics_dashboard
+    setup_perses_monitoring
     
     log "========================================================="
     success "Demo Config setup completed successfully!"
@@ -152,7 +152,7 @@ main() {
     log "  4. Compliance scan schedule setup"
     log "  5. Compliance scan trigger"
     log "  6. RHACS system configuration, exposed metrics, and additional namespaces added to system policies"
-    log "  7. Setup metrics dashboard in the OpenShift console to visualize the metrics"
+    log "  7. Setup Perses monitoring with RHACS metrics dashboards"
 
     
     # Display RHACS access information
