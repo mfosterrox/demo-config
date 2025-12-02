@@ -101,82 +101,115 @@ log "========================================================="
 log "Step 1: Installing Cluster Observability Operator"
 log "========================================================="
 
-OPERATOR_NAMESPACE="openshift-cluster-observability-operator"
-CSV_NAME="cluster-observability-operator.v1.3.0"
-CSV_FILE="${SCRIPT_DIR}/../clusterserviceversion-cluster-observability-operator.v1.3.0.yaml"
+SUBSCRIPTION_NAMESPACE="openshift-operators"
+SUBSCRIPTION_NAME="observability-operator"
+SUBSCRIPTION_FILE="${SCRIPT_DIR}/../config-files/subscription-observability-operator.yaml"
 
-# Check if CSV file exists
-if [ ! -f "$CSV_FILE" ]; then
+# Check if subscription file exists
+if [ ! -f "$SUBSCRIPTION_FILE" ]; then
     # Try alternative path
-    CSV_FILE="${PROJECT_ROOT}/clusterserviceversion-cluster-observability-operator.v1.3.0.yaml"
-    if [ ! -f "$CSV_FILE" ]; then
-        error "Cluster Observability Operator CSV file not found. Expected at: ${SCRIPT_DIR}/../clusterserviceversion-cluster-observability-operator.v1.3.0.yaml"
+    SUBSCRIPTION_FILE="${PROJECT_ROOT}/config-files/subscription-observability-operator.yaml"
+    if [ ! -f "$SUBSCRIPTION_FILE" ]; then
+        error "Observability Operator subscription file not found. Expected at: ${SCRIPT_DIR}/../config-files/subscription-observability-operator.yaml"
     fi
 fi
-log "✓ Found CSV file: $CSV_FILE"
+log "✓ Found subscription file: $SUBSCRIPTION_FILE"
 
-# Create operator namespace if it doesn't exist
-if ! oc get ns "$OPERATOR_NAMESPACE" &>/dev/null; then
-    log "Creating namespace '$OPERATOR_NAMESPACE'..."
-    oc create namespace "$OPERATOR_NAMESPACE"
-    log "✓ Namespace '$OPERATOR_NAMESPACE' created"
+# Ensure openshift-operators namespace exists (it should by default, but check anyway)
+if ! oc get ns "$SUBSCRIPTION_NAMESPACE" &>/dev/null; then
+    log "Creating namespace '$SUBSCRIPTION_NAMESPACE'..."
+    oc create namespace "$SUBSCRIPTION_NAMESPACE"
+    log "✓ Namespace '$SUBSCRIPTION_NAMESPACE' created"
 else
-    log "✓ Namespace '$OPERATOR_NAMESPACE' already exists"
+    log "✓ Namespace '$SUBSCRIPTION_NAMESPACE' already exists"
 fi
 
-# Check if CSV already exists
-if oc get csv "$CSV_NAME" -n "$OPERATOR_NAMESPACE" &>/dev/null; then
-    log "ClusterServiceVersion '$CSV_NAME' already exists in namespace '$OPERATOR_NAMESPACE'"
+# Check if subscription already exists
+if oc get subscription "$SUBSCRIPTION_NAME" -n "$SUBSCRIPTION_NAMESPACE" &>/dev/null; then
+    log "Subscription '$SUBSCRIPTION_NAME' already exists in namespace '$SUBSCRIPTION_NAMESPACE'"
     
-    # Check CSV phase
-    CSV_PHASE=$(oc get csv "$CSV_NAME" -n "$OPERATOR_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
-    log "Current CSV phase: $CSV_PHASE"
+    # Get the CSV name from the subscription status
+    CSV_NAME=$(oc get subscription "$SUBSCRIPTION_NAME" -n "$SUBSCRIPTION_NAMESPACE" -o jsonpath='{.status.currentCSV}' 2>/dev/null || echo "")
     
-    if [ "$CSV_PHASE" = "Succeeded" ]; then
-        log "✓ Cluster Observability Operator is already installed and succeeded"
-        SKIP_OPERATOR_INSTALL=true
+    if [ -n "$CSV_NAME" ]; then
+        # Check CSV phase
+        CSV_PHASE=$(oc get csv "$CSV_NAME" -n "$SUBSCRIPTION_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+        log "Current CSV: $CSV_NAME, Phase: $CSV_PHASE"
+        
+        if [ "$CSV_PHASE" = "Succeeded" ]; then
+            log "✓ Observability Operator is already installed and succeeded"
+            SKIP_OPERATOR_INSTALL=true
+        else
+            log "Subscription exists but CSV phase is '$CSV_PHASE', waiting for it to succeed..."
+            SKIP_OPERATOR_INSTALL=false
+        fi
     else
-        log "CSV exists but phase is '$CSV_PHASE', waiting for it to succeed..."
+        log "Subscription exists but CSV not yet created, waiting..."
         SKIP_OPERATOR_INSTALL=false
     fi
 else
-    log "Installing Cluster Observability Operator..."
+    log "Installing Observability Operator via subscription..."
     SKIP_OPERATOR_INSTALL=false
 fi
 
 # Install or wait for operator
 if [ "$SKIP_OPERATOR_INSTALL" != "true" ]; then
-    # Apply the CSV
-    log "Applying ClusterServiceVersion..."
-    oc apply -f "$CSV_FILE"
+    # Apply the subscription
+    log "Applying Subscription..."
+    oc apply -f "$SUBSCRIPTION_FILE"
     
     if [ $? -eq 0 ]; then
-        log "✓ ClusterServiceVersion applied successfully"
+        log "✓ Subscription applied successfully"
     else
-        error "Failed to apply ClusterServiceVersion"
+        error "Failed to apply Subscription"
     fi
     
-    # Wait for CSV to be in Succeeded phase
-    log "Waiting for Cluster Observability Operator to be ready..."
+    # Wait for subscription to create CSV and CSV to be in Succeeded phase
+    log "Waiting for Observability Operator to be ready..."
     log "This may take several minutes..."
     
     TIMEOUT=600  # 10 minutes
     ELAPSED=0
     INTERVAL=10
+    CSV_NAME=""
     
-    while [ $ELAPSED -lt $TIMEOUT ]; do
-        CSV_PHASE=$(oc get csv "$CSV_NAME" -n "$OPERATOR_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+    # First, wait for CSV to be created
+    log "Waiting for ClusterServiceVersion to be created..."
+    while [ $ELAPSED -lt $TIMEOUT ] && [ -z "$CSV_NAME" ]; do
+        CSV_NAME=$(oc get subscription "$SUBSCRIPTION_NAME" -n "$SUBSCRIPTION_NAMESPACE" -o jsonpath='{.status.currentCSV}' 2>/dev/null || echo "")
         
-        if [ "$CSV_PHASE" = "Succeeded" ]; then
-            log "✓ Cluster Observability Operator installed successfully (phase: $CSV_PHASE)"
+        if [ -n "$CSV_NAME" ]; then
+            log "✓ ClusterServiceVersion created: $CSV_NAME"
             break
-        elif [ "$CSV_PHASE" = "Failed" ]; then
-            CSV_MESSAGE=$(oc get csv "$CSV_NAME" -n "$OPERATOR_NAMESPACE" -o jsonpath='{.status.message}' 2>/dev/null || echo "Unknown error")
-            error "Cluster Observability Operator installation failed. Phase: $CSV_PHASE, Message: $CSV_MESSAGE"
         fi
         
         if [ $((ELAPSED % 30)) -eq 0 ]; then
-            log "Waiting for operator installation... (${ELAPSED}s/${TIMEOUT}s, phase: ${CSV_PHASE})"
+            log "Waiting for CSV to be created... (${ELAPSED}s/${TIMEOUT}s)"
+        fi
+        
+        sleep $INTERVAL
+        ELAPSED=$((ELAPSED + INTERVAL))
+    done
+    
+    if [ -z "$CSV_NAME" ]; then
+        error "ClusterServiceVersion was not created within timeout. Check subscription status: oc get subscription $SUBSCRIPTION_NAME -n $SUBSCRIPTION_NAMESPACE"
+    fi
+    
+    # Now wait for CSV to be in Succeeded phase
+    ELAPSED=0
+    while [ $ELAPSED -lt $TIMEOUT ]; do
+        CSV_PHASE=$(oc get csv "$CSV_NAME" -n "$SUBSCRIPTION_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+        
+        if [ "$CSV_PHASE" = "Succeeded" ]; then
+            log "✓ Observability Operator installed successfully (CSV: $CSV_NAME, phase: $CSV_PHASE)"
+            break
+        elif [ "$CSV_PHASE" = "Failed" ]; then
+            CSV_MESSAGE=$(oc get csv "$CSV_NAME" -n "$SUBSCRIPTION_NAMESPACE" -o jsonpath='{.status.message}' 2>/dev/null || echo "Unknown error")
+            error "Observability Operator installation failed. CSV: $CSV_NAME, Phase: $CSV_PHASE, Message: $CSV_MESSAGE"
+        fi
+        
+        if [ $((ELAPSED % 30)) -eq 0 ]; then
+            log "Waiting for operator installation... (${ELAPSED}s/${TIMEOUT}s, CSV: ${CSV_NAME}, phase: ${CSV_PHASE})"
         fi
         
         sleep $INTERVAL
@@ -184,27 +217,30 @@ if [ "$SKIP_OPERATOR_INSTALL" != "true" ]; then
     done
     
     if [ $ELAPSED -ge $TIMEOUT ]; then
-        CSV_PHASE=$(oc get csv "$CSV_NAME" -n "$OPERATOR_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
-        warning "Cluster Observability Operator installation did not complete within timeout. Current phase: $CSV_PHASE"
-        log "You may need to check the operator status manually: oc get csv $CSV_NAME -n $OPERATOR_NAMESPACE"
+        CSV_PHASE=$(oc get csv "$CSV_NAME" -n "$SUBSCRIPTION_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+        warning "Observability Operator installation did not complete within timeout. CSV: $CSV_NAME, Current phase: $CSV_PHASE"
+        log "You may need to check the operator status manually: oc get csv $CSV_NAME -n $SUBSCRIPTION_NAMESPACE"
     fi
 fi
 
 # Verify operator deployments are running
+# Note: The operator may deploy to openshift-operators or a different namespace
+# Check both openshift-operators and common operator namespaces
 log "Verifying operator deployments..."
 DEPLOYMENTS=("observability-operator" "obo-prometheus-operator" "perses-operator")
 ALL_READY=true
 
+# Check deployments in openshift-operators namespace first
 for deployment in "${DEPLOYMENTS[@]}"; do
-    if oc get deployment "$deployment" -n "$OPERATOR_NAMESPACE" &>/dev/null; then
-        if oc wait --for=condition=Available deployment/"$deployment" -n "$OPERATOR_NAMESPACE" --timeout=60s &>/dev/null; then
-            log "✓ Deployment '$deployment' is ready"
+    if oc get deployment "$deployment" -n "$SUBSCRIPTION_NAMESPACE" &>/dev/null; then
+        if oc wait --for=condition=Available deployment/"$deployment" -n "$SUBSCRIPTION_NAMESPACE" --timeout=60s &>/dev/null; then
+            log "✓ Deployment '$deployment' is ready in namespace '$SUBSCRIPTION_NAMESPACE'"
         else
-            warning "Deployment '$deployment' is not ready yet"
+            warning "Deployment '$deployment' is not ready yet in namespace '$SUBSCRIPTION_NAMESPACE'"
             ALL_READY=false
         fi
     else
-        log "Deployment '$deployment' not found (may be created later)"
+        log "Deployment '$deployment' not found in namespace '$SUBSCRIPTION_NAMESPACE' (may be created later or in different namespace)"
     fi
 done
 
@@ -303,7 +339,8 @@ log "Metrics Dashboard Setup Completed Successfully"
 log "========================================================="
 log ""
 log "Summary:"
-log "  - Cluster Observability Operator installed in namespace: $OPERATOR_NAMESPACE"
+log "  - Observability Operator installed via subscription in namespace: $SUBSCRIPTION_NAMESPACE"
+log "  - Subscription name: $SUBSCRIPTION_NAME"
 log "  - Created ConfigMap: $CONFIGMAP_NAME"
 log "  - ConfigMap namespace: $NAMESPACE"
 log "  - Contains Prometheus Server permission set and role configuration"
