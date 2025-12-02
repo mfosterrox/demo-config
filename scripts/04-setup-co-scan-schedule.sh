@@ -49,6 +49,21 @@ load_from_bashrc() {
     fi
 }
 
+# Function to save variable to ~/.bashrc
+save_to_bashrc() {
+    local var_name="$1"
+    local var_value="$2"
+    
+    # Remove existing export line for this variable
+    if [ -f ~/.bashrc ]; then
+        sed -i "/^export ${var_name}=/d" ~/.bashrc
+    fi
+    
+    # Append export statement to ~/.bashrc
+    echo "export ${var_name}=\"${var_value}\"" >> ~/.bashrc
+    export "${var_name}=${var_value}"
+}
+
 # Load environment variables from ~/.bashrc (set by script 01)
 log "Loading environment variables from ~/.bashrc..."
 
@@ -443,6 +458,12 @@ if [ "$SKIP_CREATION" = "false" ]; then
     else
         log "✓ Scan configuration ID: $SCAN_CONFIG_ID"
     fi
+fi
+
+# Save SCAN_CONFIG_ID to ~/.bashrc for use by script 05
+if [ -n "$SCAN_CONFIG_ID" ] && [ "$SCAN_CONFIG_ID" != "null" ]; then
+    save_to_bashrc "SCAN_CONFIG_ID" "$SCAN_CONFIG_ID"
+    log "✓ Saved SCAN_CONFIG_ID to ~/.bashrc"
 fi
 
 # If scan already exists and has completed successfully, skip diagnostics and exit early
