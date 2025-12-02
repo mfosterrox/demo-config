@@ -105,8 +105,8 @@ if [[ ! "$ROX_ENDPOINT" =~ ^https?:// ]]; then
     log "Added https:// prefix to ROX_ENDPOINT: $ROX_ENDPOINT"
 fi
 
-# Fetch cluster ID
-log "Fetching cluster ID for 'production' cluster..."
+# Fetch cluster ID - try to match by name first, then fall back to first connected cluster
+log "Fetching cluster ID..."
 CLUSTER_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
     -H "Authorization: Bearer $ROX_API_TOKEN" \
     -H "Content-Type: application/json" \
@@ -126,11 +126,41 @@ if ! echo "$CLUSTER_RESPONSE" | jq . >/dev/null 2>&1; then
     error "Invalid JSON response from cluster API. Response: ${CLUSTER_RESPONSE:0:300}"
 fi
 
-PRODUCTION_CLUSTER_ID=$(echo "$CLUSTER_RESPONSE" | jq -r '.clusters[0].id')
+# Try to find cluster by name "ads-cluster" first (set by script 01)
+EXPECTED_CLUSTER_NAME="ads-cluster"
+PRODUCTION_CLUSTER_ID=$(echo "$CLUSTER_RESPONSE" | jq -r ".clusters[] | select(.name == \"$EXPECTED_CLUSTER_NAME\") | .id" 2>/dev/null | head -1)
+
 if [ -z "$PRODUCTION_CLUSTER_ID" ] || [ "$PRODUCTION_CLUSTER_ID" = "null" ]; then
-    error "Failed to extract cluster ID. Response: ${CLUSTER_RESPONSE:0:300}"
+    log "Cluster '$EXPECTED_CLUSTER_NAME' not found, looking for any connected cluster..."
+    # Fall back to first connected/healthy cluster
+    PRODUCTION_CLUSTER_ID=$(echo "$CLUSTER_RESPONSE" | jq -r '.clusters[] | select(.healthStatus.overallHealthStatus == "HEALTHY" or .healthStatus.overallHealthStatus == "UNHEALTHY" or .healthStatus == null) | .id' 2>/dev/null | head -1)
+    
+    if [ -z "$PRODUCTION_CLUSTER_ID" ] || [ "$PRODUCTION_CLUSTER_ID" = "null" ]; then
+        # Last resort: use first cluster
+        PRODUCTION_CLUSTER_ID=$(echo "$CLUSTER_RESPONSE" | jq -r '.clusters[0].id' 2>/dev/null)
+    fi
 fi
-log "✓ Cluster ID: $PRODUCTION_CLUSTER_ID"
+
+if [ -z "$PRODUCTION_CLUSTER_ID" ] || [ "$PRODUCTION_CLUSTER_ID" = "null" ]; then
+    error "Failed to find a valid cluster ID. Available clusters: $(echo "$CLUSTER_RESPONSE" | jq -r '.clusters[] | "\(.name): \(.id)"' 2>/dev/null | tr '\n' ' ' || echo "none")"
+fi
+
+# Verify cluster exists and get its name for logging
+CLUSTER_NAME=$(echo "$CLUSTER_RESPONSE" | jq -r ".clusters[] | select(.id == \"$PRODUCTION_CLUSTER_ID\") | .name" 2>/dev/null | head -1)
+CLUSTER_HEALTH=$(echo "$CLUSTER_RESPONSE" | jq -r ".clusters[] | select(.id == \"$PRODUCTION_CLUSTER_ID\") | .healthStatus.overallHealthStatus // \"UNKNOWN\"" 2>/dev/null | head -1)
+
+if [ -n "$CLUSTER_NAME" ] && [ "$CLUSTER_NAME" != "null" ]; then
+    log "✓ Found cluster: $CLUSTER_NAME (ID: $PRODUCTION_CLUSTER_ID, Health: ${CLUSTER_HEALTH:-UNKNOWN})"
+else
+    log "✓ Using cluster ID: $PRODUCTION_CLUSTER_ID"
+fi
+
+# Verify cluster is connected (not disconnected)
+CLUSTER_STATUS=$(echo "$CLUSTER_RESPONSE" | jq -r ".clusters[] | select(.id == \"$PRODUCTION_CLUSTER_ID\") | .status.connectionStatus // \"UNKNOWN\"" 2>/dev/null | head -1)
+if [ "$CLUSTER_STATUS" = "DISCONNECTED" ] || [ "$CLUSTER_STATUS" = "UNINITIALIZED" ]; then
+    warning "Cluster $CLUSTER_NAME (ID: $PRODUCTION_CLUSTER_ID) has status: $CLUSTER_STATUS"
+    warning "This may cause scan failures. Ensure the cluster is properly connected to RHACS."
+fi
 
 # Check if Compliance Operator ProfileBundles are ready
 # This is critical - scans cannot be created until ProfileBundles are processed
@@ -402,7 +432,8 @@ fi
 if command -v oc &>/dev/null && oc whoami &>/dev/null 2>&1; then
     log "Checking Compliance Operator scan status..."
     
-    CHECK_RESULTS=$(oc get compliancecheckresult -A 2>/dev/null | grep -v NAME | wc -l || echo "0")
+    CHECK_RESULTS=$(oc get compliancecheckresult -A 2>/dev/null | grep -v NAME | wc -l 2>/dev/null | tr -d '[:space:]' || echo "0")
+    CHECK_RESULTS=${CHECK_RESULTS:-0}
     if [ "$CHECK_RESULTS" -gt 0 ]; then
         log "  ✓ Found $CHECK_RESULTS ComplianceCheckResult resources"
         CO_HAS_RESULTS=true
@@ -413,9 +444,11 @@ if command -v oc &>/dev/null && oc whoami &>/dev/null 2>&1; then
     
     # Check sensor status
     log "Checking RHACS sensor status..."
-    SENSOR_PODS=$(oc get pods -n "$NAMESPACE" -l app.kubernetes.io/component=sensor 2>/dev/null | grep -v NAME | wc -l || echo "0")
+    SENSOR_PODS=$(oc get pods -n "$NAMESPACE" -l app.kubernetes.io/component=sensor 2>/dev/null | grep -v NAME | wc -l 2>/dev/null | tr -d '[:space:]' || echo "0")
+    SENSOR_PODS=${SENSOR_PODS:-0}
     if [ "$SENSOR_PODS" -gt 0 ]; then
-        READY_PODS=$(oc get pods -n "$NAMESPACE" -l app.kubernetes.io/component=sensor -o jsonpath='{range .items[*]}{.status.containerStatuses[0].ready}{"\n"}{end}' 2>/dev/null | grep -c "true" || echo "0")
+        READY_PODS=$(oc get pods -n "$NAMESPACE" -l app.kubernetes.io/component=sensor -o jsonpath='{range .items[*]}{.status.containerStatuses[0].ready}{"\n"}{end}' 2>/dev/null | grep -c "true" 2>/dev/null | tr -d '[:space:]' || echo "0")
+        READY_PODS=${READY_PODS:-0}
         log "  Sensor pods: $READY_PODS/$SENSOR_PODS ready"
     else
         log "  ⚠ No sensor pods found in namespace $NAMESPACE"
@@ -427,9 +460,9 @@ if command -v oc &>/dev/null && oc whoami &>/dev/null 2>&1; then
         warning "ISSUE DETECTED: Compliance Operator has results but RHACS doesn't show them"
         warning "This indicates a sync issue between Compliance Operator and RHACS"
         log ""
-        log "NOTE: Since Compliance Operator is installed before RHACS (script 01),"
-        log "      sensor restart should not be needed. However, if results still"
-        log "      don't appear, try restarting the sensor:"
+        log "NOTE: Compliance Operator is installed after RHACS (script 02),"
+        log "      and script 02 should have restarted the sensor automatically."
+        log "      If results still don't appear, try restarting the sensor manually:"
         log "  oc delete pods -l app.kubernetes.io/component=sensor -n $NAMESPACE"
         log ""
         log "After restarting (if needed), wait 1-2 minutes and check:"
@@ -440,8 +473,8 @@ if command -v oc &>/dev/null && oc whoami &>/dev/null 2>&1; then
         warning "ISSUE DETECTED: Scan shows COMPLETED but results not available in RHACS"
         warning "The scan completed and sent a report, but results haven't synced to RHACS yet"
         log ""
-        log "NOTE: Since Compliance Operator is installed before RHACS (script 01),"
-        log "      this should be rare. Wait a few minutes for automatic sync."
+        log "NOTE: Compliance Operator is installed after RHACS (script 02),"
+        log "      so sensor should have been restarted. Wait a few minutes for automatic sync."
         log ""
         log "If results still don't appear after waiting, restart the sensor:"
         log "  oc delete pods -l app.kubernetes.io/component=sensor -n $NAMESPACE"

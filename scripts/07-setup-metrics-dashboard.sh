@@ -56,7 +56,7 @@ log "Loading environment variables from ~/.bashrc..."
 
 # Ensure ~/.bashrc exists
 if [ ! -f ~/.bashrc ]; then
-    error "~/.bashrc not found. Please run script 01-compliance-operator-install.sh first to initialize environment variables."
+    error "~/.bashrc not found. Please run script 01-rhacs-setup.sh first to initialize environment variables."
 fi
 
 # Clean up any malformed source commands in bashrc
@@ -78,12 +78,12 @@ else
     log "✓ Loaded NAMESPACE from ~/.bashrc: $NAMESPACE"
 fi
 
-# Load required variables (set by script 02)
+# Load required variables (set by script 01)
 ROX_ENDPOINT=$(load_from_bashrc "ROX_ENDPOINT")
 
 # Validate required environment variables
 if [ -z "${ROX_ENDPOINT:-}" ]; then
-    error "ROX_ENDPOINT is not set. Please run script 02-rhacs-setup.sh first."
+    error "ROX_ENDPOINT is not set. Please run script 01-rhacs-setup.sh first."
 fi
 
 log "========================================================="

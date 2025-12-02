@@ -107,26 +107,26 @@ else
     log "✓ NAMESPACE already set: $NAMESPACE"
 fi
 
-# Load existing variables from ~/.bashrc if they exist (set by other scripts)
+# Load existing variables from ~/.bashrc if they exist (set by script 01 which runs first)
 log "Loading existing variables from ~/.bashrc..."
 
-# Load ROX_ENDPOINT if it exists
+# Load ROX_ENDPOINT if it exists (set by script 01)
 EXISTING_ROX_ENDPOINT=$(load_from_bashrc "ROX_ENDPOINT")
 if [ -n "$EXISTING_ROX_ENDPOINT" ]; then
     log "✓ Loaded ROX_ENDPOINT from ~/.bashrc"
 else
-    log "  ROX_ENDPOINT not found (will be set by script 02-rhacs-setup.sh)"
+    log "  ROX_ENDPOINT not found (should be set by script 01-rhacs-setup.sh)"
 fi
 
-# Load ROX_API_TOKEN if it exists
+# Load ROX_API_TOKEN if it exists (set by script 01)
 EXISTING_ROX_API_TOKEN=$(load_from_bashrc "ROX_API_TOKEN")
 if [ -n "$EXISTING_ROX_API_TOKEN" ]; then
     log "✓ Loaded ROX_API_TOKEN from ~/.bashrc"
 else
-    log "  ROX_API_TOKEN not found (will be set by script 02-rhacs-setup.sh)"
+    log "  ROX_API_TOKEN not found (should be set by script 01-rhacs-setup.sh)"
 fi
 
-# Load TUTORIAL_HOME if it exists
+# Load TUTORIAL_HOME if it exists (set by script 03)
 EXISTING_TUTORIAL_HOME=$(load_from_bashrc "TUTORIAL_HOME")
 if [ -n "$EXISTING_TUTORIAL_HOME" ]; then
     log "✓ Loaded TUTORIAL_HOME from ~/.bashrc"
@@ -134,12 +134,12 @@ else
     log "  TUTORIAL_HOME not found (will be set by script 03-deploy-applications.sh)"
 fi
 
-# Load ADMIN_PASSWORD if it exists
+# Load ADMIN_PASSWORD if it exists (set by script 01)
 EXISTING_ADMIN_PASSWORD=$(load_from_bashrc "ADMIN_PASSWORD")
 if [ -n "$EXISTING_ADMIN_PASSWORD" ]; then
     log "✓ Loaded ADMIN_PASSWORD from ~/.bashrc"
 else
-    log "  ADMIN_PASSWORD not found (will be set by script 02-rhacs-setup.sh)"
+    log "  ADMIN_PASSWORD not found (should be set by script 01-rhacs-setup.sh)"
 fi
 
 log "========================================================="
@@ -321,9 +321,45 @@ fi
 oc get csv -n openshift-compliance -l operators.coreos.com/compliance-operator.openshift-compliance
 
 # Display operator status
-    log "Compliance Operator installation completed successfully!"
+log "Compliance Operator installation completed successfully!"
 log "========================================================="
 log "Namespace: openshift-compliance"
 log "Operator: compliance-operator"
 log "CSV: $CSV_NAME"
 log "========================================================="
+
+# Restart RHACS sensor to ensure it picks up Compliance Operator results
+# This is important because RHACS is installed before Compliance Operator,
+# so the sensor needs to restart to sync any existing compliance results
+log ""
+log "Restarting RHACS sensor to sync Compliance Operator results..."
+RHACS_NAMESPACE=$(load_from_bashrc "NAMESPACE")
+if [ -z "$RHACS_NAMESPACE" ]; then
+    RHACS_NAMESPACE="tssc-acs"
+fi
+
+if command -v oc &>/dev/null && oc whoami &>/dev/null 2>&1; then
+    # Check if sensor exists (RHACS should be installed by now)
+    if oc get deployment sensor -n "$RHACS_NAMESPACE" &>/dev/null 2>&1; then
+        log "Found RHACS sensor deployment, restarting sensor pods..."
+        if oc delete pods -l app.kubernetes.io/component=sensor -n "$RHACS_NAMESPACE" &>/dev/null 2>&1; then
+            log "✓ Sensor pods deleted, waiting for restart..."
+            # Wait for sensor to be ready (with timeout)
+            if oc wait --for=condition=Available deployment/sensor -n "$RHACS_NAMESPACE" --timeout=120s &>/dev/null 2>&1; then
+                log "✓ Sensor pods restarted successfully"
+            else
+                warning "Sensor pods restarted but may not be fully ready yet"
+            fi
+        else
+            warning "Could not restart sensor pods (may not exist yet or already restarting)"
+        fi
+    else
+        log "RHACS sensor not found in namespace $RHACS_NAMESPACE, skipping sensor restart"
+        log "Note: Sensor will automatically sync compliance results when it starts"
+    fi
+else
+    log "OpenShift CLI (oc) not available, skipping sensor restart"
+    log "Note: You may need to manually restart the sensor: oc delete pods -l app.kubernetes.io/component=sensor -n $RHACS_NAMESPACE"
+fi
+log ""
+

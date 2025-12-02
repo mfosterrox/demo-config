@@ -54,7 +54,7 @@ log "Loading environment variables from ~/.bashrc..."
 
 # Ensure ~/.bashrc exists
 if [ ! -f ~/.bashrc ]; then
-    error "~/.bashrc not found. Please run script 01-compliance-operator-install.sh first to initialize environment variables."
+    error "~/.bashrc not found. Please run script 01-rhacs-setup.sh first to initialize environment variables."
 fi
 
 # Clean up any malformed source commands in bashrc
@@ -67,16 +67,16 @@ fi
 SCRIPT_DIR=$(load_from_bashrc "SCRIPT_DIR")
 PROJECT_ROOT=$(load_from_bashrc "PROJECT_ROOT")
 
-# Load required variables (set by script 02)
+# Load required variables (set by script 01)
 ROX_ENDPOINT=$(load_from_bashrc "ROX_ENDPOINT")
 ROX_API_TOKEN=$(load_from_bashrc "ROX_API_TOKEN")
 
 # Validate required environment variables
 if [ -z "$ROX_ENDPOINT" ]; then
-    error "ROX_ENDPOINT not set. Please run script 02-rhacs-setup.sh first to generate required variables."
+    error "ROX_ENDPOINT not set. Please run script 01-rhacs-setup.sh first to generate required variables."
 fi
 if [ -z "$ROX_API_TOKEN" ]; then
-    error "ROX_API_TOKEN not set. Please run script 02-rhacs-setup.sh first to generate required variables."
+    error "ROX_API_TOKEN not set. Please run script 01-rhacs-setup.sh first to generate required variables."
 fi
 log "✓ Required environment variables validated: ROX_ENDPOINT=$ROX_ENDPOINT"
 

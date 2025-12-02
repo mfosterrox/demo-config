@@ -49,12 +49,28 @@ load_from_bashrc() {
     fi
 }
 
-# Load environment variables from ~/.bashrc (set by script 01)
+# Load environment variables from ~/.bashrc (or initialize if this is the first script)
 log "Loading environment variables from ~/.bashrc..."
 
-# Ensure ~/.bashrc exists
+# Ensure ~/.bashrc exists - create and initialize if this is the first script running
 if [ ! -f ~/.bashrc ]; then
-    error "~/.bashrc not found. Please run script 01-compliance-operator-install.sh first to initialize environment variables."
+    log "~/.bashrc not found, initializing environment variables..."
+    touch ~/.bashrc
+    
+    # Initialize basic variables since this script runs first
+    SCRIPT_DIR_INIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    PROJECT_ROOT_INIT="$(dirname "$SCRIPT_DIR_INIT")"
+    NAMESPACE_INIT="${NAMESPACE:-tssc-acs}"
+    
+    echo "export SCRIPT_DIR=\"$SCRIPT_DIR_INIT\"" >> ~/.bashrc
+    echo "export PROJECT_ROOT=\"$PROJECT_ROOT_INIT\"" >> ~/.bashrc
+    echo "export NAMESPACE=\"$NAMESPACE_INIT\"" >> ~/.bashrc
+    
+    export SCRIPT_DIR="$SCRIPT_DIR_INIT"
+    export PROJECT_ROOT="$PROJECT_ROOT_INIT"
+    export NAMESPACE="$NAMESPACE_INIT"
+    
+    log "✓ Initialized basic environment variables in ~/.bashrc"
 fi
 
 # Clean up any malformed source commands in bashrc
@@ -63,11 +79,11 @@ if grep -q "^source $" ~/.bashrc; then
     sed -i '/^source $/d' ~/.bashrc
 fi
 
-# Load SCRIPT_DIR and PROJECT_ROOT (set by script 01)
+# Load SCRIPT_DIR and PROJECT_ROOT (initialized above if this is first script)
 SCRIPT_DIR=$(load_from_bashrc "SCRIPT_DIR")
 PROJECT_ROOT=$(load_from_bashrc "PROJECT_ROOT")
 
-# Load NAMESPACE (set by script 01, defaults to tssc-acs)
+# Load NAMESPACE (initialized above if this is first script, defaults to tssc-acs)
 NAMESPACE=$(load_from_bashrc "NAMESPACE")
 if [ -z "$NAMESPACE" ]; then
     NAMESPACE="tssc-acs"
@@ -806,8 +822,6 @@ if [ -n "${ADMIN_PASSWORD:-}" ] && ! grep -q "^export ADMIN_PASSWORD=" ~/.bashrc
     sed -i '/^export ADMIN_PASSWORD=/d' ~/.bashrc
     echo "export ADMIN_PASSWORD=\"$ADMIN_PASSWORD\"" >> ~/.bashrc
     log "✓ ADMIN_PASSWORD saved to ~/.bashrc"
-    # Reload variables from ~/.bashrc to ensure latest values
-    reload_bashrc_vars
 fi
 log "✓ All required variables verified in ~/.bashrc"
 
@@ -830,3 +844,4 @@ else
     log "Password:     (not available - using existing credentials)"
 fi
 log "---------------------------------------------------------"
+

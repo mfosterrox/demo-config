@@ -33,22 +33,22 @@ error() {
     exit 1
 }
 
-# Install Red Hat Compliance Operator (Step 1)
-install_compliance_operator() {
-    log "Installing Red Hat Compliance Operator..."
-    if ! bash "${SCRIPT_DIR}/scripts/01-compliance-operator-install.sh"; then
-        error "Compliance Operator installation script failed. Installation stopped."
-    fi
-    success "Compliance Operator installation completed successfully"
-}
-
-# Run RHACS setup script (Step 2)
+# Run RHACS setup script (Step 1)
 setup_rhacs() {
     log "Running RHACS secured cluster setup..."
-    if ! bash "${SCRIPT_DIR}/scripts/02-rhacs-setup.sh"; then
+    if ! bash "${SCRIPT_DIR}/scripts/01-rhacs-setup.sh"; then
         error "RHACS setup script failed. Installation stopped."
     fi
     success "RHACS setup completed successfully"
+}
+
+# Install Red Hat Compliance Operator (Step 2)
+install_compliance_operator() {
+    log "Installing Red Hat Compliance Operator..."
+    if ! bash "${SCRIPT_DIR}/scripts/02-compliance-operator-install.sh"; then
+        error "Compliance Operator installation script failed. Installation stopped."
+    fi
+    success "Compliance Operator installation completed successfully"
 }
 
 # Deploy applications to OpenShift cluster (Step 3)
@@ -103,7 +103,7 @@ main() {
     
     # Clone the repository if running from curl
     # Check if we're running from curl by looking for the scripts directory
-    if [ ! -d "scripts" ] || [ ! -f "scripts/01-rhacs-setup.sh" ]; then
+    if [ ! -d "scripts" ] || [ ! -f "scripts/02-rhacs-setup.sh" ]; then
         log "Scripts not found locally, cloning repository..."
         REPO_DIR="$HOME/demo-config"
         if [ -d "$REPO_DIR" ]; then
@@ -125,7 +125,7 @@ main() {
     
     # Verify scripts exist - fail fast if any script is missing
     # Scripts listed in execution order
-    for script in "01-compliance-operator-install.sh" "02-rhacs-setup.sh" "03-deploy-applications.sh" "04-setup-co-scan-schedule.sh" "05-trigger-compliance-scan.sh" "06-configure-rhacs-settings.sh" "07-setup-metrics-dashboard.sh"; do
+    for script in "01-rhacs-setup.sh" "02-compliance-operator-install.sh" "03-deploy-applications.sh" "04-setup-co-scan-schedule.sh" "05-trigger-compliance-scan.sh" "06-configure-rhacs-settings.sh" "07-setup-metrics-dashboard.sh"; do
         if [ ! -f "$SCRIPT_DIR/scripts/$script" ]; then
             error "Required script not found: $SCRIPT_DIR/scripts/$script"
         fi
@@ -133,8 +133,8 @@ main() {
     log "✓ All required scripts found"
     
     # Run setup scripts in order
-    install_compliance_operator
     setup_rhacs
+    install_compliance_operator
     deploy_applications
     setup_compliance_scan_schedule
     trigger_compliance_scan
@@ -146,8 +146,8 @@ main() {
     log "========================================================="
     log ""
     log "All scripts have been executed in order:"
-    log "  1. Red Hat Compliance Operator installation"
-    log "  2. RHACS secured cluster setup"
+    log "  1. RHACS secured cluster setup"
+    log "  2. Red Hat Compliance Operator installation"
     log "  3. Application deployment"
     log "  4. Compliance scan schedule setup"
     log "  5. Compliance scan trigger"

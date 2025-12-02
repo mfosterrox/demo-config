@@ -54,7 +54,7 @@ log "Loading environment variables from ~/.bashrc..."
 
 # Ensure ~/.bashrc exists
 if [ ! -f ~/.bashrc ]; then
-    error "~/.bashrc not found. Please run script 01-compliance-operator-install.sh first to initialize environment variables."
+    error "~/.bashrc not found. Please run script 01-rhacs-setup.sh first to initialize environment variables."
 fi
 
 # Clean up any malformed source commands in bashrc
@@ -67,17 +67,17 @@ fi
 SCRIPT_DIR=$(load_from_bashrc "SCRIPT_DIR")
 PROJECT_ROOT=$(load_from_bashrc "PROJECT_ROOT")
 
-# Load required variables (set by script 02)
+# Load required variables (set by script 01)
 ROX_ENDPOINT=$(load_from_bashrc "ROX_ENDPOINT")
 ROX_API_TOKEN=$(load_from_bashrc "ROX_API_TOKEN")
 
 # Validate required environment variables
 if [ -z "$ROX_API_TOKEN" ]; then
-    error "ROX_API_TOKEN not set. Please run script 02-rhacs-setup.sh first to generate required variables."
+    error "ROX_API_TOKEN not set. Please run script 01-rhacs-setup.sh first to generate required variables."
 fi
 
 if [ -z "$ROX_ENDPOINT" ]; then
-    error "ROX_ENDPOINT not set. Please run script 02-rhacs-setup.sh first to generate required variables."
+    error "ROX_ENDPOINT not set. Please run script 01-rhacs-setup.sh first to generate required variables."
 fi
 log "✓ Required environment variables validated: ROX_ENDPOINT=$ROX_ENDPOINT"
 
@@ -277,7 +277,7 @@ function retry_scan() {
     sleep 5
     
     log "Recreating scan configuration..."
-    # Get cluster ID first
+    # Get cluster ID first - try to match by name, then fall back to first connected cluster
     CLUSTER_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
         -H "Authorization: Bearer $ROX_API_TOKEN" \
         -H "Content-Type: application/json" \
@@ -287,10 +287,26 @@ function retry_scan() {
         error "Failed to fetch cluster ID for retry"
     fi
     
-    PRODUCTION_CLUSTER_ID=$(echo "$CLUSTER_RESPONSE" | jq -r '.clusters[0].id')
+    # Try to find cluster by name "ads-cluster" first
+    EXPECTED_CLUSTER_NAME="ads-cluster"
+    PRODUCTION_CLUSTER_ID=$(echo "$CLUSTER_RESPONSE" | jq -r ".clusters[] | select(.name == \"$EXPECTED_CLUSTER_NAME\") | .id" 2>/dev/null | head -1)
+    
     if [ -z "$PRODUCTION_CLUSTER_ID" ] || [ "$PRODUCTION_CLUSTER_ID" = "null" ]; then
-        error "Failed to extract cluster ID for retry"
+        # Fall back to first connected/healthy cluster
+        PRODUCTION_CLUSTER_ID=$(echo "$CLUSTER_RESPONSE" | jq -r '.clusters[] | select(.healthStatus.overallHealthStatus == "HEALTHY" or .healthStatus.overallHealthStatus == "UNHEALTHY" or .healthStatus == null) | .id' 2>/dev/null | head -1)
+        
+        if [ -z "$PRODUCTION_CLUSTER_ID" ] || [ "$PRODUCTION_CLUSTER_ID" = "null" ]; then
+            # Last resort: use first cluster
+            PRODUCTION_CLUSTER_ID=$(echo "$CLUSTER_RESPONSE" | jq -r '.clusters[0].id' 2>/dev/null)
+        fi
     fi
+    
+    if [ -z "$PRODUCTION_CLUSTER_ID" ] || [ "$PRODUCTION_CLUSTER_ID" = "null" ]; then
+        error "Failed to find a valid cluster ID for retry. Available clusters: $(echo "$CLUSTER_RESPONSE" | jq -r '.clusters[] | "\(.name): \(.id)"' 2>/dev/null | tr '\n' ' ' || echo "none")"
+    fi
+    
+    CLUSTER_NAME=$(echo "$CLUSTER_RESPONSE" | jq -r ".clusters[] | select(.id == \"$PRODUCTION_CLUSTER_ID\") | .name" 2>/dev/null | head -1)
+    log "Using cluster: ${CLUSTER_NAME:-$PRODUCTION_CLUSTER_ID} (ID: $PRODUCTION_CLUSTER_ID)"
     
     # Recreate configuration
     RECREATE_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X POST \
