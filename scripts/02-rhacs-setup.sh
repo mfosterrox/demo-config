@@ -107,8 +107,6 @@ if ! oc whoami; then
     error "OpenShift CLI not connected. Please login first with: oc login"
 fi
 log "✓ OpenShift CLI connected as: $(oc whoami)"
-    warning "~/.bashrc not found, will create it with required variables"
-fi
 
 # Generate ROX_ENDPOINT if missing (can be extracted early, doesn't need Central to be ready)
 if [ -z "${ROX_ENDPOINT:-}" ]; then
