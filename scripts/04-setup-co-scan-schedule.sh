@@ -283,75 +283,15 @@ EXISTING_SCAN=$(echo "$EXISTING_CONFIGS" | jq -r '.configurations[] | select(.sc
 if [ -n "$EXISTING_SCAN" ] && [ "$EXISTING_SCAN" != "null" ]; then
     log "✓ Scan configuration 'acs-catch-all' exists (ID: $EXISTING_SCAN)"
     
-    # Check scan status
+    # Check scan status for informational purposes
     LAST_STATUS=$(echo "$EXISTING_CONFIGS" | jq -r ".configurations[] | select(.id == \"$EXISTING_SCAN\") | .lastScanStatus // \"UNKNOWN\"" 2>/dev/null)
     LAST_SCANNED=$(echo "$EXISTING_CONFIGS" | jq -r ".configurations[] | select(.id == \"$EXISTING_SCAN\") | .lastScanned // \"Never\"" 2>/dev/null)
     
     log "  Scan Status: ${LAST_STATUS:-UNKNOWN}"
     log "  Last Scanned: ${LAST_SCANNED:-Never}"
-    
-    # Only skip creation if scan has completed successfully
-    if [ "$LAST_STATUS" = "COMPLETED" ] && [ "$LAST_SCANNED" != "Never" ] && [ "$LAST_SCANNED" != "null" ]; then
-        log "✓ Scan has been successfully completed, skipping creation..."
-        SCAN_CONFIG_ID="$EXISTING_SCAN"
-        SKIP_CREATION=true
-    else
-        log "⚠ Scan configuration exists but has not been successfully run yet (Status: $LAST_STATUS, Last Scanned: $LAST_SCANNED)"
-        log "  Deleting existing configuration and creating a new one..."
-        
-        # Delete the existing scan configuration
-        DELETE_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X DELETE \
-            -H "Authorization: Bearer $ROX_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            "$ROX_ENDPOINT/v2/compliance/scan/configurations/$EXISTING_SCAN" 2>&1)
-        DELETE_EXIT_CODE=$?
-        
-        if [ $DELETE_EXIT_CODE -eq 0 ]; then
-            log "✓ Deleted existing scan configuration"
-        else
-            warning "Failed to delete existing scan configuration (exit code: $DELETE_EXIT_CODE). Will attempt to create anyway..."
-            warning "Response: ${DELETE_RESPONSE:0:200}"
-        fi
-        
-        # Wait for the underlying ScanSettingBinding to be fully deleted
-        # This is necessary because deleting the scan config triggers deletion of Kubernetes resources
-        if command -v oc &>/dev/null && oc whoami &>/dev/null 2>&1; then
-            log "Waiting for underlying ScanSettingBinding resource to be fully deleted..."
-            SCANSETTINGBINDING_WAIT_TIMEOUT=60
-            SCANSETTINGBINDING_ELAPSED=0
-            SCANSETTINGBINDING_WAIT_INTERVAL=2
-            
-            while [ $SCANSETTINGBINDING_ELAPSED -lt $SCANSETTINGBINDING_WAIT_TIMEOUT ]; do
-                if ! oc get scansettingbinding acs-catch-all -n openshift-compliance &>/dev/null 2>&1; then
-                    log "✓ ScanSettingBinding 'acs-catch-all' has been fully deleted"
-                    break
-                fi
-                
-                # Check if it's in "being deleted" state
-                DELETION_TIMESTAMP=$(oc get scansettingbinding acs-catch-all -n openshift-compliance -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null || echo "")
-                if [ -n "$DELETION_TIMESTAMP" ] && [ "$DELETION_TIMESTAMP" != "null" ]; then
-                    log "  ScanSettingBinding is being deleted... (${SCANSETTINGBINDING_ELAPSED}s elapsed)"
-                else
-                    log "  ScanSettingBinding still exists, waiting for deletion to start..."
-                fi
-                
-                sleep $SCANSETTINGBINDING_WAIT_INTERVAL
-                SCANSETTINGBINDING_ELAPSED=$((SCANSETTINGBINDING_ELAPSED + SCANSETTINGBINDING_WAIT_INTERVAL))
-            done
-            
-            if oc get scansettingbinding acs-catch-all -n openshift-compliance &>/dev/null 2>&1; then
-                warning "ScanSettingBinding still exists after ${SCANSETTINGBINDING_WAIT_TIMEOUT}s timeout"
-                warning "This may cause issues when creating the new scan configuration"
-                log "You may need to manually delete it: oc delete scansettingbinding acs-catch-all -n openshift-compliance"
-            fi
-        else
-            log "OpenShift CLI (oc) not available - cannot verify ScanSettingBinding deletion"
-            log "Waiting 10 seconds for resources to be cleaned up..."
-            sleep 10
-        fi
-        
-        SKIP_CREATION=false
-    fi
+    log "✓ Scan configuration already exists, skipping creation..."
+    SCAN_CONFIG_ID="$EXISTING_SCAN"
+    SKIP_CREATION=true
 else
     log "Scan configuration 'acs-catch-all' not found, creating new configuration..."
     SKIP_CREATION=false
@@ -466,16 +406,20 @@ if [ -n "$SCAN_CONFIG_ID" ] && [ "$SCAN_CONFIG_ID" != "null" ]; then
     log "✓ Saved SCAN_CONFIG_ID to ~/.bashrc"
 fi
 
-# If scan already exists and has completed successfully, skip diagnostics and exit early
+# If scan already exists, skip diagnostics and exit early
 if [ "$SKIP_CREATION" = "true" ]; then
     log ""
     log "Compliance scan schedule setup completed successfully!"
     log "Scan configuration ID: $SCAN_CONFIG_ID"
-    log "✓ Scan 'acs-catch-all' already exists and has been successfully completed"
-    log "  Status: COMPLETED"
-    log "  Last Scanned: $LAST_SCANNED"
+    log "✓ Scan 'acs-catch-all' already exists"
+    if [ -n "$LAST_STATUS" ] && [ "$LAST_STATUS" != "null" ]; then
+        log "  Status: $LAST_STATUS"
+    fi
+    if [ -n "$LAST_SCANNED" ] && [ "$LAST_SCANNED" != "null" ] && [ "$LAST_SCANNED" != "Never" ]; then
+        log "  Last Scanned: $LAST_SCANNED"
+    fi
     log ""
-    log "Skipping diagnostic checks as scan is already configured and completed."
+    log "Skipping diagnostic checks as scan configuration already exists."
     log ""
     exit 0
 fi
