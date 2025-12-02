@@ -9,4 +9,3 @@ spec:
     perses:
       enabled: true
   type: Monitoring
-

@@ -2,7 +2,7 @@ apiVersion: perses.dev/v1alpha1
 kind: PersesDashboard
 metadata:
   name: rhacs-dashboard
-  namespace: openshift-cluster-observability-operator
+  namespace: tssc-acs
 spec:
   display:
     name: Advanced Cluster Security / Overview
