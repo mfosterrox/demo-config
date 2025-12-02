@@ -118,7 +118,8 @@ make_api_call() {
     local data="${3:-}"
     local description="${4:-API call}"
     
-    log "Making $description: $method $endpoint"
+    # Redirect log to stderr so it's not captured in response
+    log "Making $description: $method $endpoint" >&2
     
     local temp_file=""
     local curl_cmd="curl -k -s -w \"\n%{http_code}\" -X $method"
