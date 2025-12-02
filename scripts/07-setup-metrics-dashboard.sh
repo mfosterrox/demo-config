@@ -103,17 +103,6 @@ log "========================================================="
 
 SUBSCRIPTION_NAMESPACE="openshift-operators"
 SUBSCRIPTION_NAME="observability-operator"
-SUBSCRIPTION_FILE="${SCRIPT_DIR}/../config-files/subscription-observability-operator.yaml"
-
-# Check if subscription file exists
-if [ ! -f "$SUBSCRIPTION_FILE" ]; then
-    # Try alternative path
-    SUBSCRIPTION_FILE="${PROJECT_ROOT}/config-files/subscription-observability-operator.yaml"
-    if [ ! -f "$SUBSCRIPTION_FILE" ]; then
-        error "Observability Operator subscription file not found. Expected at: ${SCRIPT_DIR}/../config-files/subscription-observability-operator.yaml"
-    fi
-fi
-log "✓ Found subscription file: $SUBSCRIPTION_FILE"
 
 # Ensure openshift-operators namespace exists (it should by default, but check anyway)
 if ! oc get ns "$SUBSCRIPTION_NAMESPACE" &>/dev/null; then
@@ -154,9 +143,24 @@ fi
 
 # Install or wait for operator
 if [ "$SKIP_OPERATOR_INSTALL" != "true" ]; then
-    # Apply the subscription
+    # Apply the subscription (embedded in script)
     log "Applying Subscription..."
-    oc apply -f "$SUBSCRIPTION_FILE"
+    cat <<EOF | oc apply -f -
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  labels:
+    operators.coreos.com/observability-operator.openshift-operators: ""
+  name: observability-operator
+  namespace: openshift-operators
+spec:
+  channel: development
+  installPlanApproval: Automatic
+  name: observability-operator
+  source: observability-operator
+  sourceNamespace: openshift-marketplace
+EOF
     
     if [ $? -eq 0 ]; then
         log "✓ Subscription applied successfully"
