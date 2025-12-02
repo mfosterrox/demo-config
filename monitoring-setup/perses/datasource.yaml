@@ -2,7 +2,7 @@ apiVersion: perses.dev/v1alpha1
 kind: PersesDatasource
 metadata:
   name: rhacs-datasource
-  namespace: tssc-acs
+  namespace: openshift-cluster-observability-operator
 spec:
   client:
     tls:
