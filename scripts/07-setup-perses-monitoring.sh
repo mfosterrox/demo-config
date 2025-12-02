@@ -28,6 +28,11 @@ error() {
 # Trap to show error details on exit
 trap 'error "Command failed: $(cat <<< "$BASH_COMMAND")"' ERR
 
+# Set up script directory and project root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+MONITORING_SETUP_DIR="$PROJECT_ROOT/monitoring-setup"
+
 # Function to load variable from ~/.bashrc if it exists
 load_from_bashrc() {
     local var_name="$1"
@@ -353,6 +358,145 @@ log "========================================================="
 log "Namespace: $OPERATOR_NAMESPACE"
 log "Operator: cluster-observability-operator"
 log "CSV: $CSV_NAME"
+log "========================================================="
+log ""
+
+# Step 2: Install Cluster Observability Operator resources
+log ""
+log "========================================================="
+log "Step 2: Installing Cluster Observability Operator resources"
+log "========================================================="
+
+# Verify monitoring-setup directory exists
+if [ ! -d "$MONITORING_SETUP_DIR" ]; then
+    error "Monitoring setup directory not found: $MONITORING_SETUP_DIR"
+fi
+log "✓ Monitoring setup directory found: $MONITORING_SETUP_DIR"
+
+# Function to apply YAML with namespace substitution
+apply_yaml_with_namespace() {
+    local yaml_file="$1"
+    local description="$2"
+    
+    if [ ! -f "$yaml_file" ]; then
+        error "YAML file not found: $yaml_file"
+    fi
+    
+    log "Installing $description..."
+    # Replace namespace in YAML file:
+    # - namespace: tssc-acs -> namespace: $NAMESPACE
+    # - namespace: "tssc-acs" -> namespace: "$NAMESPACE"
+    # - .tssc-acs.svc -> .$NAMESPACE.svc (for service references)
+    # - .tssc-acs.svc.cluster.local -> .$NAMESPACE.svc.cluster.local
+    sed "s/namespace: tssc-acs/namespace: $NAMESPACE/g; \
+         s/namespace: \"tssc-acs\"/namespace: \"$NAMESPACE\"/g; \
+         s/\\.tssc-acs\\.svc\\.cluster\\.local/\\.$NAMESPACE\\.svc\\.cluster\\.local/g; \
+         s/\\.tssc-acs\\.svc/\\.$NAMESPACE\\.svc/g" "$yaml_file" | \
+        oc apply -f - || error "Failed to apply $yaml_file"
+    log "✓ $description installed successfully"
+}
+
+# Install MonitoringStack
+apply_yaml_with_namespace \
+    "$MONITORING_SETUP_DIR/cluster-observability-operator/monitoring-stack.yaml" \
+    "MonitoringStack (rhacs-monitoring-stack)"
+
+# Wait a moment for MonitoringStack to be processed
+sleep 5
+
+# Install ScrapeConfig
+apply_yaml_with_namespace \
+    "$MONITORING_SETUP_DIR/cluster-observability-operator/scrape-config.yaml" \
+    "ScrapeConfig (rhacs-scrape-config)"
+
+log ""
+log "Cluster Observability Operator resources installed successfully!"
+log ""
+
+# Step 3: Install Prometheus Operator resources
+log ""
+log "========================================================="
+log "Step 3: Installing Prometheus Operator resources"
+log "========================================================="
+
+# Install Prometheus additional scrape config secret
+apply_yaml_with_namespace \
+    "$MONITORING_SETUP_DIR/prometheus-operator/additional-scrape-config.yaml" \
+    "Prometheus additional scrape config secret"
+
+# Install Prometheus custom resource
+apply_yaml_with_namespace \
+    "$MONITORING_SETUP_DIR/prometheus-operator/prometheus.yaml" \
+    "Prometheus (rhacs-prometheus-server)"
+
+# Install PrometheusRule
+apply_yaml_with_namespace \
+    "$MONITORING_SETUP_DIR/prometheus-operator/prometheus-rule.yaml" \
+    "PrometheusRule (rhacs-health-alerts)"
+
+log ""
+log "Prometheus Operator resources installed successfully!"
+log ""
+
+# Step 4: Install RHACS declarative configuration
+log ""
+log "========================================================="
+log "Step 4: Installing RHACS declarative configuration"
+log "========================================================="
+
+apply_yaml_with_namespace \
+    "$MONITORING_SETUP_DIR/rhacs/declarative-configuration-configmap.yaml" \
+    "RHACS declarative configuration ConfigMap"
+
+log ""
+log "RHACS declarative configuration installed successfully!"
+log ""
+
+# Step 5: Install Perses resources
+log ""
+log "========================================================="
+log "Step 5: Installing Perses monitoring resources"
+log "========================================================="
+
+# Install Perses datasource
+apply_yaml_with_namespace \
+    "$MONITORING_SETUP_DIR/perses/datasource.yaml" \
+    "Perses Datasource (rhacs-datasource)"
+
+# Install Perses dashboard
+apply_yaml_with_namespace \
+    "$MONITORING_SETUP_DIR/perses/dashboard.yaml" \
+    "Perses Dashboard (rhacs-dashboard)"
+
+# Install Perses UI plugin
+# Note: UI plugin might be cluster-scoped, check if namespace substitution is needed
+log "Installing Perses UI Plugin..."
+if grep -q "namespace:" "$MONITORING_SETUP_DIR/perses/ui-plugin.yaml"; then
+    apply_yaml_with_namespace \
+        "$MONITORING_SETUP_DIR/perses/ui-plugin.yaml" \
+        "Perses UI Plugin"
+else
+    log "Installing Perses UI Plugin (cluster-scoped)..."
+    oc apply -f "$MONITORING_SETUP_DIR/perses/ui-plugin.yaml" || error "Failed to apply UI plugin"
+    log "✓ Perses UI Plugin installed successfully"
+fi
+
+log ""
+log "Perses monitoring resources installed successfully!"
+log ""
+
+# Final summary
+log ""
+log "========================================================="
+log "Perses Monitoring Setup Completed Successfully!"
+log "========================================================="
+log "All monitoring resources have been installed:"
+log "  ✓ TLS certificate for RHACS Prometheus"
+log "  ✓ Cluster Observability Operator"
+log "  ✓ MonitoringStack and ScrapeConfig"
+log "  ✓ Prometheus Operator resources"
+log "  ✓ RHACS declarative configuration"
+log "  ✓ Perses datasource, dashboard, and UI plugin"
 log "========================================================="
 log ""
 
