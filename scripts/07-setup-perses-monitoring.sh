@@ -102,7 +102,7 @@ log "✓ Namespace '$NAMESPACE' exists"
 
 # Generate a private key and certificate
 log "Generating TLS private key and certificate..."
-CERT_CN="rhacs-monitoring-stack-prometheus.$NAMESPACE.svc"
+CERT_CN="rhacs-monitoring-stack.$NAMESPACE.svc"
 if openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
         -subj "/CN=$CERT_CN" \
         -keyout tls.key -out tls.crt 2>/dev/null; then
