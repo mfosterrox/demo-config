@@ -122,14 +122,19 @@ fi
 
 # Fetch cluster ID - try to match by name first, then fall back to first connected cluster
 log "Fetching cluster ID..."
+# Temporarily disable exit on error to capture curl exit code
+set +e
 CLUSTER_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
     -H "Authorization: Bearer $ROX_API_TOKEN" \
     -H "Content-Type: application/json" \
     "$ROX_ENDPOINT/v1/clusters" 2>&1)
 CLUSTER_CURL_EXIT_CODE=$?
+set -e
 
 if [ $CLUSTER_CURL_EXIT_CODE -ne 0 ]; then
-    error "Cluster API request failed with exit code $CLUSTER_CURL_EXIT_CODE. Response: $CLUSTER_RESPONSE"
+    log "Debug: ROX_ENDPOINT=$ROX_ENDPOINT"
+    log "Debug: ROX_API_TOKEN length=${#ROX_API_TOKEN} (first 20 chars: ${ROX_API_TOKEN:0:20}...)"
+    error "Cluster API request failed with exit code $CLUSTER_CURL_EXIT_CODE. Response: ${CLUSTER_RESPONSE:0:500}"
 fi
 
 if [ -z "$CLUSTER_RESPONSE" ]; then
@@ -260,14 +265,16 @@ log ""
 
 # Check if acs-catch-all scan configuration already exists and has been successfully run
 log "Checking if 'acs-catch-all' scan configuration exists and has been successfully run..."
+set +e
 EXISTING_CONFIGS=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
     -H "Authorization: Bearer $ROX_API_TOKEN" \
     -H "Content-Type: application/json" \
     "$ROX_ENDPOINT/v2/compliance/scan/configurations" 2>&1)
-
 CONFIG_CURL_EXIT_CODE=$?
+set -e
+
 if [ $CONFIG_CURL_EXIT_CODE -ne 0 ]; then
-    error "Failed to fetch existing scan configurations (exit code: $CONFIG_CURL_EXIT_CODE). Response: ${EXISTING_CONFIGS:0:300}"
+    error "Failed to fetch existing scan configurations (exit code: $CONFIG_CURL_EXIT_CODE). Response: ${EXISTING_CONFIGS:0:500}"
 fi
 
 if [ -z "$EXISTING_CONFIGS" ]; then
@@ -300,6 +307,7 @@ fi
 # Create compliance scan configuration (only if it doesn't exist)
 if [ "$SKIP_CREATION" = "false" ]; then
     log "Creating compliance scan configuration 'acs-catch-all'..."
+    set +e
     SCAN_CONFIG_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X POST \
         -H "Authorization: Bearer $ROX_API_TOKEN" \
         -H "Content-Type: application/json" \
@@ -333,9 +341,10 @@ if [ "$SKIP_CREATION" = "false" ]; then
     }" \
     "$ROX_ENDPOINT/v2/compliance/scan/configurations" 2>&1)
     SCAN_CREATE_EXIT_CODE=$?
+    set -e
 
     if [ $SCAN_CREATE_EXIT_CODE -ne 0 ]; then
-        error "Failed to create compliance scan configuration (exit code: $SCAN_CREATE_EXIT_CODE). Response: ${SCAN_CONFIG_RESPONSE:0:300}"
+        error "Failed to create compliance scan configuration (exit code: $SCAN_CREATE_EXIT_CODE). Response: ${SCAN_CONFIG_RESPONSE:0:500}"
     fi
 
     if [ -z "$SCAN_CONFIG_RESPONSE" ]; then
@@ -379,14 +388,16 @@ if [ "$SKIP_CREATION" = "false" ]; then
             log "Could not extract scan configuration ID from response, trying to get it from configurations list..."
             
             # Get scan configurations to find our configuration
+            set +e
             CONFIGS_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
                 -H "Authorization: Bearer $ROX_API_TOKEN" \
                 -H "Content-Type: application/json" \
                 "$ROX_ENDPOINT/v2/compliance/scan/configurations" 2>&1)
-        CONFIGS_EXIT_CODE=$?
+            CONFIGS_EXIT_CODE=$?
+            set -e
     
         if [ $CONFIGS_EXIT_CODE -ne 0 ]; then
-            error "Failed to get scan configurations list (exit code: $CONFIGS_EXIT_CODE). Response: ${CONFIGS_RESPONSE:0:300}"
+            error "Failed to get scan configurations list (exit code: $CONFIGS_EXIT_CODE). Response: ${CONFIGS_RESPONSE:0:500}"
         fi
 
         SCAN_CONFIG_ID=$(echo "$CONFIGS_RESPONSE" | jq -r '.configurations[] | select(.scanName == "acs-catch-all") | .id')
