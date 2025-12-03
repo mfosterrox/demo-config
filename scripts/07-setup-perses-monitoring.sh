@@ -178,12 +178,15 @@ else
         log "Checking if UserPKI auth provider 'Prometheus' already exists..."
         set +e
         EXISTING_AUTH_PROVIDERS=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
-            central authprovider list \
-            --insecure-skip-tls-verify 2>/dev/null)
+            central userpki list \
+            --insecure-skip-tls-verify 2>&1)
+        LIST_EXIT_CODE=$?
         set -e
         
-        if echo "$EXISTING_AUTH_PROVIDERS" | grep -q "Prometheus"; then
+        if [ $LIST_EXIT_CODE -eq 0 ] && echo "$EXISTING_AUTH_PROVIDERS" | grep -q "Provider: Prometheus"; then
             log "✓ UserPKI auth provider 'Prometheus' already exists"
+            # Show provider details
+            echo "$EXISTING_AUTH_PROVIDERS" | grep -A 5 "Provider: Prometheus" | head -6
         else
             log "Creating UserPKI auth provider 'Prometheus' with Admin role..."
             set +e
