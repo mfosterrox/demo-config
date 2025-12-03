@@ -125,6 +125,94 @@ else
     error "Failed to create TLS secret"
 fi
 
+# Create UserPKI auth provider in RHACS for Prometheus
+log "Creating UserPKI auth provider in RHACS for Prometheus..."
+# Load required RHACS environment variables
+ROX_ENDPOINT=$(load_from_bashrc "ROX_ENDPOINT")
+ROX_API_TOKEN=$(load_from_bashrc "ROX_API_TOKEN")
+
+if [ -z "$ROX_ENDPOINT" ]; then
+    warning "ROX_ENDPOINT not found in ~/.bashrc. Skipping auth provider creation."
+    warning "You may need to create the UserPKI auth provider manually later."
+elif [ -z "$ROX_API_TOKEN" ]; then
+    warning "ROX_API_TOKEN not found in ~/.bashrc. Skipping auth provider creation."
+    warning "You may need to create the UserPKI auth provider manually later."
+else
+    # Check if roxctl is available
+    if ! command -v roxctl &>/dev/null; then
+        log "roxctl not found, checking if it needs to be installed..."
+        # Try to install roxctl (similar to script 01)
+        if command -v curl &>/dev/null; then
+            log "Downloading roxctl..."
+            curl -L -f -o /tmp/roxctl "https://mirror.openshift.com/pub/rhacs/assets/4.8.3/bin/Linux/roxctl" 2>/dev/null || {
+                warning "Failed to download roxctl. Skipping auth provider creation."
+                warning "You may need to create the UserPKI auth provider manually later."
+                ROX_ENDPOINT=""
+            }
+            if [ -f /tmp/roxctl ]; then
+                chmod +x /tmp/roxctl
+                ROXCTL_CMD="/tmp/roxctl"
+                log "✓ roxctl downloaded to /tmp/roxctl"
+            fi
+        else
+            warning "curl not found. Cannot download roxctl. Skipping auth provider creation."
+            ROX_ENDPOINT=""
+        fi
+    else
+        ROXCTL_CMD="roxctl"
+        log "✓ roxctl found in PATH"
+    fi
+    
+    if [ -n "$ROX_ENDPOINT" ] && [ -n "$ROXCTL_CMD" ]; then
+        # Normalize ROX_ENDPOINT for roxctl (add :443 if no port specified)
+        ROX_ENDPOINT_NORMALIZED="$ROX_ENDPOINT"
+        if [[ ! "$ROX_ENDPOINT_NORMALIZED" =~ :[0-9]+$ ]]; then
+            ROX_ENDPOINT_NORMALIZED="${ROX_ENDPOINT_NORMALIZED}:443"
+        fi
+        
+        # Remove https:// prefix if present
+        ROX_ENDPOINT_NORMALIZED="${ROX_ENDPOINT_NORMALIZED#https://}"
+        ROX_ENDPOINT_NORMALIZED="${ROX_ENDPOINT_NORMALIZED#http://}"
+        
+        # Check if auth provider already exists
+        log "Checking if UserPKI auth provider 'Prometheus' already exists..."
+        set +e
+        EXISTING_AUTH_PROVIDERS=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
+            --token "$ROX_API_TOKEN" \
+            --insecure-skip-tls-verify \
+            central authprovider list 2>/dev/null)
+        set -e
+        
+        if echo "$EXISTING_AUTH_PROVIDERS" | grep -q "Prometheus"; then
+            log "✓ UserPKI auth provider 'Prometheus' already exists"
+        else
+            log "Creating UserPKI auth provider 'Prometheus' with Admin role..."
+            set +e
+            AUTH_PROVIDER_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
+                --token "$ROX_API_TOKEN" \
+                --insecure-skip-tls-verify \
+                central userpki create \
+                -c tls.crt \
+                -r Admin \
+                Prometheus 2>&1)
+            AUTH_PROVIDER_EXIT_CODE=$?
+            set -e
+            
+            if [ $AUTH_PROVIDER_EXIT_CODE -eq 0 ]; then
+                log "✓ UserPKI auth provider 'Prometheus' created successfully"
+            else
+                # Check if it's because it already exists (might have been created between check and create)
+                if echo "$AUTH_PROVIDER_OUTPUT" | grep -qi "already exists\|duplicate"; then
+                    log "✓ UserPKI auth provider 'Prometheus' already exists"
+                else
+                    warning "Failed to create UserPKI auth provider. Output: ${AUTH_PROVIDER_OUTPUT:0:300}"
+                    warning "You may need to create it manually: roxctl central userpki create -c tls.crt -r Admin Prometheus"
+                fi
+            fi
+        fi
+    fi
+fi
+
 # Clean up temporary certificate files
 rm -f tls.key tls.crt
 log "✓ Temporary certificate files cleaned up"
