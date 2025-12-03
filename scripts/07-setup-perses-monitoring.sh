@@ -189,8 +189,6 @@ else
             log "Creating UserPKI auth provider 'Prometheus' with Admin role..."
             set +e
             AUTH_PROVIDER_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
-                --token "$ROX_API_TOKEN" \
-                --insecure-skip-tls-verify \
                 central userpki create \
                 -c tls.crt \
                 -r Admin \
