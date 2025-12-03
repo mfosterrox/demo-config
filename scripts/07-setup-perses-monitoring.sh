@@ -187,7 +187,11 @@ log "✓ Namespace verified and accessible"
 
 # Create OperatorGroup (if it doesn't exist)
 log "Checking for OperatorGroup..."
-if ! oc get operatorgroup -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
+OPERATOR_GROUP_EXISTS=false
+if oc get operatorgroup -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
+    OPERATOR_GROUP_EXISTS=true
+    log "✓ OperatorGroup already exists"
+else
     log "Creating OperatorGroup..."
     if ! cat <<EOF | oc apply -f -
 apiVersion: operators.coreos.com/v1
@@ -203,14 +207,21 @@ EOF
         error "Failed to create OperatorGroup"
     fi
     log "✓ OperatorGroup created successfully"
-else
-    log "✓ OperatorGroup already exists"
+    # Wait for OperatorGroup to be ready
+    log "Waiting for OperatorGroup to be ready..."
+    sleep 3
 fi
+
+# Verify OperatorGroup exists and is ready
+if ! oc get operatorgroup -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
+    error "OperatorGroup not found after creation. Check namespace permissions."
+fi
+log "✓ OperatorGroup verified"
 
 # Create Subscription for Cluster Observability Operator
 log "Creating Subscription for Cluster Observability Operator..."
 SUBSCRIPTION_CREATED=false
-if cat <<EOF | oc apply -f -
+SUBSCRIPTION_OUTPUT=$(cat <<EOF | oc apply -f - 2>&1
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
 metadata:
@@ -224,16 +235,57 @@ spec:
   sourceNamespace: openshift-marketplace
   startingCSV: cluster-observability-operator.v1.3.0
 EOF
-then
+)
+SUBSCRIPTION_EXIT_CODE=$?
+
+if [ $SUBSCRIPTION_EXIT_CODE -eq 0 ]; then
     SUBSCRIPTION_CREATED=true
-    log "✓ Subscription created successfully"
+    log "✓ Subscription creation command succeeded"
+    log "  Output: $SUBSCRIPTION_OUTPUT"
 else
-    error "Failed to create Subscription"
+    log "Subscription creation command failed with exit code: $SUBSCRIPTION_EXIT_CODE"
+    log "  Output: $SUBSCRIPTION_OUTPUT"
+    error "Failed to create Subscription. Check output above for details."
+fi
+
+# Wait for OLM to process the subscription and create InstallPlan
+log "Waiting for OLM to process subscription (this may take 10-30 seconds)..."
+SUBSCRIPTION_PROCESSED=false
+for i in {1..12}; do
+    sleep 5
+    if oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
+        # Check if InstallPlan has been created
+        INSTALL_PLAN_CHECK=$(oc get installplan -n $OPERATOR_NAMESPACE -l operators.coreos.com/cluster-observability-operator.openshift-cluster-observability-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+        if [ -n "$INSTALL_PLAN_CHECK" ]; then
+            SUBSCRIPTION_PROCESSED=true
+            log "✓ Subscription processed and InstallPlan created: $INSTALL_PLAN_CHECK"
+            break
+        fi
+    fi
+    if [ $((i % 3)) -eq 0 ]; then
+        log "  Still waiting for subscription to be processed... ($((i * 5))s elapsed)"
+    fi
+done
+
+if [ "$SUBSCRIPTION_PROCESSED" = false ]; then
+    log "Subscription processing is taking longer than expected, continuing anyway..."
 fi
 
 # Verify subscription was actually created
-log "Verifying subscription exists..."
+log "Verifying subscription exists in namespace $OPERATOR_NAMESPACE..."
 if ! oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
+    log "ERROR: Subscription not found after creation attempt"
+    log "Checking all subscriptions in namespace..."
+    oc get subscription.operators.coreos.com -n $OPERATOR_NAMESPACE 2>&1 || log "  No subscriptions found in namespace"
+    log ""
+    log "Checking if subscription exists in other namespaces..."
+    oc get subscription.operators.coreos.com cluster-observability-operator --all-namespaces 2>&1 || log "  Subscription not found in any namespace"
+    log ""
+    log "Checking OperatorGroup..."
+    oc get operatorgroup -n $OPERATOR_NAMESPACE 2>&1 || log "  No OperatorGroup found"
+    log ""
+    log "Checking namespace..."
+    oc get namespace $OPERATOR_NAMESPACE 2>&1 || log "  Namespace not found"
     error "Subscription was not created successfully. Check namespace permissions and operator catalog availability."
 fi
 log "✓ Subscription verified"
@@ -273,19 +325,42 @@ while ! oc get csv -n $OPERATOR_NAMESPACE 2>/dev/null | grep -q cluster-observab
         log "CSV not created after $((MAX_WAIT * 10)) seconds. Diagnostic information:"
         log ""
         
-        # Check subscription status
-        log "Subscription status:"
-        oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o yaml 2>/dev/null | grep -A 10 "status:" || log "  Could not get subscription status"
+        # Check if subscription exists
+        log "Checking if subscription exists..."
+        if oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
+            log "  ✓ Subscription exists"
+            log ""
+            log "Subscription details:"
+            oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o yaml 2>/dev/null | grep -A 20 "status:" || log "  Could not get subscription status"
+        else
+            log "  ✗ Subscription NOT FOUND in namespace $OPERATOR_NAMESPACE"
+            log ""
+            log "Checking all subscriptions in namespace:"
+            oc get subscription.operators.coreos.com -n $OPERATOR_NAMESPACE 2>&1 || log "  No subscriptions found"
+            log ""
+            log "Checking if subscription exists in other namespaces:"
+            oc get subscription.operators.coreos.com cluster-observability-operator --all-namespaces 2>&1 || log "  Subscription not found anywhere"
+        fi
+        log ""
+        
+        # Check OperatorGroup
+        log "OperatorGroup status:"
+        oc get operatorgroup -n $OPERATOR_NAMESPACE 2>&1 || log "  No OperatorGroup found"
         log ""
         
         # Check InstallPlan
         log "InstallPlan status:"
-        oc get installplan -n $OPERATOR_NAMESPACE 2>/dev/null || log "  No InstallPlan found"
+        oc get installplan -n $OPERATOR_NAMESPACE 2>&1 || log "  No InstallPlan found"
         log ""
         
         # Check operator catalog
         log "Checking operator catalog availability..."
-        oc get packagemanifest cluster-observability-operator -n openshift-marketplace 2>/dev/null || log "  Package manifest not found in catalog"
+        oc get packagemanifest cluster-observability-operator -n openshift-marketplace 2>&1 || log "  Package manifest not found in catalog"
+        log ""
+        
+        # Check CSV in all namespaces
+        log "Checking for CSV in any namespace:"
+        oc get csv --all-namespaces 2>/dev/null | grep cluster-observability-operator || log "  No CSV found"
         log ""
         
         error "CSV not created after $((MAX_WAIT * 10)) seconds. Check subscription status: oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE"
@@ -294,8 +369,20 @@ while ! oc get csv -n $OPERATOR_NAMESPACE 2>/dev/null | grep -q cluster-observab
     # Show progress every 6 iterations (every minute)
     if [ $((WAIT_COUNT % 6)) -eq 0 ] && [ $WAIT_COUNT -gt 0 ]; then
         # Check subscription state periodically
-        CURRENT_STATE=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.state}' 2>/dev/null || echo "unknown")
-        log "Waiting for CSV to be created... ($WAIT_COUNT/$MAX_WAIT) - Subscription state: $CURRENT_STATE"
+        if oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
+            CURRENT_STATE=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.state}' 2>/dev/null || echo "unknown")
+            CURRENT_CSV=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.currentCSV}' 2>/dev/null || echo "none")
+            log "Waiting for CSV to be created... ($WAIT_COUNT/$MAX_WAIT) - Subscription state: $CURRENT_STATE, Current CSV: $CURRENT_CSV"
+            
+            # Check for InstallPlan
+            INSTALL_PLAN_CHECK=$(oc get installplan -n $OPERATOR_NAMESPACE -l operators.coreos.com/cluster-observability-operator.openshift-cluster-observability-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+            if [ -n "$INSTALL_PLAN_CHECK" ]; then
+                INSTALL_PLAN_PHASE=$(oc get installplan $INSTALL_PLAN_CHECK -n $OPERATOR_NAMESPACE -o jsonpath='{.status.phase}' 2>/dev/null || echo "unknown")
+                log "  InstallPlan: $INSTALL_PLAN_CHECK (phase: $INSTALL_PLAN_PHASE)"
+            fi
+        else
+            log "Waiting for CSV to be created... ($WAIT_COUNT/$MAX_WAIT) - WARNING: Subscription not found!"
+        fi
     else
         log "Waiting for CSV to be created... ($WAIT_COUNT/$MAX_WAIT)"
     fi
