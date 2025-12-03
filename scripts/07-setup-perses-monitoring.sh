@@ -178,9 +178,8 @@ else
         log "Checking if UserPKI auth provider 'Prometheus' already exists..."
         set +e
         EXISTING_AUTH_PROVIDERS=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
-            --token "$ROX_API_TOKEN" \
-            --insecure-skip-tls-verify \
-            central authprovider list 2>/dev/null)
+            central authprovider list \
+            --insecure-skip-tls-verify 2>/dev/null)
         set -e
         
         if echo "$EXISTING_AUTH_PROVIDERS" | grep -q "Prometheus"; then
@@ -189,10 +188,10 @@ else
             log "Creating UserPKI auth provider 'Prometheus' with Admin role..."
             set +e
             AUTH_PROVIDER_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
-                central userpki create \
+                central userpki create Prometheus \
                 -c tls.crt \
                 -r Admin \
-                Prometheus 2>&1)
+                --insecure-skip-tls-verify 2>&1)
             AUTH_PROVIDER_EXIT_CODE=$?
             set -e
             
@@ -204,7 +203,7 @@ else
                     log "✓ UserPKI auth provider 'Prometheus' already exists"
                 else
                     warning "Failed to create UserPKI auth provider. Output: ${AUTH_PROVIDER_OUTPUT:0:300}"
-                    warning "You may need to create it manually: roxctl central userpki create -c tls.crt -r Admin Prometheus"
+                    warning "You may need to create it manually: roxctl -e $ROX_ENDPOINT_NORMALIZED central userpki create Prometheus -c tls.crt -r Admin --insecure-skip-tls-verify"
                 fi
             fi
         fi
