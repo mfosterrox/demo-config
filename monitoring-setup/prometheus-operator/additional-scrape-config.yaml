@@ -12,4 +12,4 @@ stringData:
       tls_config:
         insecure_skip_verify: true
       static_configs:
-      - targets: ['central.tssc-acs.svc:443']
+      - targets: ['central.tssc-acs.svc.cluster.local:443']

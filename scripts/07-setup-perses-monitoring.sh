@@ -112,13 +112,12 @@ else
     error "Failed to generate TLS certificate"
 fi
 
-# Create TLS secret in the namespace (replace if exists)
-log "Creating TLS secret 'rhacs-prometheus-tls' in namespace '$NAMESPACE'..."
-if oc get secret rhacs-prometheus-tls -n "$NAMESPACE" &>/dev/null; then
-    log "Secret 'rhacs-prometheus-tls' already exists, replacing..."
-    oc delete secret rhacs-prometheus-tls -n "$NAMESPACE" 2>/dev/null || true
-fi
+# Always delete existing TLS secret to avoid certificate mixups
+log "Deleting existing TLS secret 'rhacs-prometheus-tls' if it exists..."
+oc delete secret rhacs-prometheus-tls -n "$NAMESPACE" 2>/dev/null && log "  Deleted existing secret" || log "  No existing secret found"
 
+# Create TLS secret in the namespace
+log "Creating TLS secret 'rhacs-prometheus-tls' in namespace '$NAMESPACE'..."
 if oc create secret tls rhacs-prometheus-tls --cert=tls.crt --key=tls.key -n "$NAMESPACE" 2>/dev/null; then
     log "✓ TLS secret created successfully"
 else
@@ -174,8 +173,8 @@ else
         ROX_ENDPOINT_NORMALIZED="${ROX_ENDPOINT_NORMALIZED#https://}"
         ROX_ENDPOINT_NORMALIZED="${ROX_ENDPOINT_NORMALIZED#http://}"
         
-        # Check if auth provider already exists
-        log "Checking if UserPKI auth provider 'Prometheus' already exists..."
+        # Always delete existing auth provider to avoid certificate mixups
+        log "Checking if UserPKI auth provider 'Prometheus' exists and deleting if found..."
         set +e
         EXISTING_AUTH_PROVIDERS=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
             central userpki list \
@@ -184,30 +183,64 @@ else
         set -e
         
         if [ $LIST_EXIT_CODE -eq 0 ] && echo "$EXISTING_AUTH_PROVIDERS" | grep -q "Provider: Prometheus"; then
-            log "✓ UserPKI auth provider 'Prometheus' already exists"
-            # Show provider details
-            echo "$EXISTING_AUTH_PROVIDERS" | grep -A 5 "Provider: Prometheus" | head -6
-        else
-            log "Creating UserPKI auth provider 'Prometheus' with Admin role..."
-            set +e
-            AUTH_PROVIDER_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
-                central userpki create Prometheus \
-                -c tls.crt \
-                -r Admin \
-                --insecure-skip-tls-verify 2>&1)
-            AUTH_PROVIDER_EXIT_CODE=$?
-            set -e
-            
-            if [ $AUTH_PROVIDER_EXIT_CODE -eq 0 ]; then
-                log "✓ UserPKI auth provider 'Prometheus' created successfully"
-            else
-                # Check if it's because it already exists (might have been created between check and create)
-                if echo "$AUTH_PROVIDER_OUTPUT" | grep -qi "already exists\|duplicate"; then
-                    log "✓ UserPKI auth provider 'Prometheus' already exists"
+            log "Found existing UserPKI auth provider 'Prometheus', deleting..."
+            # Extract the provider ID
+            PROVIDER_ID=$(echo "$EXISTING_AUTH_PROVIDERS" | grep -A 1 "Provider: Prometheus" | grep "ID:" | awk '{print $2}')
+            if [ -n "$PROVIDER_ID" ]; then
+                set +e
+                DELETE_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
+                    central userpki delete "$PROVIDER_ID" \
+                    --insecure-skip-tls-verify 2>&1)
+                DELETE_EXIT_CODE=$?
+                set -e
+                
+                if [ $DELETE_EXIT_CODE -eq 0 ]; then
+                    log "✓ Deleted existing UserPKI auth provider 'Prometheus' (ID: $PROVIDER_ID)"
                 else
-                    warning "Failed to create UserPKI auth provider. Output: ${AUTH_PROVIDER_OUTPUT:0:300}"
-                    warning "You may need to create it manually: roxctl -e $ROX_ENDPOINT_NORMALIZED central userpki create Prometheus -c tls.crt -r Admin --insecure-skip-tls-verify"
+                    warning "Failed to delete existing auth provider. Output: ${DELETE_OUTPUT:0:300}"
+                    warning "Attempting to create new provider anyway..."
                 fi
+            else
+                warning "Could not extract provider ID, attempting to delete by name..."
+                # Try deleting by name (some versions might support this)
+                set +e
+                DELETE_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
+                    central userpki delete Prometheus \
+                    --insecure-skip-tls-verify 2>&1)
+                DELETE_EXIT_CODE=$?
+                set -e
+                
+                if [ $DELETE_EXIT_CODE -eq 0 ]; then
+                    log "✓ Deleted existing UserPKI auth provider 'Prometheus'"
+                else
+                    warning "Could not delete provider by name. Output: ${DELETE_OUTPUT:0:300}"
+                    warning "You may need to delete it manually and re-run this script"
+                fi
+            fi
+        else
+            log "No existing UserPKI auth provider 'Prometheus' found"
+        fi
+        
+        # Create new auth provider
+        log "Creating UserPKI auth provider 'Prometheus' with Admin role..."
+        set +e
+        AUTH_PROVIDER_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
+            central userpki create Prometheus \
+            -c tls.crt \
+            -r Admin \
+            --insecure-skip-tls-verify 2>&1)
+        AUTH_PROVIDER_EXIT_CODE=$?
+        set -e
+        
+        if [ $AUTH_PROVIDER_EXIT_CODE -eq 0 ]; then
+            log "✓ UserPKI auth provider 'Prometheus' created successfully"
+        else
+            # Check if it's because it already exists (might have been created between delete and create)
+            if echo "$AUTH_PROVIDER_OUTPUT" | grep -qi "already exists\|duplicate"; then
+                warning "Auth provider still exists after deletion attempt. Output: ${AUTH_PROVIDER_OUTPUT:0:300}"
+                warning "You may need to delete it manually: roxctl -e $ROX_ENDPOINT_NORMALIZED central userpki list --insecure-skip-tls-verify"
+            else
+                error "Failed to create UserPKI auth provider. Output: ${AUTH_PROVIDER_OUTPUT:0:300}"
             fi
         fi
     fi

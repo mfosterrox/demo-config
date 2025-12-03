@@ -10,7 +10,7 @@ spec:
   scheme: HTTPS
   staticConfigs:
     - targets:
-        - "central.tssc-acs.svc:443"
+        - "central.tssc-acs.svc.cluster.local:443"
   tlsConfig:
     ca:
       secret:
