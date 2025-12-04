@@ -176,18 +176,36 @@ else
         # Always delete existing auth provider to avoid certificate mixups
         log "Deleting existing UserPKI auth provider 'Prometheus' if it exists..."
         set +e
-        DELETE_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
+        # Use printf to send "y\n" (yes with newline) to answer the interactive confirmation prompt
+        # Use timeout to prevent hanging if the command doesn't respond
+        DELETE_OUTPUT=$(timeout 30 bash -c "printf 'y\n' | $ROXCTL_CMD -e \"$ROX_ENDPOINT_NORMALIZED\" \
             central userpki delete Prometheus \
-            --insecure-skip-tls-verify 2>&1)
+            --insecure-skip-tls-verify 2>&1" 2>&1)
         DELETE_EXIT_CODE=$?
         set -e
         
+        # Check if deletion was successful or if provider doesn't exist
         if [ $DELETE_EXIT_CODE -eq 0 ]; then
-            log "✓ Deleted existing UserPKI auth provider 'Prometheus'"
+            # Check if output indicates success
+            if echo "$DELETE_OUTPUT" | grep -qi "deleted\|success"; then
+                log "✓ Deleted existing UserPKI auth provider 'Prometheus'"
+            elif echo "$DELETE_OUTPUT" | grep -qi "not found\|does not exist"; then
+                log "No existing UserPKI auth provider 'Prometheus' found (this is okay)"
+            else
+                # Even if exit code is 0, check for context canceled error
+                if echo "$DELETE_OUTPUT" | grep -qi "context canceled\|Canceled"; then
+                    warning "Delete command was canceled (provider may have been deleted). Output: ${DELETE_OUTPUT:0:200}"
+                    warning "Continuing with creation..."
+                else
+                    log "Delete command completed. Output: ${DELETE_OUTPUT:0:200}"
+                fi
+            fi
         else
             # It's okay if it doesn't exist - that means there's nothing to delete
             if echo "$DELETE_OUTPUT" | grep -qi "not found\|does not exist"; then
                 log "No existing UserPKI auth provider 'Prometheus' found (this is okay)"
+            elif echo "$DELETE_OUTPUT" | grep -qi "context canceled\|Canceled"; then
+                warning "Delete command was canceled (provider may have been deleted). Continuing..."
             else
                 warning "Failed to delete existing auth provider (may not exist). Output: ${DELETE_OUTPUT:0:200}"
                 warning "Continuing with creation anyway..."
