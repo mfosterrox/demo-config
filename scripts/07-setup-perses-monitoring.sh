@@ -175,13 +175,18 @@ else
         
         # Always delete existing auth provider to avoid certificate mixups
         log "Deleting existing UserPKI auth provider 'Prometheus' if it exists..."
+        # Temporarily disable ERR trap since delete may fail if provider doesn't exist (which is okay)
         set +e
+        trap '' ERR
         # Use printf to send "y\n" (yes with newline) to answer the interactive confirmation prompt
         # Use timeout to prevent hanging if the command doesn't respond
+        # Add || true to prevent non-zero exit code from causing issues
         DELETE_OUTPUT=$(timeout 30 bash -c "printf 'y\n' | $ROXCTL_CMD -e \"$ROX_ENDPOINT_NORMALIZED\" \
             central userpki delete Prometheus \
-            --insecure-skip-tls-verify 2>&1" 2>&1)
+            --insecure-skip-tls-verify 2>&1" 2>&1 || true)
         DELETE_EXIT_CODE=$?
+        # Re-enable ERR trap
+        trap 'error "Command failed: $(cat <<< "$BASH_COMMAND")"' ERR
         set -e
         
         # Check if deletion was successful
