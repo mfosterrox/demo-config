@@ -51,13 +51,13 @@ install_compliance_operator() {
     success "Compliance Operator installation completed successfully"
 }
 
-# Deploy applications to OpenShift cluster (Step 3)
-deploy_applications() {
-    log "Deploying applications to OpenShift cluster..."
-    if ! bash "${SCRIPT_DIR}/scripts/03-deploy-applications.sh"; then
-        error "Application deployment script failed. Installation stopped."
+# Setup Perses monitoring (Step 3)
+setup_perses_monitoring() {
+    log "Setting up Perses monitoring..."
+    if ! bash "${SCRIPT_DIR}/scripts/03-setup-perses-monitoring.sh"; then
+        error "Perses monitoring setup script failed. Installation stopped."
     fi
-    success "Application deployment completed successfully"
+    success "Perses monitoring setup completed successfully"
 }
 
 # Setup compliance scan schedule (Step 4)
@@ -87,13 +87,13 @@ configure_rhacs_settings() {
     success "RHACS configuration completed successfully"
 }
 
-# Setup Perses monitoring (Step 7)
-setup_perses_monitoring() {
-    log "Setting up Perses monitoring..."
-    if ! bash "${SCRIPT_DIR}/scripts/07-setup-perses-monitoring.sh"; then
-        error "Perses monitoring setup script failed. Installation stopped."
+# Deploy applications to OpenShift cluster (Step 7)
+deploy_applications() {
+    log "Deploying applications to OpenShift cluster..."
+    if ! bash "${SCRIPT_DIR}/scripts/07-deploy-applications.sh"; then
+        error "Application deployment script failed. Installation stopped."
     fi
-    success "Perses monitoring setup completed successfully"
+    success "Application deployment completed successfully"
 }
 
 
@@ -125,7 +125,7 @@ main() {
     
     # Verify scripts exist - fail fast if any script is missing
     # Scripts listed in execution order
-    for script in "01-rhacs-setup.sh" "02-compliance-operator-install.sh" "03-deploy-applications.sh" "04-setup-co-scan-schedule.sh" "05-trigger-compliance-scan.sh" "06-configure-rhacs-settings.sh" "07-setup-perses-monitoring.sh"; do
+    for script in "01-rhacs-setup.sh" "02-compliance-operator-install.sh" "03-setup-perses-monitoring.sh" "04-setup-co-scan-schedule.sh" "05-trigger-compliance-scan.sh" "06-configure-rhacs-settings.sh" "07-deploy-applications.sh"; do
         if [ ! -f "$SCRIPT_DIR/scripts/$script" ]; then
             error "Required script not found: $SCRIPT_DIR/scripts/$script"
         fi
@@ -135,11 +135,11 @@ main() {
     # Run setup scripts in order
     setup_rhacs
     install_compliance_operator
-    deploy_applications
+    setup_perses_monitoring
     setup_compliance_scan_schedule
     trigger_compliance_scan
     configure_rhacs_settings
-    setup_perses_monitoring
+    deploy_applications
     
     log "========================================================="
     success "Demo Config setup completed successfully!"
@@ -148,11 +148,11 @@ main() {
     log "All scripts have been executed in order:"
     log "  1. RHACS secured cluster setup"
     log "  2. Red Hat Compliance Operator installation"
-    log "  3. Application deployment"
+    log "  3. Setup Perses monitoring with RHACS metrics dashboards"
     log "  4. Compliance scan schedule setup"
     log "  5. Compliance scan trigger"
     log "  6. RHACS system configuration, exposed metrics, and additional namespaces added to system policies"
-    log "  7. Setup Perses monitoring with RHACS metrics dashboards"
+    log "  7. Application deployment"
 
     
     # Display RHACS access information
