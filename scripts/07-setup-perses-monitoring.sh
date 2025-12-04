@@ -174,51 +174,24 @@ else
         ROX_ENDPOINT_NORMALIZED="${ROX_ENDPOINT_NORMALIZED#http://}"
         
         # Always delete existing auth provider to avoid certificate mixups
-        log "Checking if UserPKI auth provider 'Prometheus' exists and deleting if found..."
+        log "Deleting existing UserPKI auth provider 'Prometheus' if it exists..."
         set +e
-        EXISTING_AUTH_PROVIDERS=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
-            central userpki list \
+        DELETE_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
+            central userpki delete Prometheus \
             --insecure-skip-tls-verify 2>&1)
-        LIST_EXIT_CODE=$?
+        DELETE_EXIT_CODE=$?
         set -e
         
-        if [ $LIST_EXIT_CODE -eq 0 ] && echo "$EXISTING_AUTH_PROVIDERS" | grep -q "Provider: Prometheus"; then
-            log "Found existing UserPKI auth provider 'Prometheus', deleting..."
-            # Extract the provider ID
-            PROVIDER_ID=$(echo "$EXISTING_AUTH_PROVIDERS" | grep -A 1 "Provider: Prometheus" | grep "ID:" | awk '{print $2}')
-            if [ -n "$PROVIDER_ID" ]; then
-                set +e
-                DELETE_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
-                    central userpki delete "$PROVIDER_ID" \
-                    --insecure-skip-tls-verify 2>&1)
-                DELETE_EXIT_CODE=$?
-                set -e
-                
-                if [ $DELETE_EXIT_CODE -eq 0 ]; then
-                    log "✓ Deleted existing UserPKI auth provider 'Prometheus' (ID: $PROVIDER_ID)"
-                else
-                    warning "Failed to delete existing auth provider. Output: ${DELETE_OUTPUT:0:300}"
-                    warning "Attempting to create new provider anyway..."
-                fi
-            else
-                warning "Could not extract provider ID, attempting to delete by name..."
-                # Try deleting by name (some versions might support this)
-                set +e
-                DELETE_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
-                    central userpki delete Prometheus \
-                    --insecure-skip-tls-verify 2>&1)
-                DELETE_EXIT_CODE=$?
-                set -e
-                
-                if [ $DELETE_EXIT_CODE -eq 0 ]; then
-                    log "✓ Deleted existing UserPKI auth provider 'Prometheus'"
-                else
-                    warning "Could not delete provider by name. Output: ${DELETE_OUTPUT:0:300}"
-                    warning "You may need to delete it manually and re-run this script"
-                fi
-            fi
+        if [ $DELETE_EXIT_CODE -eq 0 ]; then
+            log "✓ Deleted existing UserPKI auth provider 'Prometheus'"
         else
-            log "No existing UserPKI auth provider 'Prometheus' found"
+            # It's okay if it doesn't exist - that means there's nothing to delete
+            if echo "$DELETE_OUTPUT" | grep -qi "not found\|does not exist"; then
+                log "No existing UserPKI auth provider 'Prometheus' found (this is okay)"
+            else
+                warning "Failed to delete existing auth provider (may not exist). Output: ${DELETE_OUTPUT:0:200}"
+                warning "Continuing with creation anyway..."
+            fi
         fi
         
         # Create new auth provider
