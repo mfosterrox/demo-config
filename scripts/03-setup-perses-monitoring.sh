@@ -173,6 +173,9 @@ else
         ROX_ENDPOINT_NORMALIZED="${ROX_ENDPOINT_NORMALIZED#https://}"
         ROX_ENDPOINT_NORMALIZED="${ROX_ENDPOINT_NORMALIZED#http://}"
         
+        # Export ROX_API_TOKEN so roxctl can use it as an environment variable
+        export ROX_API_TOKEN
+        
         # Always delete existing auth provider to avoid certificate mixups
         log "Deleting existing UserPKI auth provider 'Prometheus' if it exists..."
         # Temporarily disable ERR trap since delete may fail if provider doesn't exist (which is okay)
@@ -181,8 +184,7 @@ else
         # Use printf to send "y\n" (yes with newline) to answer the interactive confirmation prompt
         # Use timeout to prevent hanging if the command doesn't respond
         # Add || true to prevent non-zero exit code from causing issues
-        DELETE_OUTPUT=$(timeout 30 bash -c "printf 'y\n' | $ROXCTL_CMD -e \"$ROX_ENDPOINT_NORMALIZED\" \
-            --token \"$ROX_API_TOKEN\" \
+        DELETE_OUTPUT=$(timeout 30 bash -c "export ROX_API_TOKEN=\"$ROX_API_TOKEN\"; printf 'y\n' | $ROXCTL_CMD -e \"$ROX_ENDPOINT_NORMALIZED\" \
             central userpki delete Prometheus \
             --insecure-skip-tls-verify 2>&1" 2>&1 || true)
         DELETE_EXIT_CODE=$?
@@ -225,8 +227,7 @@ else
         set +e
         trap '' ERR
         
-        AUTH_PROVIDER_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
-            --token "$ROX_API_TOKEN" \
+        AUTH_PROVIDER_OUTPUT=$(ROX_API_TOKEN="$ROX_API_TOKEN" $ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
             central userpki create Prometheus \
             -c tls.crt \
             -r Admin \
@@ -243,7 +244,7 @@ else
             # Check if it's because it already exists (might have been created between delete and create)
             if echo "$AUTH_PROVIDER_OUTPUT" | grep -qi "already exists\|duplicate"; then
                 warning "Auth provider still exists after deletion attempt. Output: ${AUTH_PROVIDER_OUTPUT:0:300}"
-                warning "You may need to delete it manually: roxctl -e $ROX_ENDPOINT_NORMALIZED --token \"\$ROX_API_TOKEN\" central userpki list --insecure-skip-tls-verify"
+                warning "You may need to delete it manually: ROX_API_TOKEN=\"\$ROX_API_TOKEN\" roxctl -e $ROX_ENDPOINT_NORMALIZED central userpki list --insecure-skip-tls-verify"
             else
                 error "Failed to create UserPKI auth provider. Exit code: $AUTH_PROVIDER_EXIT_CODE. Output: ${AUTH_PROVIDER_OUTPUT:0:500}"
             fi
