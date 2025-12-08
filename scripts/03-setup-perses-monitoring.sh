@@ -208,13 +208,26 @@ else
         
         # Create new auth provider
         log "Creating UserPKI auth provider 'Prometheus' with Admin role..."
+        
+        # Verify certificate file exists
+        if [ ! -f "tls.crt" ]; then
+            error "Certificate file 'tls.crt' not found in current directory. Cannot create UserPKI auth provider."
+        fi
+        log "✓ Certificate file 'tls.crt' found"
+        
+        # Temporarily disable ERR trap to handle errors manually
         set +e
+        trap '' ERR
+        
         AUTH_PROVIDER_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
             central userpki create Prometheus \
             -c tls.crt \
             -r Admin \
             --insecure-skip-tls-verify 2>&1)
         AUTH_PROVIDER_EXIT_CODE=$?
+        
+        # Re-enable ERR trap
+        trap 'error "Command failed: $(cat <<< "$BASH_COMMAND")"' ERR
         set -e
         
         if [ $AUTH_PROVIDER_EXIT_CODE -eq 0 ]; then
@@ -225,7 +238,7 @@ else
                 warning "Auth provider still exists after deletion attempt. Output: ${AUTH_PROVIDER_OUTPUT:0:300}"
                 warning "You may need to delete it manually: roxctl -e $ROX_ENDPOINT_NORMALIZED central userpki list --insecure-skip-tls-verify"
             else
-                error "Failed to create UserPKI auth provider. Output: ${AUTH_PROVIDER_OUTPUT:0:300}"
+                error "Failed to create UserPKI auth provider. Exit code: $AUTH_PROVIDER_EXIT_CODE. Output: ${AUTH_PROVIDER_OUTPUT:0:500}"
             fi
         fi
     fi
