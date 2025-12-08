@@ -182,6 +182,7 @@ else
         # Use timeout to prevent hanging if the command doesn't respond
         # Add || true to prevent non-zero exit code from causing issues
         DELETE_OUTPUT=$(timeout 30 bash -c "printf 'y\n' | $ROXCTL_CMD -e \"$ROX_ENDPOINT_NORMALIZED\" \
+            --token \"$ROX_API_TOKEN\" \
             central userpki delete Prometheus \
             --insecure-skip-tls-verify 2>&1" 2>&1 || true)
         DELETE_EXIT_CODE=$?
@@ -215,11 +216,17 @@ else
         fi
         log "✓ Certificate file 'tls.crt' found"
         
+        # Verify ROX_API_TOKEN is set
+        if [ -z "$ROX_API_TOKEN" ]; then
+            error "ROX_API_TOKEN is required for roxctl authentication but is not set."
+        fi
+        
         # Temporarily disable ERR trap to handle errors manually
         set +e
         trap '' ERR
         
         AUTH_PROVIDER_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
+            --token "$ROX_API_TOKEN" \
             central userpki create Prometheus \
             -c tls.crt \
             -r Admin \
@@ -236,7 +243,7 @@ else
             # Check if it's because it already exists (might have been created between delete and create)
             if echo "$AUTH_PROVIDER_OUTPUT" | grep -qi "already exists\|duplicate"; then
                 warning "Auth provider still exists after deletion attempt. Output: ${AUTH_PROVIDER_OUTPUT:0:300}"
-                warning "You may need to delete it manually: roxctl -e $ROX_ENDPOINT_NORMALIZED central userpki list --insecure-skip-tls-verify"
+                warning "You may need to delete it manually: roxctl -e $ROX_ENDPOINT_NORMALIZED --token \"\$ROX_API_TOKEN\" central userpki list --insecure-skip-tls-verify"
             else
                 error "Failed to create UserPKI auth provider. Exit code: $AUTH_PROVIDER_EXIT_CODE. Output: ${AUTH_PROVIDER_OUTPUT:0:500}"
             fi
