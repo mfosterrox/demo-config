@@ -345,8 +345,34 @@ if ! oc get operatorgroup -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
 fi
 log "✓ OperatorGroup verified"
 
+# Verify operator is available in catalog before creating subscription
+log "Checking if cluster-observability-operator is available in catalog..."
+if ! oc get packagemanifest cluster-observability-operator -n openshift-marketplace >/dev/null 2>&1; then
+    warning "Operator not found in catalog. Checking available operators..."
+    oc get packagemanifest -n openshift-marketplace | grep -i observability || log "  No observability operators found"
+    error "cluster-observability-operator not found in openshift-marketplace catalog. Please ensure the catalog is available."
+fi
+
+# Get available channels
+AVAILABLE_CHANNELS=$(oc get packagemanifest cluster-observability-operator -n openshift-marketplace -o jsonpath='{.status.channels[*].name}' 2>/dev/null || echo "")
+if [ -n "$AVAILABLE_CHANNELS" ]; then
+    log "✓ Operator found in catalog. Available channels: $AVAILABLE_CHANNELS"
+    # Check if stable channel exists, otherwise use the first available channel
+    if echo "$AVAILABLE_CHANNELS" | grep -q "stable"; then
+        CHANNEL="stable"
+    else
+        CHANNEL=$(echo "$AVAILABLE_CHANNELS" | awk '{print $1}')
+        log "  Using channel: $CHANNEL (stable channel not available)"
+    fi
+else
+    CHANNEL="stable"
+    log "  Using default channel: $CHANNEL"
+fi
+
 # Create Subscription for Cluster Observability Operator
 log "Creating Subscription for Cluster Observability Operator..."
+log "  Channel: $CHANNEL"
+log "  Source: redhat-operators"
 SUBSCRIPTION_CREATED=false
 SUBSCRIPTION_OUTPUT=$(cat <<EOF | oc apply -f - 2>&1
 apiVersion: operators.coreos.com/v1alpha1
@@ -355,12 +381,11 @@ metadata:
   name: cluster-observability-operator
   namespace: $OPERATOR_NAMESPACE
 spec:
-  channel: stable
+  channel: $CHANNEL
   installPlanApproval: Automatic
   name: cluster-observability-operator
   source: redhat-operators
   sourceNamespace: openshift-marketplace
-  startingCSV: cluster-observability-operator.v1.3.0
 EOF
 )
 SUBSCRIPTION_EXIT_CODE=$?
@@ -424,6 +449,38 @@ if [ -n "$SUBSCRIPTION_STATUS" ]; then
     log "  Subscription state: $SUBSCRIPTION_STATUS"
 fi
 
+# Check subscription conditions for errors
+log "Checking subscription conditions..."
+SUBSCRIPTION_CONDITIONS=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.conditions[*].type}' 2>/dev/null || echo "")
+if [ -n "$SUBSCRIPTION_CONDITIONS" ]; then
+    for condition in $SUBSCRIPTION_CONDITIONS; do
+        CONDITION_STATUS=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath="{.status.conditions[?(@.type==\"$condition\")].status}" 2>/dev/null || echo "")
+        CONDITION_MESSAGE=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath="{.status.conditions[?(@.type==\"$condition\")].message}" 2>/dev/null || echo "")
+        if [ "$CONDITION_STATUS" = "True" ] || [ "$CONDITION_STATUS" = "False" ]; then
+            log "  Condition $condition: $CONDITION_STATUS"
+            if [ -n "$CONDITION_MESSAGE" ]; then
+                log "    Message: $CONDITION_MESSAGE"
+            fi
+        fi
+    done
+fi
+
+# Check for any error messages in subscription status
+SUBSCRIPTION_ERROR=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.conditions[?(@.type=="CatalogSourcesUnhealthy")].message}' 2>/dev/null || echo "")
+if [ -n "$SUBSCRIPTION_ERROR" ]; then
+    warning "Subscription has catalog source issues: $SUBSCRIPTION_ERROR"
+fi
+
+# Check currentCSV and installedCSV
+CURRENT_CSV=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.currentCSV}' 2>/dev/null || echo "")
+INSTALLED_CSV=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.installedCSV}' 2>/dev/null || echo "")
+if [ -n "$CURRENT_CSV" ]; then
+    log "  Current CSV: $CURRENT_CSV"
+fi
+if [ -n "$INSTALLED_CSV" ]; then
+    log "  Installed CSV: $INSTALLED_CSV"
+fi
+
 # Check for InstallPlan
 log "Checking for InstallPlan..."
 INSTALL_PLAN=$(oc get installplan -n $OPERATOR_NAMESPACE -l operators.coreos.com/cluster-observability-operator.openshift-cluster-observability-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
@@ -457,8 +514,19 @@ while ! oc get csv -n $OPERATOR_NAMESPACE 2>/dev/null | grep -q cluster-observab
         if oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
             log "  ✓ Subscription exists"
             log ""
-            log "Subscription details:"
-            oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o yaml 2>/dev/null | grep -A 20 "status:" || log "  Could not get subscription status"
+            log "Subscription status summary:"
+            SUB_STATE=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.state}' 2>/dev/null || echo "unknown")
+            SUB_CURRENT_CSV=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.currentCSV}' 2>/dev/null || echo "none")
+            SUB_INSTALLED_CSV=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.installedCSV}' 2>/dev/null || echo "none")
+            log "  State: $SUB_STATE"
+            log "  Current CSV: $SUB_CURRENT_CSV"
+            log "  Installed CSV: $SUB_INSTALLED_CSV"
+            log ""
+            log "Subscription conditions:"
+            oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath='{range .status.conditions[*]}{.type}: {.status} - {.message}{"\n"}{end}' 2>/dev/null || log "  Could not get conditions"
+            log ""
+            log "Full subscription details:"
+            oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o yaml 2>/dev/null | grep -A 30 "status:" || log "  Could not get subscription status"
         else
             log "  ✗ Subscription NOT FOUND in namespace $OPERATOR_NAMESPACE"
             log ""
@@ -499,13 +567,29 @@ while ! oc get csv -n $OPERATOR_NAMESPACE 2>/dev/null | grep -q cluster-observab
         if oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
             CURRENT_STATE=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.state}' 2>/dev/null || echo "unknown")
             CURRENT_CSV=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.currentCSV}' 2>/dev/null || echo "none")
-            log "Waiting for CSV to be created... ($WAIT_COUNT/$MAX_WAIT) - Subscription state: $CURRENT_STATE, Current CSV: $CURRENT_CSV"
+            INSTALLED_CSV=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.installedCSV}' 2>/dev/null || echo "none")
+            
+            log "Waiting for CSV to be created... ($WAIT_COUNT/$MAX_WAIT) - Subscription state: $CURRENT_STATE"
+            if [ "$CURRENT_CSV" != "none" ] && [ -n "$CURRENT_CSV" ]; then
+                log "  Current CSV: $CURRENT_CSV"
+            fi
+            if [ "$INSTALLED_CSV" != "none" ] && [ -n "$INSTALLED_CSV" ]; then
+                log "  Installed CSV: $INSTALLED_CSV"
+            fi
+            
+            # Check for error conditions
+            ERROR_CONDITION=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.conditions[?(@.status=="True" && @.type=="CatalogSourcesUnhealthy")].message}' 2>/dev/null || echo "")
+            if [ -n "$ERROR_CONDITION" ]; then
+                warning "  Subscription error: $ERROR_CONDITION"
+            fi
             
             # Check for InstallPlan
             INSTALL_PLAN_CHECK=$(oc get installplan -n $OPERATOR_NAMESPACE -l operators.coreos.com/cluster-observability-operator.openshift-cluster-observability-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
             if [ -n "$INSTALL_PLAN_CHECK" ]; then
                 INSTALL_PLAN_PHASE=$(oc get installplan $INSTALL_PLAN_CHECK -n $OPERATOR_NAMESPACE -o jsonpath='{.status.phase}' 2>/dev/null || echo "unknown")
                 log "  InstallPlan: $INSTALL_PLAN_CHECK (phase: $INSTALL_PLAN_PHASE)"
+            else
+                log "  No InstallPlan found yet"
             fi
         else
             log "Waiting for CSV to be created... ($WAIT_COUNT/$MAX_WAIT) - WARNING: Subscription not found!"
