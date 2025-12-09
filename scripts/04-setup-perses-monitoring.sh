@@ -82,7 +82,96 @@ else
     log "✓ Loaded NAMESPACE from ~/.bashrc: $NAMESPACE"
 fi
 
+OPERATOR_NAMESPACE="openshift-cluster-observability-operator"
+
+# Step 0: Check if everything is already installed
+log ""
+log "========================================================="
+log "Step 0: Checking if Cluster Observability Operator and monitoring resources are already installed"
+log "========================================================="
+
+ALREADY_INSTALLED=true
+
+# Check if Cluster Observability Operator is installed and running
+log "Checking Cluster Observability Operator status..."
+if oc get namespace $OPERATOR_NAMESPACE >/dev/null 2>&1; then
+    if oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
+        CURRENT_CSV=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.currentCSV}' 2>/dev/null || echo "")
+        if [ -n "$CURRENT_CSV" ]; then
+            CSV_PHASE=$(oc get csv $CURRENT_CSV -n $OPERATOR_NAMESPACE -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+            if [ "$CSV_PHASE" = "Succeeded" ]; then
+                log "✓ Cluster Observability Operator is installed and running (CSV: $CURRENT_CSV)"
+            else
+                log "  Cluster Observability Operator CSV is in phase: $CSV_PHASE (not Succeeded)"
+                ALREADY_INSTALLED=false
+            fi
+        else
+            log "  Cluster Observability Operator subscription exists but CSV not determined"
+            ALREADY_INSTALLED=false
+        fi
+    else
+        log "  Cluster Observability Operator subscription not found"
+        ALREADY_INSTALLED=false
+    fi
+else
+    log "  Cluster Observability Operator namespace not found"
+    ALREADY_INSTALLED=false
+fi
+
+# Check if key monitoring resources are installed
+if [ "$ALREADY_INSTALLED" = true ]; then
+    log "Checking monitoring resources..."
+    
+    # Check MonitoringStack
+    if oc get monitoringstack rhacs-monitoring-stack -n $NAMESPACE >/dev/null 2>&1; then
+        log "✓ MonitoringStack (rhacs-monitoring-stack) exists"
+    else
+        log "  MonitoringStack (rhacs-monitoring-stack) not found"
+        ALREADY_INSTALLED=false
+    fi
+    
+    # Check ScrapeConfig
+    if oc get scrapeconfig rhacs-scrape-config -n $NAMESPACE >/dev/null 2>&1; then
+        log "✓ ScrapeConfig (rhacs-scrape-config) exists"
+    else
+        log "  ScrapeConfig (rhacs-scrape-config) not found"
+        ALREADY_INSTALLED=false
+    fi
+    
+    # Check Prometheus
+    if oc get prometheus rhacs-prometheus-server -n $NAMESPACE >/dev/null 2>&1; then
+        log "✓ Prometheus (rhacs-prometheus-server) exists"
+    else
+        log "  Prometheus (rhacs-prometheus-server) not found"
+        ALREADY_INSTALLED=false
+    fi
+    
+    # Check Perses Datasource
+    if oc get datasource rhacs-datasource -n $NAMESPACE >/dev/null 2>&1; then
+        log "✓ Perses Datasource (rhacs-datasource) exists"
+    else
+        log "  Perses Datasource (rhacs-datasource) not found"
+        ALREADY_INSTALLED=false
+    fi
+fi
+
+# If everything is installed, skip to the end
+if [ "$ALREADY_INSTALLED" = true ]; then
+    log ""
+    log "========================================================="
+    log "✓ All components are already installed!"
+    log "Skipping installation and proceeding to final summary..."
+    log "========================================================="
+    log ""
+    SKIP_INSTALLATION=true
+else
+    log ""
+    log "Not all components are installed. Proceeding with installation..."
+    SKIP_INSTALLATION=false
+fi
+
 # Step 0: Generate TLS certificate for RHACS Prometheus monitoring stack
+if [ "$SKIP_INSTALLATION" = false ]; then
 log ""
 log "========================================================="
 log "Step 0: Generating TLS certificate for RHACS Prometheus"
@@ -256,13 +345,100 @@ fi
 rm -f tls.key tls.crt
 log "✓ Temporary certificate files cleaned up"
 
+OPERATOR_NAMESPACE="openshift-cluster-observability-operator"
+
+# Step 0: Check if everything is already installed
+log ""
+log "========================================================="
+log "Step 0: Checking if Cluster Observability Operator and monitoring resources are already installed"
+log "========================================================="
+
+ALREADY_INSTALLED=true
+
+# Check if Cluster Observability Operator is installed and running
+log "Checking Cluster Observability Operator status..."
+if oc get namespace $OPERATOR_NAMESPACE >/dev/null 2>&1; then
+    if oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
+        CURRENT_CSV=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.currentCSV}' 2>/dev/null || echo "")
+        if [ -n "$CURRENT_CSV" ]; then
+            CSV_PHASE=$(oc get csv $CURRENT_CSV -n $OPERATOR_NAMESPACE -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+            if [ "$CSV_PHASE" = "Succeeded" ]; then
+                log "✓ Cluster Observability Operator is installed and running (CSV: $CURRENT_CSV)"
+            else
+                log "  Cluster Observability Operator CSV is in phase: $CSV_PHASE (not Succeeded)"
+                ALREADY_INSTALLED=false
+            fi
+        else
+            log "  Cluster Observability Operator subscription exists but CSV not determined"
+            ALREADY_INSTALLED=false
+        fi
+    else
+        log "  Cluster Observability Operator subscription not found"
+        ALREADY_INSTALLED=false
+    fi
+else
+    log "  Cluster Observability Operator namespace not found"
+    ALREADY_INSTALLED=false
+fi
+
+# Check if key monitoring resources are installed
+if [ "$ALREADY_INSTALLED" = true ]; then
+    log "Checking monitoring resources..."
+    
+    # Check MonitoringStack
+    if oc get monitoringstack rhacs-monitoring-stack -n $NAMESPACE >/dev/null 2>&1; then
+        log "✓ MonitoringStack (rhacs-monitoring-stack) exists"
+    else
+        log "  MonitoringStack (rhacs-monitoring-stack) not found"
+        ALREADY_INSTALLED=false
+    fi
+    
+    # Check ScrapeConfig
+    if oc get scrapeconfig rhacs-scrape-config -n $NAMESPACE >/dev/null 2>&1; then
+        log "✓ ScrapeConfig (rhacs-scrape-config) exists"
+    else
+        log "  ScrapeConfig (rhacs-scrape-config) not found"
+        ALREADY_INSTALLED=false
+    fi
+    
+    # Check Prometheus
+    if oc get prometheus rhacs-prometheus-server -n $NAMESPACE >/dev/null 2>&1; then
+        log "✓ Prometheus (rhacs-prometheus-server) exists"
+    else
+        log "  Prometheus (rhacs-prometheus-server) not found"
+        ALREADY_INSTALLED=false
+    fi
+    
+    # Check Perses Datasource
+    if oc get datasource rhacs-datasource -n $NAMESPACE >/dev/null 2>&1; then
+        log "✓ Perses Datasource (rhacs-datasource) exists"
+    else
+        log "  Perses Datasource (rhacs-datasource) not found"
+        ALREADY_INSTALLED=false
+    fi
+fi
+
+# If everything is installed, skip to the end
+if [ "$ALREADY_INSTALLED" = true ]; then
+    log ""
+    log "========================================================="
+    log "✓ All components are already installed!"
+    log "Skipping installation and proceeding to final summary..."
+    log "========================================================="
+    log ""
+    SKIP_INSTALLATION=true
+else
+    log ""
+    log "Not all components are installed. Proceeding with installation..."
+    SKIP_INSTALLATION=false
+fi
+
 # Step 1: Install Cluster Observability Operator
+if [ "$SKIP_INSTALLATION" = false ]; then
 log ""
 log "========================================================="
 log "Step 1: Installing Cluster Observability Operator"
 log "========================================================="
-
-OPERATOR_NAMESPACE="openshift-cluster-observability-operator"
 
 # Check if Cluster Observability Operator is already installed
 log "Checking if Cluster Observability Operator is already installed..."
@@ -312,41 +488,58 @@ if ! oc get namespace $OPERATOR_NAMESPACE >/dev/null 2>&1; then
 fi
 log "✓ Namespace verified and accessible"
 
-# Create OperatorGroup (if it doesn't exist)
-# Note: Cluster Observability Operator may need a cluster-scoped OperatorGroup
-# or one that watches all namespaces, similar to how the UI creates it
-log "Checking for OperatorGroup..."
-OPERATOR_GROUP_EXISTS=false
-if oc get operatorgroup -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
-    OPERATOR_GROUP_EXISTS=true
-    log "✓ OperatorGroup already exists"
-    # Check if it's cluster-scoped (empty targetNamespaces)
-    OG_TARGETS=$(oc get operatorgroup -n $OPERATOR_NAMESPACE -o jsonpath='{.items[0].spec.targetNamespaces[*]}' 2>/dev/null || echo "")
-    if [ -z "$OG_TARGETS" ]; then
-        log "  OperatorGroup is cluster-scoped (watches all namespaces)"
-    else
-        log "  OperatorGroup targets: $OG_TARGETS"
-    fi
+# Cleanup: Delete wrong OperatorGroup and Subscription if they exist
+log ""
+log "========================================================="
+log "Cleanup: Removing incorrect OperatorGroup and Subscription"
+log "========================================================="
+
+# Check for existing OperatorGroups and delete wrong ones
+log "Checking for existing OperatorGroups..."
+EXISTING_OGS=$(oc get operatorgroup -n $OPERATOR_NAMESPACE -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+if [ -n "$EXISTING_OGS" ]; then
+    for og_name in $EXISTING_OGS; do
+        log "  Found OperatorGroup: $og_name"
+        # Delete if it's not the correct one (cluster-observability-og)
+        if [ "$og_name" != "cluster-observability-og" ]; then
+            log "  Deleting incorrect OperatorGroup: $og_name"
+            oc delete operatorgroup $og_name -n $OPERATOR_NAMESPACE 2>/dev/null && log "    ✓ Deleted" || log "    (may not exist or already deleted)"
+        fi
+    done
 else
-    log "Creating OperatorGroup..."
-    # Try cluster-scoped first (empty targetNamespaces), which is what UI often uses
-    # This allows the operator to watch all namespaces
-    if ! cat <<EOF | oc apply -f -
+    log "  No existing OperatorGroups found"
+fi
+
+# Delete stuck Subscription (it will be recreated correctly)
+log "Checking for existing Subscription..."
+if oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
+    log "  Deleting existing Subscription (will be recreated correctly)..."
+    oc delete subscription cluster-observability-operator -n $OPERATOR_NAMESPACE 2>/dev/null && log "    ✓ Deleted" || log "    (may not exist or already deleted)"
+    # Wait a moment for deletion to complete
+    sleep 3
+else
+    log "  No existing Subscription found"
+fi
+
+# Create proper OperatorGroup that supports global operators
+log ""
+log "Creating proper OperatorGroup with AllNamespaces mode..."
+if ! cat <<EOF | oc apply -f -
 apiVersion: operators.coreos.com/v1
 kind: OperatorGroup
 metadata:
-  name: cluster-observability-operator
+  name: cluster-observability-og
   namespace: $OPERATOR_NAMESPACE
-spec: {}
+spec:
+  targetNamespaces: []   # empty list = AllNamespaces mode (required for COO)
 EOF
-    then
-        error "Failed to create OperatorGroup"
-    fi
-    log "✓ OperatorGroup created successfully (cluster-scoped)"
-    # Wait for OperatorGroup to be ready
-    log "Waiting for OperatorGroup to be ready..."
-    sleep 5
+then
+    error "Failed to create OperatorGroup"
 fi
+log "✓ OperatorGroup created successfully (AllNamespaces mode)"
+# Wait for OperatorGroup to be ready
+log "Waiting for OperatorGroup to be ready..."
+sleep 5
 
 # Verify OperatorGroup exists and is ready
 if ! oc get operatorgroup -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
@@ -393,21 +586,9 @@ if ! oc get packagemanifest cluster-observability-operator -n openshift-marketpl
     fi
 fi
 
-# Get available channels
-AVAILABLE_CHANNELS=$(oc get packagemanifest cluster-observability-operator -n openshift-marketplace -o jsonpath='{.status.channels[*].name}' 2>/dev/null || echo "")
-if [ -n "$AVAILABLE_CHANNELS" ]; then
-    log "✓ Operator found in catalog. Available channels: $AVAILABLE_CHANNELS"
-    # Check if stable channel exists, otherwise use the first available channel
-    if echo "$AVAILABLE_CHANNELS" | grep -q "stable"; then
-        CHANNEL="stable"
-    else
-        CHANNEL=$(echo "$AVAILABLE_CHANNELS" | awk '{print $1}')
-        log "  Using channel: $CHANNEL (stable channel not available)"
-    fi
-else
-    CHANNEL="stable"
-    log "  Using default channel: $CHANNEL"
-fi
+# Set channel to stable (the correct channel name for cluster-observability-operator)
+CHANNEL="stable"
+log "✓ Operator found in catalog. Using channel: $CHANNEL"
 
 # Check if subscription already exists (might have been created via UI)
 log "Checking if subscription already exists..."
@@ -418,14 +599,18 @@ if oc get subscription.operators.coreos.com cluster-observability-operator -n $O
     log "  Existing subscription channel: ${EXISTING_SUB_CHANNEL:-unknown}"
     log "  Existing subscription source: ${EXISTING_SUB_SOURCE:-unknown}"
     
-    # If channel differs, update it
+    # If channel differs, update it to stable-1.0
     if [ -n "$EXISTING_SUB_CHANNEL" ] && [ "$EXISTING_SUB_CHANNEL" != "$CHANNEL" ]; then
         log "  Updating subscription channel from '$EXISTING_SUB_CHANNEL' to '$CHANNEL'..."
         oc patch subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE --type merge -p "{\"spec\":{\"channel\":\"$CHANNEL\"}}" || warning "Failed to update channel"
+        log "✓ Subscription channel updated to $CHANNEL"
+    elif [ "$EXISTING_SUB_CHANNEL" = "$CHANNEL" ]; then
+        log "✓ Subscription channel is already set to $CHANNEL"
     fi
     SUBSCRIPTION_CREATED=true
 else
     # Create Subscription for Cluster Observability Operator
+    log ""
     log "Creating Subscription for Cluster Observability Operator..."
     log "  Channel: $CHANNEL"
     log "  Source: redhat-operators"
@@ -438,7 +623,7 @@ metadata:
   name: cluster-observability-operator
   namespace: $OPERATOR_NAMESPACE
 spec:
-  channel: $CHANNEL
+  channel: stable
   installPlanApproval: Automatic
   name: cluster-observability-operator
   source: redhat-operators
@@ -457,6 +642,7 @@ EOF
         error "Failed to create Subscription. Check output above for details."
     fi
 fi
+fi  # End of SKIP_INSTALLATION check for Step 1
 
 # Wait for OLM to process the subscription and create InstallPlan
 log "Waiting for OLM to process subscription (this may take 10-30 seconds)..."
@@ -786,6 +972,7 @@ log "========================================================="
 log ""
 
 # Step 2: Install Cluster Observability Operator resources
+if [ "$SKIP_INSTALLATION" = false ]; then
 log ""
 log "========================================================="
 log "Step 2: Installing Cluster Observability Operator resources"
@@ -908,13 +1095,20 @@ fi
 log ""
 log "Perses monitoring resources installed successfully!"
 log ""
+fi  # End of SKIP_INSTALLATION check for YAML installation
 
 # Final summary
 log ""
 log "========================================================="
-log "Perses Monitoring Setup Completed Successfully!"
-log "========================================================="
-log "All monitoring resources have been installed:"
+if [ "$SKIP_INSTALLATION" = true ]; then
+    log "Perses Monitoring Setup - Already Installed"
+    log "========================================================="
+    log "All components were already installed:"
+else
+    log "Perses Monitoring Setup Completed Successfully!"
+    log "========================================================="
+    log "All monitoring resources have been installed:"
+fi
 log "  ✓ TLS certificate for RHACS Prometheus"
 log "  ✓ Cluster Observability Operator"
 log "  ✓ MonitoringStack and ScrapeConfig"
