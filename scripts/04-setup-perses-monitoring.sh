@@ -313,30 +313,39 @@ fi
 log "✓ Namespace verified and accessible"
 
 # Create OperatorGroup (if it doesn't exist)
+# Note: Cluster Observability Operator may need a cluster-scoped OperatorGroup
+# or one that watches all namespaces, similar to how the UI creates it
 log "Checking for OperatorGroup..."
 OPERATOR_GROUP_EXISTS=false
 if oc get operatorgroup -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
     OPERATOR_GROUP_EXISTS=true
     log "✓ OperatorGroup already exists"
+    # Check if it's cluster-scoped (empty targetNamespaces)
+    OG_TARGETS=$(oc get operatorgroup -n $OPERATOR_NAMESPACE -o jsonpath='{.items[0].spec.targetNamespaces[*]}' 2>/dev/null || echo "")
+    if [ -z "$OG_TARGETS" ]; then
+        log "  OperatorGroup is cluster-scoped (watches all namespaces)"
+    else
+        log "  OperatorGroup targets: $OG_TARGETS"
+    fi
 else
     log "Creating OperatorGroup..."
+    # Try cluster-scoped first (empty targetNamespaces), which is what UI often uses
+    # This allows the operator to watch all namespaces
     if ! cat <<EOF | oc apply -f -
 apiVersion: operators.coreos.com/v1
 kind: OperatorGroup
 metadata:
   name: cluster-observability-operator
   namespace: $OPERATOR_NAMESPACE
-spec:
-  targetNamespaces:
-  - $OPERATOR_NAMESPACE
+spec: {}
 EOF
     then
         error "Failed to create OperatorGroup"
     fi
-    log "✓ OperatorGroup created successfully"
+    log "✓ OperatorGroup created successfully (cluster-scoped)"
     # Wait for OperatorGroup to be ready
     log "Waiting for OperatorGroup to be ready..."
-    sleep 3
+    sleep 5
 fi
 
 # Verify OperatorGroup exists and is ready
@@ -345,12 +354,43 @@ if ! oc get operatorgroup -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
 fi
 log "✓ OperatorGroup verified"
 
+# Verify catalog source is ready before creating subscription
+log "Checking catalog source availability..."
+CATALOG_SOURCE_READY=false
+for i in {1..12}; do
+    if oc get catalogsource redhat-operators -n openshift-marketplace >/dev/null 2>&1; then
+        CATALOG_STATUS=$(oc get catalogsource redhat-operators -n openshift-marketplace -o jsonpath='{.status.connectionState.lastObservedState}' 2>/dev/null || echo "")
+        if [ "$CATALOG_STATUS" = "READY" ]; then
+            CATALOG_SOURCE_READY=true
+            log "✓ Catalog source 'redhat-operators' is READY"
+            break
+        else
+            log "  Catalog source status: ${CATALOG_STATUS:-unknown} (waiting for READY...)"
+        fi
+    else
+        log "  Catalog source 'redhat-operators' not found (attempt $i/12)"
+    fi
+    if [ $i -lt 12 ]; then
+        sleep 5
+    fi
+done
+
+if [ "$CATALOG_SOURCE_READY" = false ]; then
+    warning "Catalog source may not be ready, but continuing..."
+fi
+
 # Verify operator is available in catalog before creating subscription
 log "Checking if cluster-observability-operator is available in catalog..."
 if ! oc get packagemanifest cluster-observability-operator -n openshift-marketplace >/dev/null 2>&1; then
     warning "Operator not found in catalog. Checking available operators..."
     oc get packagemanifest -n openshift-marketplace | grep -i observability || log "  No observability operators found"
-    error "cluster-observability-operator not found in openshift-marketplace catalog. Please ensure the catalog is available."
+    warning "cluster-observability-operator not found in openshift-marketplace catalog. This may be normal if catalog is still syncing."
+    log "Waiting 30 seconds for catalog to sync..."
+    sleep 30
+    # Try again
+    if ! oc get packagemanifest cluster-observability-operator -n openshift-marketplace >/dev/null 2>&1; then
+        error "cluster-observability-operator still not found in openshift-marketplace catalog after waiting. Please ensure the catalog is available."
+    fi
 fi
 
 # Get available channels
@@ -369,12 +409,29 @@ else
     log "  Using default channel: $CHANNEL"
 fi
 
-# Create Subscription for Cluster Observability Operator
-log "Creating Subscription for Cluster Observability Operator..."
-log "  Channel: $CHANNEL"
-log "  Source: redhat-operators"
-SUBSCRIPTION_CREATED=false
-SUBSCRIPTION_OUTPUT=$(cat <<EOF | oc apply -f - 2>&1
+# Check if subscription already exists (might have been created via UI)
+log "Checking if subscription already exists..."
+if oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
+    log "✓ Subscription already exists (may have been created via UI)"
+    EXISTING_SUB_CHANNEL=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.spec.channel}' 2>/dev/null || echo "")
+    EXISTING_SUB_SOURCE=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.spec.source}' 2>/dev/null || echo "")
+    log "  Existing subscription channel: ${EXISTING_SUB_CHANNEL:-unknown}"
+    log "  Existing subscription source: ${EXISTING_SUB_SOURCE:-unknown}"
+    
+    # If channel differs, update it
+    if [ -n "$EXISTING_SUB_CHANNEL" ] && [ "$EXISTING_SUB_CHANNEL" != "$CHANNEL" ]; then
+        log "  Updating subscription channel from '$EXISTING_SUB_CHANNEL' to '$CHANNEL'..."
+        oc patch subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE --type merge -p "{\"spec\":{\"channel\":\"$CHANNEL\"}}" || warning "Failed to update channel"
+    fi
+    SUBSCRIPTION_CREATED=true
+else
+    # Create Subscription for Cluster Observability Operator
+    log "Creating Subscription for Cluster Observability Operator..."
+    log "  Channel: $CHANNEL"
+    log "  Source: redhat-operators"
+    log "  SourceNamespace: openshift-marketplace"
+    SUBSCRIPTION_CREATED=false
+    SUBSCRIPTION_OUTPUT=$(cat <<EOF | oc apply -f - 2>&1
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
 metadata:
@@ -387,17 +444,18 @@ spec:
   source: redhat-operators
   sourceNamespace: openshift-marketplace
 EOF
-)
-SUBSCRIPTION_EXIT_CODE=$?
+    )
+    SUBSCRIPTION_EXIT_CODE=$?
 
-if [ $SUBSCRIPTION_EXIT_CODE -eq 0 ]; then
-    SUBSCRIPTION_CREATED=true
-    log "✓ Subscription creation command succeeded"
-    log "  Output: $SUBSCRIPTION_OUTPUT"
-else
-    log "Subscription creation command failed with exit code: $SUBSCRIPTION_EXIT_CODE"
-    log "  Output: $SUBSCRIPTION_OUTPUT"
-    error "Failed to create Subscription. Check output above for details."
+    if [ $SUBSCRIPTION_EXIT_CODE -eq 0 ]; then
+        SUBSCRIPTION_CREATED=true
+        log "✓ Subscription creation command succeeded"
+        log "  Output: $SUBSCRIPTION_OUTPUT"
+    else
+        log "Subscription creation command failed with exit code: $SUBSCRIPTION_EXIT_CODE"
+        log "  Output: $SUBSCRIPTION_OUTPUT"
+        error "Failed to create Subscription. Check output above for details."
+    fi
 fi
 
 # Wait for OLM to process the subscription and create InstallPlan

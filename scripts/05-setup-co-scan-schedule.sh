@@ -437,7 +437,7 @@ fi
 
     log "Compliance scan schedule setup completed successfully!"
 log "Scan configuration ID: $SCAN_CONFIG_ID"
-log "Note: Run script 05-trigger-compliance-scan.sh to trigger an immediate scan"
+log "Note: Run script 06-trigger-compliance-scan.sh to trigger an immediate scan"
 log ""
 
 # Diagnostic: Check if compliance scan results are syncing properly
@@ -544,7 +544,7 @@ if command -v oc &>/dev/null && oc whoami &>/dev/null 2>&1; then
     else
         log ""
         log "No scan results found yet. This is normal if:"
-        log "  - No scans have been run yet (run script 05-trigger-compliance-scan.sh)"
+        log "  - No scans have been run yet (run script 06-trigger-compliance-scan.sh)"
         log "  - Scan is still in progress"
         log ""
         log "If scan completed but results don't appear, restart the sensor:"

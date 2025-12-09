@@ -111,10 +111,10 @@ Each script can be run independently, as long as script 01 has been executed fir
 
 # Then run any other script independently
 ./scripts/02-rhacs-setup.sh
-./scripts/03-setup-perses-monitoring.sh
-./scripts/04-setup-co-scan-schedule.sh
-./scripts/05-trigger-compliance-scan.sh
-./scripts/06-configure-rhacs-settings.sh
+./scripts/03-configure-rhacs-settings.sh
+./scripts/04-setup-perses-monitoring.sh
+./scripts/05-setup-co-scan-schedule.sh
+./scripts/06-trigger-compliance-scan.sh
 ./scripts/07-deploy-applications.sh
 ```
 

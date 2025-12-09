@@ -51,40 +51,40 @@ install_compliance_operator() {
     success "Compliance Operator installation completed successfully"
 }
 
-# Setup Perses monitoring (Step 3)
+# Configure RHACS settings (Step 3)
+configure_rhacs_settings() {
+    log "Configuring RHACS settings..."
+    if ! bash "${SCRIPT_DIR}/scripts/03-configure-rhacs-settings.sh"; then
+        error "RHACS configuration script failed. Installation stopped."
+    fi
+    success "RHACS configuration completed successfully"
+}
+
+# Setup Perses monitoring (Step 4)
 setup_perses_monitoring() {
     log "Setting up Perses monitoring..."
-    if ! bash "${SCRIPT_DIR}/scripts/03-setup-perses-monitoring.sh"; then
+    if ! bash "${SCRIPT_DIR}/scripts/04-setup-perses-monitoring.sh"; then
         error "Perses monitoring setup script failed. Installation stopped."
     fi
     success "Perses monitoring setup completed successfully"
 }
 
-# Setup compliance scan schedule (Step 4)
+# Setup compliance scan schedule (Step 5)
 setup_compliance_scan_schedule() {
     log "Setting up compliance scan schedule..."
-    if ! bash "${SCRIPT_DIR}/scripts/04-setup-co-scan-schedule.sh"; then
+    if ! bash "${SCRIPT_DIR}/scripts/05-setup-co-scan-schedule.sh"; then
         error "Compliance scan schedule script failed. Installation stopped."
     fi
     success "Compliance scan schedule setup completed successfully"
 }
 
-# Trigger compliance scan (Step 5)
+# Trigger compliance scan (Step 6)
 trigger_compliance_scan() {
     log "Triggering compliance scan..."
-    if ! bash "${SCRIPT_DIR}/scripts/05-trigger-compliance-scan.sh"; then
+    if ! bash "${SCRIPT_DIR}/scripts/06-trigger-compliance-scan.sh"; then
         error "Compliance scan trigger script failed. Installation stopped."
     fi
     success "Compliance scan trigger completed successfully"
-}
-
-# Configure RHACS settings (Step 6)
-configure_rhacs_settings() {
-    log "Configuring RHACS settings..."
-    if ! bash "${SCRIPT_DIR}/scripts/06-configure-rhacs-settings.sh"; then
-        error "RHACS configuration script failed. Installation stopped."
-    fi
-    success "RHACS configuration completed successfully"
 }
 
 # Deploy applications to OpenShift cluster (Step 7)
@@ -103,7 +103,7 @@ main() {
     
     # Clone the repository if running from curl
     # Check if we're running from curl by looking for the scripts directory
-    if [ ! -d "scripts" ] || [ ! -f "scripts/02-rhacs-setup.sh" ]; then
+    if [ ! -d "scripts" ] || [ ! -f "scripts/01-rhacs-setup.sh" ]; then
         log "Scripts not found locally, cloning repository..."
         REPO_DIR="$HOME/demo-config"
         if [ -d "$REPO_DIR" ]; then
@@ -125,7 +125,7 @@ main() {
     
     # Verify scripts exist - fail fast if any script is missing
     # Scripts listed in execution order
-    for script in "01-rhacs-setup.sh" "02-compliance-operator-install.sh" "03-setup-perses-monitoring.sh" "04-setup-co-scan-schedule.sh" "05-trigger-compliance-scan.sh" "06-configure-rhacs-settings.sh" "07-deploy-applications.sh"; do
+    for script in "01-rhacs-setup.sh" "02-compliance-operator-install.sh" "03-configure-rhacs-settings.sh" "04-setup-perses-monitoring.sh" "05-setup-co-scan-schedule.sh" "06-trigger-compliance-scan.sh" "07-deploy-applications.sh"; do
         if [ ! -f "$SCRIPT_DIR/scripts/$script" ]; then
             error "Required script not found: $SCRIPT_DIR/scripts/$script"
         fi
@@ -135,10 +135,10 @@ main() {
     # Run setup scripts in order
     setup_rhacs
     install_compliance_operator
+    configure_rhacs_settings
     setup_perses_monitoring
     setup_compliance_scan_schedule
     trigger_compliance_scan
-    configure_rhacs_settings
     deploy_applications
     
     log "========================================================="
@@ -148,10 +148,10 @@ main() {
     log "All scripts have been executed in order:"
     log "  1. RHACS secured cluster setup"
     log "  2. Red Hat Compliance Operator installation"
-    log "  3. Setup Perses monitoring with RHACS metrics dashboards"
-    log "  4. Compliance scan schedule setup"
-    log "  5. Compliance scan trigger"
-    log "  6. RHACS system configuration, exposed metrics, and additional namespaces added to system policies"
+    log "  3. RHACS system configuration, exposed metrics, and additional namespaces added to system policies"
+    log "  4. Setup Perses monitoring with RHACS metrics dashboards"
+    log "  5. Compliance scan schedule setup"
+    log "  6. Compliance scan trigger"
     log "  7. Application deployment"
 
     
