@@ -411,11 +411,53 @@ if [ "$SKIP_CREATION" = "false" ]; then
     fi
 fi
 
-# Save SCAN_CONFIG_ID to ~/.bashrc for use by script 05
+# Save SCAN_CONFIG_ID to ~/.bashrc for use by script 06
 if [ -n "$SCAN_CONFIG_ID" ] && [ "$SCAN_CONFIG_ID" != "null" ]; then
     save_to_bashrc "SCAN_CONFIG_ID" "$SCAN_CONFIG_ID"
     log "✓ Saved SCAN_CONFIG_ID to ~/.bashrc"
 fi
+
+# Trigger the scan immediately after creation
+log ""
+log "========================================================="
+log "Triggering compliance scan..."
+log "========================================================="
+
+if [ -z "$SCAN_CONFIG_ID" ] || [ "$SCAN_CONFIG_ID" = "null" ]; then
+    warning "Cannot trigger scan: SCAN_CONFIG_ID is not set"
+else
+    log "Triggering scan for configuration ID: $SCAN_CONFIG_ID"
+    set +e
+    TRIGGER_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X POST \
+        -H "Authorization: Bearer $ROX_API_TOKEN" \
+        -H "Content-Type: application/json" \
+        "$ROX_ENDPOINT/v2/compliance/scan/configurations/$SCAN_CONFIG_ID/run" 2>&1)
+    TRIGGER_EXIT_CODE=$?
+    set -e
+
+    if [ $TRIGGER_EXIT_CODE -ne 0 ]; then
+        warning "Failed to trigger scan (exit code: $TRIGGER_EXIT_CODE). Response: ${TRIGGER_RESPONSE:0:500}"
+        warning "Scan will run on schedule. You can also trigger it manually later using script 06-trigger-compliance-scan.sh"
+    elif [ -z "$TRIGGER_RESPONSE" ]; then
+        warning "Empty response from scan trigger API"
+        warning "Scan may have been triggered. Check scan status in RHACS UI."
+    elif echo "$TRIGGER_RESPONSE" | grep -qi "error\|failed"; then
+        warning "Scan trigger returned an error response:"
+        echo "$TRIGGER_RESPONSE" | head -10
+        warning "Scan will run on schedule. You can also trigger it manually later using script 06-trigger-compliance-scan.sh"
+    else
+        log "✓ Scan triggered successfully"
+        if echo "$TRIGGER_RESPONSE" | jq . >/dev/null 2>&1; then
+            TRIGGER_STATUS=$(echo "$TRIGGER_RESPONSE" | jq -r '.status // .message // "Triggered"' 2>/dev/null)
+            log "  Response: $TRIGGER_STATUS"
+        fi
+        log ""
+        log "The scan is now running. It may take several minutes to complete."
+        log "You can monitor progress in RHACS UI: Compliance → Coverage tab"
+    fi
+fi
+
+log ""
 
 # If scan already exists, skip diagnostics and exit early
 if [ "$SKIP_CREATION" = "true" ]; then
@@ -435,9 +477,8 @@ if [ "$SKIP_CREATION" = "true" ]; then
     exit 0
 fi
 
-    log "Compliance scan schedule setup completed successfully!"
+log "Compliance scan schedule setup completed successfully!"
 log "Scan configuration ID: $SCAN_CONFIG_ID"
-log "Note: Run script 06-trigger-compliance-scan.sh to trigger an immediate scan"
 log ""
 
 # Diagnostic: Check if compliance scan results are syncing properly
