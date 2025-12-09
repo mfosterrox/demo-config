@@ -344,6 +344,7 @@ fi
 # Clean up temporary certificate files
 rm -f tls.key tls.crt
 log "✓ Temporary certificate files cleaned up"
+fi  # End of SKIP_INSTALLATION check for TLS certificate generation
 
 OPERATOR_NAMESPACE="openshift-cluster-observability-operator"
 
@@ -642,8 +643,6 @@ EOF
         error "Failed to create Subscription. Check output above for details."
     fi
 fi
-fi  # End of SKIP_INSTALLATION check for Step 1
-
 # Wait for OLM to process the subscription and create InstallPlan
 log "Waiting for OLM to process subscription (this may take 10-30 seconds)..."
 SUBSCRIPTION_PROCESSED=false
@@ -972,7 +971,6 @@ log "========================================================="
 log ""
 
 # Step 2: Install Cluster Observability Operator resources
-if [ "$SKIP_INSTALLATION" = false ]; then
 log ""
 log "========================================================="
 log "Step 2: Installing Cluster Observability Operator resources"
@@ -1095,7 +1093,7 @@ fi
 log ""
 log "Perses monitoring resources installed successfully!"
 log ""
-fi  # End of SKIP_INSTALLATION check for YAML installation
+fi  # End of SKIP_INSTALLATION check for all installation steps
 
 # Final summary
 log ""
