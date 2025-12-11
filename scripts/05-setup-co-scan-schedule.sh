@@ -146,8 +146,8 @@ if ! echo "$CLUSTER_RESPONSE" | jq . >/dev/null 2>&1; then
     error "Invalid JSON response from cluster API. Response: ${CLUSTER_RESPONSE:0:300}"
 fi
 
-# Try to find cluster by name "ads-cluster" first (set by script 01)
-EXPECTED_CLUSTER_NAME="ads-cluster"
+# Try to find cluster by name "production" first (RHACS cluster name)
+EXPECTED_CLUSTER_NAME="production"
 PRODUCTION_CLUSTER_ID=$(echo "$CLUSTER_RESPONSE" | jq -r ".clusters[] | select(.name == \"$EXPECTED_CLUSTER_NAME\") | .id" 2>/dev/null | head -1)
 
 if [ -z "$PRODUCTION_CLUSTER_ID" ] || [ "$PRODUCTION_CLUSTER_ID" = "null" ]; then
@@ -316,7 +316,7 @@ if [ "$SKIP_CREATION" = "false" ]; then
         \"scanConfig\": {
             \"oneTimeScan\": false,
             \"profiles\": [
-                \"ocp4-cis\",
+                \"ocp4-cis\"
             ],
             \"scanSchedule\": {
                 \"intervalType\": \"DAILY\",
@@ -340,6 +340,9 @@ if [ "$SKIP_CREATION" = "false" ]; then
     if [ -z "$SCAN_CONFIG_RESPONSE" ]; then
         error "Empty response from scan configuration creation API"
     fi
+
+    # Log response for debugging (first 500 chars)
+    log "API Response: ${SCAN_CONFIG_RESPONSE:0:500}"
 
     # Check for ProfileBundle processing error
     if echo "$SCAN_CONFIG_RESPONSE" | grep -qi "ProfileBundle.*still being processed"; then
@@ -370,12 +373,28 @@ if [ "$SKIP_CREATION" = "false" ]; then
         fi
     fi
 
-        log "✓ Compliance scan configuration created successfully"
+    log "✓ Compliance scan configuration created successfully"
+    
+    # Get the scan configuration ID from the response - try multiple possible response structures
+    SCAN_CONFIG_ID=$(echo "$SCAN_CONFIG_RESPONSE" | jq -r '.id // .configuration.id // empty' 2>/dev/null)
+    
+    if [ -z "$SCAN_CONFIG_ID" ] || [ "$SCAN_CONFIG_ID" = "null" ]; then
+        log "Could not extract scan configuration ID from response, waiting a moment and trying to get it from configurations list..."
+        log "Full response: $SCAN_CONFIG_RESPONSE"
         
-        # Get the scan configuration ID from the response
-    SCAN_CONFIG_ID=$(echo "$SCAN_CONFIG_RESPONSE" | jq -r '.id')
-        if [ -z "$SCAN_CONFIG_ID" ] || [ "$SCAN_CONFIG_ID" = "null" ]; then
-            log "Could not extract scan configuration ID from response, trying to get it from configurations list..."
+        # Wait a moment for the configuration to be available
+        sleep 2
+        
+        # Retry getting scan configurations with a few attempts
+        MAX_RETRIES=3
+        RETRY_COUNT=0
+        SCAN_CONFIG_ID=""
+        
+        while [ $RETRY_COUNT -lt $MAX_RETRIES ] && ([ -z "$SCAN_CONFIG_ID" ] || [ "$SCAN_CONFIG_ID" = "null" ]); do
+            if [ $RETRY_COUNT -gt 0 ]; then
+                log "Retry $RETRY_COUNT/$MAX_RETRIES: Waiting 3 seconds before checking again..."
+                sleep 3
+            fi
             
             # Get scan configurations to find our configuration
             set +e
@@ -386,15 +405,37 @@ if [ "$SKIP_CREATION" = "false" ]; then
             CONFIGS_EXIT_CODE=$?
             set -e
     
-        if [ $CONFIGS_EXIT_CODE -ne 0 ]; then
-            error "Failed to get scan configurations list (exit code: $CONFIGS_EXIT_CODE). Response: ${CONFIGS_RESPONSE:0:500}"
-        fi
-
-        SCAN_CONFIG_ID=$(echo "$CONFIGS_RESPONSE" | jq -r '.configurations[] | select(.scanName == "acs-catch-all") | .id')
+            if [ $CONFIGS_EXIT_CODE -ne 0 ]; then
+                if [ $RETRY_COUNT -eq $((MAX_RETRIES - 1)) ]; then
+                    error "Failed to get scan configurations list (exit code: $CONFIGS_EXIT_CODE). Response: ${CONFIGS_RESPONSE:0:500}"
+                else
+                    warning "Failed to get scan configurations list (exit code: $CONFIGS_EXIT_CODE), will retry..."
+                fi
+            else
+                # Validate JSON response
+                if echo "$CONFIGS_RESPONSE" | jq . >/dev/null 2>&1; then
+                    SCAN_CONFIG_ID=$(echo "$CONFIGS_RESPONSE" | jq -r '.configurations[]? | select(.scanName == "acs-catch-all") | .id' 2>/dev/null | head -1)
+                    
+                    if [ -n "$SCAN_CONFIG_ID" ] && [ "$SCAN_CONFIG_ID" != "null" ]; then
+                        log "✓ Found scan configuration ID: $SCAN_CONFIG_ID"
+                        break
+                    else
+                        # Log available configurations for debugging
+                        AVAILABLE_CONFIGS=$(echo "$CONFIGS_RESPONSE" | jq -r '.configurations[]? | .scanName' 2>/dev/null | tr '\n' ' ' || echo "none")
+                        log "Configuration 'acs-catch-all' not found yet. Available configurations: $AVAILABLE_CONFIGS"
+                    fi
+                else
+                    warning "Invalid JSON in configurations response: ${CONFIGS_RESPONSE:0:200}"
+                fi
+            fi
+            
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+        done
+        
         if [ -z "$SCAN_CONFIG_ID" ] || [ "$SCAN_CONFIG_ID" = "null" ]; then
-            error "Could not find 'acs-catch-all' configuration in the list. Available configurations: $(echo "$CONFIGS_RESPONSE" | jq -r '.configurations[] | .scanName' 2>/dev/null | tr '\n' ' ' || echo "none")"
-        else
-            log "✓ Found scan configuration ID: $SCAN_CONFIG_ID"
+            # Final attempt - show full response for debugging
+            log "Final configurations response: $CONFIGS_RESPONSE"
+            error "Could not find 'acs-catch-all' configuration after $MAX_RETRIES attempts. Available configurations: $(echo "$CONFIGS_RESPONSE" | jq -r '.configurations[]? | .scanName' 2>/dev/null | tr '\n' ' ' || echo "none")"
         fi
     else
         log "✓ Scan configuration ID: $SCAN_CONFIG_ID"
