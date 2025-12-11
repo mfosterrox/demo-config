@@ -108,7 +108,7 @@ fi
 
 # API endpoints
 CLUSTERS_ENDPOINT="${ROX_ENDPOINT}/v1/clusters"
-STANDARDS_ENDPOINT="${ROX_ENDPOINT}/v1/compliancemanagement/standards"
+STANDARDS_ENDPOINT="${ROX_ENDPOINT}/v1/compliance/standards"
 SCAN_ENDPOINT="${ROX_ENDPOINT}/v1/compliancemanagement/runs"
 
 # Function to make API call
@@ -223,11 +223,11 @@ log "========================================================="
 COMPLIANCE_STANDARD_ID=""
 log "Fetching available compliance standards..."
 
-# Try the compliance management standards endpoint
+# Try the compliance standards endpoint
 set +e
 STANDARDS_RESPONSE=$(curl -k -s -w "\n%{http_code}" -X GET \
+    -H "Accept: application/json" \
     -H "Authorization: Bearer $ROX_API_TOKEN" \
-    -H "Content-Type: application/json" \
     "$STANDARDS_ENDPOINT" 2>&1) || true
 set -e
 
@@ -236,34 +236,33 @@ STANDARDS_BODY=$(echo "$STANDARDS_RESPONSE" | head -n -1)
 
 if [ "$HTTP_CODE" -eq 200 ] && [ -n "$STANDARDS_BODY" ]; then
     if echo "$STANDARDS_BODY" | jq . >/dev/null 2>&1; then
-        # Look for HIPAA 164 standard
-        # Try multiple possible JSON structures and naming patterns
-        HIPAA_164_ID=$(echo "$STANDARDS_BODY" | jq -r '.standards[]? | select(.name | contains("HIPAA") or contains("hipaa") or contains("164")) | .id' 2>/dev/null | head -1)
-        
-        if [ -z "$HIPAA_164_ID" ] || [ "$HIPAA_164_ID" = "null" ]; then
-            # Try alternative structure
-            HIPAA_164_ID=$(echo "$STANDARDS_BODY" | jq -r '.[]? | select(.name | contains("HIPAA") or contains("hipaa") or contains("164")) | .id' 2>/dev/null | head -1)
-        fi
-        
-        if [ -z "$HIPAA_164_ID" ] || [ "$HIPAA_164_ID" = "null" ]; then
-            # Try matching by metadata or other fields
-            HIPAA_164_ID=$(echo "$STANDARDS_BODY" | jq -r '.standards[]? | select(.metadata.name? | contains("HIPAA") or contains("hipaa") or contains("164")) | .id' 2>/dev/null | head -1)
-        fi
-        
         # List all available standards for debugging
         log "Available compliance standards:"
-        echo "$STANDARDS_BODY" | jq -r '.standards[]? | "  - \(.name // .metadata.name // .id): \(.id)"' 2>/dev/null || \
-        echo "$STANDARDS_BODY" | jq -r '.[]? | "  - \(.name // .metadata.name // .id): \(.id)"' 2>/dev/null || \
+        echo "$STANDARDS_BODY" | jq -r 'if type == "array" then .[] | "  - \(.name // .id): \(.id)" elif .standards then .standards[]? | "  - \(.name // .id): \(.id)" else .[]? | "  - \(.name // .id): \(.id)" end' 2>/dev/null || \
         log "  Could not parse standards list"
+        
+        # Look for HIPAA 164 standard - try multiple structures and patterns
+        # First try: direct array or .standards array
+        HIPAA_164_ID=$(echo "$STANDARDS_BODY" | jq -r 'if type == "array" then .[] | select(.name | test("HIPAA.*164|164.*HIPAA|hipaa.*164|164.*hipaa"; "i")) | .id elif .standards then .standards[]? | select(.name | test("HIPAA.*164|164.*HIPAA|hipaa.*164|164.*hipaa"; "i")) | .id else .[]? | select(.name | test("HIPAA.*164|164.*HIPAA|hipaa.*164|164.*hipaa"; "i")) | .id end' 2>/dev/null | head -1)
+        
+        # If not found, try broader search for HIPAA or 164
+        if [ -z "$HIPAA_164_ID" ] || [ "$HIPAA_164_ID" = "null" ]; then
+            HIPAA_164_ID=$(echo "$STANDARDS_BODY" | jq -r 'if type == "array" then .[] | select(.name | test("HIPAA|hipaa|164"; "i")) | .id elif .standards then .standards[]? | select(.name | test("HIPAA|hipaa|164"; "i")) | .id else .[]? | select(.name | test("HIPAA|hipaa|164"; "i")) | .id end' 2>/dev/null | head -1)
+        fi
+        
+        # Try matching by ID if name contains HIPAA or 164
+        if [ -z "$HIPAA_164_ID" ] || [ "$HIPAA_164_ID" = "null" ]; then
+            HIPAA_164_ID=$(echo "$STANDARDS_BODY" | jq -r 'if type == "array" then .[] | select(.id | test("HIPAA|hipaa|164"; "i")) | .id elif .standards then .standards[]? | select(.id | test("HIPAA|hipaa|164"; "i")) | .id else .[]? | select(.id | test("HIPAA|hipaa|164"; "i")) | .id end' 2>/dev/null | head -1)
+        fi
         
         if [ -n "$HIPAA_164_ID" ] && [ "$HIPAA_164_ID" != "null" ]; then
             COMPLIANCE_STANDARD_ID="$HIPAA_164_ID"
-            HIPAA_NAME=$(echo "$STANDARDS_BODY" | jq -r ".standards[]? | select(.id == \"$HIPAA_164_ID\") | .name" 2>/dev/null || \
-                         echo "$STANDARDS_BODY" | jq -r ".[]? | select(.id == \"$HIPAA_164_ID\") | .name" 2>/dev/null || \
-                         echo "HIPAA 164")
+            HIPAA_NAME=$(echo "$STANDARDS_BODY" | jq -r "if type == \"array\" then .[] | select(.id == \"$HIPAA_164_ID\") | .name elif .standards then .standards[]? | select(.id == \"$HIPAA_164_ID\") | .name else .[]? | select(.id == \"$HIPAA_164_ID\") | .name end" 2>/dev/null || echo "HIPAA 164")
             log "✓ Found HIPAA 164 standard: $HIPAA_NAME (ID: $COMPLIANCE_STANDARD_ID)"
         else
             warning "HIPAA 164 standard not found in standards list"
+            log "Full standards response for debugging:"
+            echo "$STANDARDS_BODY" | jq . 2>/dev/null || echo "$STANDARDS_BODY"
         fi
     else
         warning "Invalid JSON response from standards API. Response: ${STANDARDS_BODY:0:300}"
@@ -299,7 +298,7 @@ fi
 
 # If we still don't have a standard ID, we must error since API requires it
 if [ -z "$COMPLIANCE_STANDARD_ID" ] || [ "$COMPLIANCE_STANDARD_ID" = "null" ]; then
-    error "Could not find HIPAA 164 compliance standard ID. Please ensure HIPAA 164 standard is configured in RHACS. Check available standards: curl -k -H \"Authorization: Bearer \$ROX_API_TOKEN\" \"$STANDARDS_ENDPOINT\" | jq ."
+    error "Could not find HIPAA 164 compliance standard ID. Please ensure HIPAA 164 standard is configured in RHACS. Check available standards: curl -k -X GET \"$STANDARDS_ENDPOINT\" -H \"Accept: application/json\" -H \"Authorization: Bearer \$ROX_API_TOKEN\" | jq ."
 fi
 
 # Trigger compliance management scan with HIPAA 164
