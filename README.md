@@ -210,3 +210,206 @@ oc get csv -n openshift-compliance
 
 Licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.
 
+
+
+{
+  "standards": [
+    {
+      "id": "ocp4-pci-dss-node",
+      "name": "ocp4-pci-dss-node",
+      "description": "Ensures PCI-DSS v3.2.1 security configuration settings are applied.",
+      "numImplementedChecks": 117,
+      "scopes": [
+        "CLUSTER"
+      ],
+      "dynamic": true,
+      "hideScanResults": false
+    },
+    {
+      "id": "ocp4-high-node",
+      "name": "ocp4-high-node",
+      "description": "This compliance profile reflects the core set of High-Impact Baseline configuration settings for deployment of Red Hat OpenShift Container Platform into U.S. Defense, Intelligence, and Civilian agencies. Development partners and sponsors include the U.S. National Institute of Standards and Technology (NIST), U.S. Department of Defense, the National Security Agency, and Red Hat. This baseline implements configuration requirements from the following sources: - NIST 800-53 control selections for High-Impact systems (NIST 800-53) For any differing configuration requirements, e.g. password lengths, the stricter security setting was chosen. Security Requirement Traceability Guides (RTMs) and sample System Security Configuration Guides are provided via the scap-security-guide-docs package. This profile reflects U.S. Government consensus content and is developed through the ComplianceAsCode initiative, championed by the National Security Agency. Except for differences in formatting to accommodate publishing processes, this profile mirrors ComplianceAsCode content as minor divergences, such as bugfixes, work through the consensus and release processes.",
+      "numImplementedChecks": 123,
+      "scopes": [
+        "CLUSTER"
+      ],
+      "dynamic": true,
+      "hideScanResults": false
+    },
+    {
+      "id": "ocp4-high",
+      "name": "ocp4-high",
+      "description": "This compliance profile reflects the core set of High-Impact Baseline configuration settings for deployment of Red Hat OpenShift Container Platform into U.S. Defense, Intelligence, and Civilian agencies. Development partners and sponsors include the U.S. National Institute of Standards and Technology (NIST), U.S. Department of Defense, the National Security Agency, and Red Hat. This baseline implements configuration requirements from the following sources: - NIST 800-53 control selections for High-Impact systems (NIST 800-53) For any differing configuration requirements, e.g. password lengths, the stricter security setting was chosen. Security Requirement Traceability Guides (RTMs) and sample System Security Configuration Guides are provided via the scap-security-guide-docs package. This profile reflects U.S. Government consensus content and is developed through the ComplianceAsCode initiative, championed by the National Security Agency. Except for differences in formatting to accommodate publishing processes, this profile mirrors ComplianceAsCode content as minor divergences, such as bugfixes, work through the consensus and release processes.",
+      "numImplementedChecks": 136,
+      "scopes": [
+        "CLUSTER"
+      ],
+      "dynamic": true,
+      "hideScanResults": false
+    },
+    {
+      "id": "NIST_800_190",
+      "name": "NIST SP 800-190",
+      "description": "",
+      "numImplementedChecks": 14,
+      "scopes": [
+        "CLUSTER",
+        "NAMESPACE",
+        "DEPLOYMENT",
+        "NODE"
+      ],
+      "dynamic": false,
+      "hideScanResults": false
+    },
+    {
+      "id": "ocp4-cis",
+      "name": "ocp4-cis",
+      "description": "This profile defines a baseline that aligns to the Center for Internet Security® Red Hat OpenShift Container Platform 4 Benchmark™, V1.7. This profile includes Center for Internet Security® Red Hat OpenShift Container Platform 4 CIS Benchmarks™ content. Note that this part of the profile is meant to run on the Platform that Red Hat OpenShift Container Platform 4 runs on top of. This profile is applicable to OpenShift versions 4.12 and greater.",
+      "numImplementedChecks": 100,
+      "scopes": [
+        "CLUSTER"
+      ],
+      "dynamic": true,
+      "hideScanResults": false
+    },
+    {
+      "id": "ocp4-stig-node",
+      "name": "ocp4-stig-node",
+      "description": "This profile contains configuration checks that align to the DISA STIG for Red Hat OpenShift Container Platform 4.",
+      "numImplementedChecks": 3,
+      "scopes": [
+        "CLUSTER"
+      ],
+      "dynamic": true,
+      "hideScanResults": false
+    },
+    {
+      "id": "CIS_Kubernetes_v1_5",
+      "name": "CIS Kubernetes v1.5",
+      "description": "",
+      "numImplementedChecks": 122,
+      "scopes": [
+        "CLUSTER",
+        "NODE"
+      ],
+      "dynamic": false,
+      "hideScanResults": false
+    },
+    {
+      "id": "ocp4-moderate-node",
+      "name": "ocp4-moderate-node",
+      "description": "This compliance profile reflects the core set of Moderate-Impact Baseline configuration settings for deployment of Red Hat OpenShift Container Platform into U.S. Defense, Intelligence, and Civilian agencies. Development partners and sponsors include the U.S. National Institute of Standards and Technology (NIST), U.S. Department of Defense, the National Security Agency, and Red Hat. This baseline implements configuration requirements from the following sources: - NIST 800-53 control selections for Moderate-Impact systems (NIST 800-53) For any differing configuration requirements, e.g. password lengths, the stricter security setting was chosen. Security Requirement Traceability Guides (RTMs) and sample System Security Configuration Guides are provided via the scap-security-guide-docs package. This profile reflects U.S. Government consensus content and is developed through the ComplianceAsCode initiative, championed by the National Security Agency. Except for differences in formatting to accommodate publishing processes, this profile mirrors ComplianceAsCode content as minor divergences, such as bugfixes, work through the consensus and release processes.",
+      "numImplementedChecks": 123,
+      "scopes": [
+        "CLUSTER"
+      ],
+      "dynamic": true,
+      "hideScanResults": false
+    },
+    {
+      "id": "ocp4-nerc-cip",
+      "name": "ocp4-nerc-cip",
+      "description": "This compliance profile reflects a set of security recommendations for the usage of Red Hat OpenShift Container Platform in critical infrastructure in the energy sector. This follows the recommendations coming from the following CIP standards: - CIP-002-5 - CIP-003-8 - CIP-004-6 - CIP-005-6 - CIP-007-3 - CIP-007-6 - CIP-009-6",
+      "numImplementedChecks": 133,
+      "scopes": [
+        "CLUSTER"
+      ],
+      "dynamic": true,
+      "hideScanResults": false
+    },
+    {
+      "id": "ocp4-pci-dss",
+      "name": "ocp4-pci-dss",
+      "description": "Ensures PCI-DSS v3.2.1 security configuration settings are applied.",
+      "numImplementedChecks": 122,
+      "scopes": [
+        "CLUSTER"
+      ],
+      "dynamic": true,
+      "hideScanResults": false
+    },
+    {
+      "id": "HIPAA_164",
+      "name": "HIPAA 164",
+      "description": "",
+      "numImplementedChecks": 18,
+      "scopes": [
+        "CLUSTER",
+        "NAMESPACE",
+        "DEPLOYMENT"
+      ],
+      "dynamic": false,
+      "hideScanResults": false
+    },
+    {
+      "id": "PCI_DSS_3_2",
+      "name": "PCI DSS 3.2.1",
+      "description": "",
+      "numImplementedChecks": 24,
+      "scopes": [
+        "CLUSTER",
+        "NAMESPACE",
+        "DEPLOYMENT"
+      ],
+      "dynamic": false,
+      "hideScanResults": false
+    },
+    {
+      "id": "ocp4-e8",
+      "name": "ocp4-e8",
+      "description": "This profile contains configuration checks for Red Hat OpenShift Container Platform that align to the Australian Cyber Security Centre (ACSC) Essential Eight. A copy of the Essential Eight in Linux Environments guide can be found at the ACSC website: https://www.cyber.gov.au/acsc/view-all-content/publications/hardening-linux-workstations-and-servers",
+      "numImplementedChecks": 14,
+      "scopes": [
+        "CLUSTER"
+      ],
+      "dynamic": true,
+      "hideScanResults": false
+    },
+    {
+      "id": "ocp4-moderate",
+      "name": "ocp4-moderate",
+      "description": "This compliance profile reflects the core set of Moderate-Impact Baseline configuration settings for deployment of Red Hat OpenShift Container Platform into U.S. Defense, Intelligence, and Civilian agencies. Development partners and sponsors include the U.S. National Institute of Standards and Technology (NIST), U.S. Department of Defense, the National Security Agency, and Red Hat. This baseline implements configuration requirements from the following sources: - NIST 800-53 control selections for Moderate-Impact systems (NIST 800-53) For any differing configuration requirements, e.g. password lengths, the stricter security setting was chosen. Security Requirement Traceability Guides (RTMs) and sample System Security Configuration Guides are provided via the scap-security-guide-docs package. This profile reflects U.S. Government consensus content and is developed through the ComplianceAsCode initiative, championed by the National Security Agency. Except for differences in formatting to accommodate publishing processes, this profile mirrors ComplianceAsCode content as minor divergences, such as bugfixes, work through the consensus and release processes.",
+      "numImplementedChecks": 133,
+      "scopes": [
+        "CLUSTER"
+      ],
+      "dynamic": true,
+      "hideScanResults": false
+    },
+    {
+      "id": "ocp4-nerc-cip-node",
+      "name": "ocp4-nerc-cip-node",
+      "description": "This compliance profile reflects a set of security recommendations for the usage of Red Hat OpenShift Container Platform in critical infrastructure in the energy sector. This follows the recommendations coming from the following CIP standards: - CIP-002-5 - CIP-003-8 - CIP-004-6 - CIP-005-6 - CIP-007-3 - CIP-007-6 - CIP-009-6",
+      "numImplementedChecks": 123,
+      "scopes": [
+        "CLUSTER"
+      ],
+      "dynamic": true,
+      "hideScanResults": false
+    },
+    {
+      "id": "NIST_SP_800_53_Rev_4",
+      "name": "NIST SP 800-53",
+      "description": "",
+      "numImplementedChecks": 22,
+      "scopes": [
+        "CLUSTER",
+        "NAMESPACE",
+        "DEPLOYMENT"
+      ],
+      "dynamic": false,
+      "hideScanResults": false
+    },
+    {
+      "id": "ocp4-cis-node",
+      "name": "ocp4-cis-node",
+      "description": "This profile defines a baseline that aligns to the Center for Internet Security® Red Hat OpenShift Container Platform 4 Benchmark™, V1.7. This profile includes Center for Internet Security® Red Hat OpenShift Container Platform 4 CIS Benchmarks™ content. Note that this part of the profile is meant to run on the Operating System that Red Hat OpenShift Container Platform 4 runs on top of. This profile is applicable to OpenShift versions 4.12 and greater.",
+      "numImplementedChecks": 103,
+      "scopes": [
+        "CLUSTER"
+      ],
+      "dynamic": true,
+      "hideScanResults": false
+    }
+  ]
+}
