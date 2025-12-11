@@ -213,8 +213,7 @@ Licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.
 
 
 
-                \"ocp4-nerc-cip\",
-                \"ocp4-nerc-cip-node\",
+
                 \"ocp4-pci-dss\",
                 \"ocp4-pci-dss-node\",
                 \"ocp4-stig\",
