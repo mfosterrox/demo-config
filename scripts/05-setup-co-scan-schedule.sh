@@ -324,8 +324,6 @@ SCAN_CONFIG_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X POST \
             \"profiles\": [
                 \"ocp4-cis\",
                 \"ocp4-cis-node\",
-                \"ocp4-moderate\",
-                \"ocp4-moderate-node\",
                 \"ocp4-e8\",
                 \"ocp4-high\",
                 \"ocp4-high-node\",
