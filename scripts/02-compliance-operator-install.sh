@@ -232,30 +232,143 @@ then
 fi
 log "✓ OperatorGroup created successfully (AllNamespaces mode)"
 
-# Step 3: Create the OperatorHub subscription
+# Step 3: Determine the correct channel
 log ""
-log "Step 3: Creating Subscription..."
-if ! cat <<EOF | oc apply -f -
+log "Step 3: Determining available channel for compliance-operator..."
+
+# Wait for catalog to be ready
+log "Waiting for catalog source to be ready..."
+CATALOG_READY=false
+for i in {1..12}; do
+    if oc get catalogsource redhat-operators -n openshift-marketplace >/dev/null 2>&1; then
+        CATALOG_STATUS=$(oc get catalogsource redhat-operators -n openshift-marketplace -o jsonpath='{.status.connectionState.lastObservedState}' 2>/dev/null || echo "")
+        if [ "$CATALOG_STATUS" = "READY" ]; then
+            CATALOG_READY=true
+            log "✓ Catalog source 'redhat-operators' is READY"
+            break
+        else
+            log "  Catalog source status: ${CATALOG_STATUS:-unknown} (waiting for READY...)"
+        fi
+    fi
+    if [ $i -lt 12 ]; then
+        sleep 5
+    fi
+done
+
+if [ "$CATALOG_READY" = false ]; then
+    warning "Catalog source may not be ready, but continuing..."
+fi
+
+# Check if packagemanifest exists and get available channels
+log "Checking available channels for compliance-operator..."
+CHANNEL=""
+if oc get packagemanifest compliance-operator -n openshift-marketplace >/dev/null 2>&1; then
+    # Get available channels from packagemanifest
+    AVAILABLE_CHANNELS=$(oc get packagemanifest compliance-operator -n openshift-marketplace -o jsonpath='{.status.channels[*].name}' 2>/dev/null || echo "")
+    
+    if [ -n "$AVAILABLE_CHANNELS" ]; then
+        log "Available channels: $AVAILABLE_CHANNELS"
+        
+        # Try to find preferred channels in order of preference
+        # Note: "stable" channel contains v1.8.0 and is the recommended channel
+        PREFERRED_CHANNELS=("stable" "release-1.8" "release-1.7" "release-1.6" "release-1.5")
+        
+        for pref_channel in "${PREFERRED_CHANNELS[@]}"; do
+            if echo "$AVAILABLE_CHANNELS" | grep -q "\b$pref_channel\b"; then
+                CHANNEL="$pref_channel"
+                log "✓ Selected channel: $CHANNEL"
+                break
+            fi
+        done
+        
+        # If no preferred channel found, use the first available channel
+        if [ -z "$CHANNEL" ]; then
+            CHANNEL=$(echo "$AVAILABLE_CHANNELS" | awk '{print $1}')
+            log "✓ Using first available channel: $CHANNEL"
+        fi
+    else
+        warning "Could not determine available channels from packagemanifest"
+    fi
+else
+    warning "Package manifest not found in catalog (may still be syncing)"
+fi
+
+# Fallback to default channel if we couldn't determine it
+if [ -z "$CHANNEL" ]; then
+    CHANNEL="stable"
+    log "Using default channel: $CHANNEL (contains v1.8.0, will verify after subscription creation)"
+fi
+
+# Step 4: Create the OperatorHub subscription
+log ""
+log "Step 4: Creating Subscription..."
+log "  Channel: $CHANNEL"
+log "  Source: redhat-operators"
+log "  SourceNamespace: openshift-marketplace"
+
+SUBSCRIPTION_CREATED=false
+if cat <<EOF | oc apply -f -
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
 metadata:
   name: compliance-operator
   namespace: openshift-compliance
 spec:
-  channel: release-1.6
+  channel: $CHANNEL
   installPlanApproval: Automatic
   name: compliance-operator
   source: redhat-operators
   sourceNamespace: openshift-marketplace
 EOF
 then
+    SUBSCRIPTION_CREATED=true
+    log "✓ Subscription created successfully"
+else
     error "Failed to create Subscription"
 fi
-log "✓ Subscription created successfully"
 
-# Step 4: Optional but recommended - Speed up the pull by enabling the default global pull secret
+# Verify subscription was created and check for channel errors
+log "Verifying subscription..."
+sleep 3
+
+SUBSCRIPTION_STATUS=$(oc get subscription compliance-operator -n openshift-compliance -o jsonpath='{.status.conditions[*].type}' 2>/dev/null || echo "")
+SUBSCRIPTION_MESSAGE=$(oc get subscription compliance-operator -n openshift-compliance -o jsonpath='{.status.conditions[*].message}' 2>/dev/null || echo "")
+
+if echo "$SUBSCRIPTION_MESSAGE" | grep -qi "constraints not satisfiable\|no operators found in channel"; then
+    warning "Channel '$CHANNEL' may not be available. Checking for alternative channels..."
+    
+    # Try to get available channels again
+    if oc get packagemanifest compliance-operator -n openshift-marketplace >/dev/null 2>&1; then
+        AVAILABLE_CHANNELS=$(oc get packagemanifest compliance-operator -n openshift-marketplace -o jsonpath='{.status.channels[*].name}' 2>/dev/null || echo "")
+        if [ -n "$AVAILABLE_CHANNELS" ]; then
+            # Try stable channel first, then any other channel
+            ALTERNATIVE_CHANNEL=""
+            if echo "$AVAILABLE_CHANNELS" | grep -q "\bstable\b"; then
+                ALTERNATIVE_CHANNEL="stable"
+            else
+                ALTERNATIVE_CHANNEL=$(echo "$AVAILABLE_CHANNELS" | awk '{print $1}')
+            fi
+            
+            if [ -n "$ALTERNATIVE_CHANNEL" ] && [ "$ALTERNATIVE_CHANNEL" != "$CHANNEL" ]; then
+                log "Updating subscription to use channel: $ALTERNATIVE_CHANNEL"
+                oc patch subscription compliance-operator -n openshift-compliance --type merge -p "{\"spec\":{\"channel\":\"$ALTERNATIVE_CHANNEL\"}}" || warning "Failed to update channel"
+                CHANNEL="$ALTERNATIVE_CHANNEL"
+                log "✓ Updated subscription to channel: $CHANNEL"
+                sleep 3
+            fi
+        fi
+    fi
+    
+    # Check if issue persists
+    SUBSCRIPTION_MESSAGE=$(oc get subscription compliance-operator -n openshift-compliance -o jsonpath='{.status.conditions[*].message}' 2>/dev/null || echo "")
+    if echo "$SUBSCRIPTION_MESSAGE" | grep -qi "constraints not satisfiable\|no operators found in channel"; then
+        error "Subscription failed with channel error. Available channels: ${AVAILABLE_CHANNELS:-unknown}. Please check: oc get packagemanifest compliance-operator -n openshift-marketplace -o yaml"
+    fi
+fi
+
+# Step 5: Optional but recommended - Speed up the pull by enabling the default global pull secret
 log ""
-log "Step 4: Configuring namespace for faster image pulls..."
+log "Step 5: Configuring namespace for faster image pulls..."
 if ! oc patch namespace openshift-compliance -p '{"metadata":{"annotations":{"openshift.io/node-selector":""}}}' 2>/dev/null; then
     warning "Failed to patch namespace node-selector (non-critical)"
 else
