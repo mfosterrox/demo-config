@@ -316,7 +316,10 @@ if [ "$SKIP_CREATION" = "false" ]; then
         \"scanConfig\": {
             \"oneTimeScan\": false,
             \"profiles\": [
-                \"ocp4-cis\"
+                \"ocp4-cis\",
+                \"ocp4-cis-node\",
+                \"ocp4-moderate\",
+                \"ocp4-moderate-node\"
             ],
             \"scanSchedule\": {
                 \"intervalType\": \"DAILY\",
