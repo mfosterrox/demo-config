@@ -97,12 +97,18 @@ log "Checking Cluster Observability Operator status..."
 if oc get namespace $OPERATOR_NAMESPACE >/dev/null 2>&1; then
     if oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
         CURRENT_CSV=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.currentCSV}' 2>/dev/null || echo "")
-        if [ -n "$CURRENT_CSV" ]; then
-            CSV_PHASE=$(oc get csv $CURRENT_CSV -n $OPERATOR_NAMESPACE -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-            if [ "$CSV_PHASE" = "Succeeded" ]; then
-                log "✓ Cluster Observability Operator is installed and running (CSV: $CURRENT_CSV)"
+        if [ -n "$CURRENT_CSV" ] && [ "$CURRENT_CSV" != "null" ]; then
+            # Check if CSV actually exists before trying to get its phase
+            if oc get csv $CURRENT_CSV -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
+                CSV_PHASE=$(oc get csv $CURRENT_CSV -n $OPERATOR_NAMESPACE -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$CSV_PHASE" = "Succeeded" ]; then
+                    log "✓ Cluster Observability Operator is installed and running (CSV: $CURRENT_CSV)"
+                else
+                    log "  Cluster Observability Operator CSV is in phase: $CSV_PHASE (not Succeeded)"
+                    ALREADY_INSTALLED=false
+                fi
             else
-                log "  Cluster Observability Operator CSV is in phase: $CSV_PHASE (not Succeeded)"
+                log "  Cluster Observability Operator subscription references CSV '$CURRENT_CSV' but CSV does not exist yet"
                 ALREADY_INSTALLED=false
             fi
         else
@@ -361,12 +367,18 @@ log "Checking Cluster Observability Operator status..."
 if oc get namespace $OPERATOR_NAMESPACE >/dev/null 2>&1; then
     if oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
         CURRENT_CSV=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.currentCSV}' 2>/dev/null || echo "")
-        if [ -n "$CURRENT_CSV" ]; then
-            CSV_PHASE=$(oc get csv $CURRENT_CSV -n $OPERATOR_NAMESPACE -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-            if [ "$CSV_PHASE" = "Succeeded" ]; then
-                log "✓ Cluster Observability Operator is installed and running (CSV: $CURRENT_CSV)"
+        if [ -n "$CURRENT_CSV" ] && [ "$CURRENT_CSV" != "null" ]; then
+            # Check if CSV actually exists before trying to get its phase
+            if oc get csv $CURRENT_CSV -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
+                CSV_PHASE=$(oc get csv $CURRENT_CSV -n $OPERATOR_NAMESPACE -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$CSV_PHASE" = "Succeeded" ]; then
+                    log "✓ Cluster Observability Operator is installed and running (CSV: $CURRENT_CSV)"
+                else
+                    log "  Cluster Observability Operator CSV is in phase: $CSV_PHASE (not Succeeded)"
+                    ALREADY_INSTALLED=false
+                fi
             else
-                log "  Cluster Observability Operator CSV is in phase: $CSV_PHASE (not Succeeded)"
+                log "  Cluster Observability Operator subscription references CSV '$CURRENT_CSV' but CSV does not exist yet"
                 ALREADY_INSTALLED=false
             fi
         else
@@ -450,19 +462,24 @@ if oc get namespace $OPERATOR_NAMESPACE >/dev/null 2>&1; then
     # Check for existing subscription
     if oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
         CURRENT_CSV=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.currentCSV}')
-        if [ -z "$CURRENT_CSV" ]; then
+        if [ -z "$CURRENT_CSV" ] || [ "$CURRENT_CSV" = "null" ]; then
             log "Subscription exists but CSV not yet determined, proceeding with installation..."
         else
-            CSV_PHASE=$(oc get csv $CURRENT_CSV -n $OPERATOR_NAMESPACE -o jsonpath='{.status.phase}')
-        
-            if [ "$CSV_PHASE" = "Succeeded" ]; then
-                log "✓ Cluster Observability Operator is already installed and running"
-                log "  Installed CSV: $CURRENT_CSV"
-                log "  Status: $CSV_PHASE"
-                log "Skipping installation..."
+            # Check if CSV actually exists before trying to get its phase
+            if oc get csv $CURRENT_CSV -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
+                CSV_PHASE=$(oc get csv $CURRENT_CSV -n $OPERATOR_NAMESPACE -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+            
+                if [ "$CSV_PHASE" = "Succeeded" ]; then
+                    log "✓ Cluster Observability Operator is already installed and running"
+                    log "  Installed CSV: $CURRENT_CSV"
+                    log "  Status: $CSV_PHASE"
+                    log "Skipping installation..."
+                else
+                    log "Cluster Observability Operator subscription exists but CSV is in phase: $CSV_PHASE"
+                    log "Continuing with installation to ensure proper setup..."
+                fi
             else
-                log "Cluster Observability Operator subscription exists but CSV is in phase: $CSV_PHASE"
-                log "Continuing with installation to ensure proper setup..."
+                log "Subscription references CSV '$CURRENT_CSV' but CSV does not exist yet, proceeding with installation..."
             fi
         fi
     else
