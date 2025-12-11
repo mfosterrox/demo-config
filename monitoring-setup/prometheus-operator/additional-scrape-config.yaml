@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Secret
 metadata:
-  name: rhacs-prometheus-stack-prometheus-additional-scrape-configs
+  name: rhacs-prometheus-additional-scrape-configs
   namespace: tssc-acs
 stringData:
   prometheus-additional.yaml: |
