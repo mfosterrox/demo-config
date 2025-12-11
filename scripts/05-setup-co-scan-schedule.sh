@@ -320,6 +320,9 @@ if [ "$SKIP_CREATION" = "false" ]; then
                 \"ocp4-cis-node\",
                 \"ocp4-moderate\",
                 \"ocp4-moderate-node\"
+                \"ocp4-e8\",
+                \"ocp4-high\",
+                \"ocp4-high-node\",
             ],
             \"scanSchedule\": {
                 \"intervalType\": \"DAILY\",
