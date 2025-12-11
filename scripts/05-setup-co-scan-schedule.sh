@@ -328,9 +328,9 @@ SCAN_CONFIG_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X POST \
                 \"ocp4-moderate-node\",
                 \"ocp4-e8\",
                 \"ocp4-high\",
-                \"ocp4-high-node\"
+                \"ocp4-high-node\",
                 \"ocp4-nerc-cip\",
-                \"ocp4-nerc-cip-node\",
+                \"ocp4-nerc-cip-node\"
             ],
             \"scanSchedule\": {
                 \"intervalType\": \"DAILY\",
