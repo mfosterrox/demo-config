@@ -87,10 +87,19 @@ deploy_applications() {
     success "Application deployment completed successfully"
 }
 
-# Setup RHACS route TLS (Step 7)
+# Install cert-manager operator (Step 7)
+install_cert_manager() {
+    log "Installing cert-manager operator..."
+    if ! bash "${SCRIPT_DIR}/scripts/07-install-cert-manager.sh"; then
+        error "Cert-manager installation script failed. Installation stopped."
+    fi
+    success "Cert-manager installation completed successfully"
+}
+
+# Setup RHACS route TLS (Step 8)
 setup_rhacs_route_tls() {
     log "Setting up RHACS route TLS..."
-    if ! bash "${SCRIPT_DIR}/scripts/07-setup-rhacs-route-tls.sh"; then
+    if ! bash "${SCRIPT_DIR}/scripts/08-setup-rhacs-route-tls.sh"; then
         error "RHACS route TLS setup script failed. Installation stopped."
     fi
     success "RHACS route TLS setup completed successfully"
@@ -125,7 +134,7 @@ main() {
     
     # Verify scripts exist - fail fast if any script is missing
     # Scripts listed in execution order
-    for script in "01-rhacs-setup.sh" "02-compliance-operator-install.sh" "03-configure-rhacs-settings.sh" "04-setup-co-scan-schedule.sh" "05-trigger-compliance-scan.sh" "06-deploy-applications.sh" "07-setup-rhacs-route-tls.sh"; do
+    for script in "01-rhacs-setup.sh" "02-compliance-operator-install.sh" "03-configure-rhacs-settings.sh" "04-setup-co-scan-schedule.sh" "05-trigger-compliance-scan.sh" "06-deploy-applications.sh" "07-install-cert-manager.sh" "08-setup-rhacs-route-tls.sh"; do
         if [ ! -f "$SCRIPT_DIR/scripts/$script" ]; then
             error "Required script not found: $SCRIPT_DIR/scripts/$script"
         fi
@@ -139,6 +148,7 @@ main() {
     setup_compliance_scan_schedule
     trigger_compliance_scan
     deploy_applications
+    install_cert_manager
     setup_rhacs_route_tls
     
     log "========================================================="
@@ -152,7 +162,8 @@ main() {
     log "  4. Compliance scan schedule setup"
     log "  5. Compliance scan trigger"
     log "  6. Application deployment"
-    log "  7. RHACS route TLS setup"
+    log "  7. Cert-manager operator installation"
+    log "  8. RHACS route TLS setup"
 
     
     # Display RHACS access information

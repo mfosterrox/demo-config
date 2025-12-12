@@ -115,7 +115,8 @@ Each script can be run independently, as long as script 01 has been executed fir
 ./scripts/04-setup-co-scan-schedule.sh
 ./scripts/05-trigger-compliance-scan.sh
 ./scripts/06-deploy-applications.sh
-./scripts/07-setup-rhacs-route-tls.sh
+./scripts/07-install-cert-manager.sh
+./scripts/08-setup-rhacs-route-tls.sh
 ```
 
 ### Environment Variables
