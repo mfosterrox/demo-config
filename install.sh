@@ -51,6 +51,15 @@ install_cert_manager() {
     success "Cert-manager installation completed successfully"
 }
 
+# Setup RHACS route TLS certificate (creates custom certificate for RHACS)
+setup_rhacs_tls_certificate() {
+    log "Setting up RHACS route TLS certificate..."
+    if ! bash "${SCRIPT_DIR}/scripts/03-setup-rhacs-route-tls.sh"; then
+        error "RHACS TLS certificate setup script failed. Installation stopped."
+    fi
+    success "RHACS TLS certificate setup completed successfully"
+}
+
 
 # Main function
 main() {
@@ -79,7 +88,7 @@ main() {
     log "Using script directory: $SCRIPT_DIR"
     
     # Verify scripts exist - fail fast if any script is missing
-    for script in "01-RHACS-reconfigure.sh" "02-install-cert-manager.sh"; do
+    for script in "01-RHACS-reconfigure.sh" "02-install-cert-manager.sh" "03-setup-rhacs-route-tls.sh"; do
         if [ ! -f "$SCRIPT_DIR/scripts/$script" ]; then
             error "Required script not found: $SCRIPT_DIR/scripts/$script"
         fi
@@ -89,6 +98,7 @@ main() {
     # Run setup scripts in order
     reconfigure_rhacs
     install_cert_manager
+    setup_rhacs_tls_certificate
     
     log "========================================================="
     success "Demo Config setup completed successfully!"
@@ -97,6 +107,7 @@ main() {
     log "Scripts executed:"
     log "  1. RHACS operator reconfigure (cleanup existing operators)"
     log "  2. Cert-manager operator installation (required for RHACS TLS certificates)"
+    log "  3. RHACS route TLS certificate setup (creates custom certificate for RHACS)"
     log ""
     log "Additional scripts will be added one-by-one as needed."
 }
