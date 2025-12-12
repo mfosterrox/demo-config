@@ -72,8 +72,8 @@ log "✓ Cluster admin privileges confirmed"
 
 log "Prerequisites validated successfully"
 
-# Cert-manager operator namespace
-OPERATOR_NAMESPACE="openshift-operators"
+# Cert-manager operator namespace (Red Hat cert-manager Operator installs here)
+OPERATOR_NAMESPACE="cert-manager-operator"
 
 # Check if cert-manager is already installed
 log ""
@@ -93,19 +93,23 @@ if oc get subscription.operators.coreos.com cert-manager -n "$OPERATOR_NAMESPACE
                 log "  Installed CSV: $CURRENT_CSV"
                 log "  Status: $CSV_PHASE"
                 
+                # Set CSV_NAME for summary
+                CSV_NAME="$CURRENT_CSV"
+                
                 # Check if there's an update available
                 INSTALLED_CSV=$(oc get subscription.operators.coreos.com cert-manager -n "$OPERATOR_NAMESPACE" -o jsonpath='{.status.installedCSV}' 2>/dev/null || echo "")
-                if [ -n "$INSTALLED_CSV" ] && [ "$INSTALLED_CSV" != "$CURRENT_CSV" ]; then
+                if [ -n "$INSTALLED_CSV" ] && [ "$INSTALLED_CSV" != "$CURRENT_CSV" ] && [ -n "$CURRENT_CSV" ]; then
                     log "  Update available: $CURRENT_CSV (currently installed: $INSTALLED_CSV)"
-                    log "  Updating to latest version..."
+                    log "  Will update to latest version..."
+                    NEEDS_UPDATE=true
                 else
                     log "  Cert-manager operator is up to date"
-                    log "Skipping installation..."
-                    exit 0
+                    NEEDS_UPDATE=false
                 fi
             else
                 log "Cert-manager operator subscription exists but CSV is in phase: $CSV_PHASE"
                 log "Continuing with installation to ensure proper setup..."
+                NEEDS_UPDATE=false
             fi
         else
             log "Subscription exists but CSV '$CURRENT_CSV' not found yet, proceeding with installation..."
@@ -115,38 +119,54 @@ if oc get subscription.operators.coreos.com cert-manager -n "$OPERATOR_NAMESPACE
     fi
 else
     log "Cert-manager operator not found, proceeding with installation..."
+    NEEDS_UPDATE=false
 fi
 
-# Install cert-manager operator
-log ""
-log "========================================================="
-log "Installing cert-manager operator"
-log "========================================================="
-log ""
-log "Following idempotent installation steps (safe to run multiple times)..."
-log ""
-
-# Step 1: Verify namespace exists (openshift-operators should already exist)
-log "Step 1: Verifying namespace $OPERATOR_NAMESPACE..."
-if ! oc get namespace "$OPERATOR_NAMESPACE" >/dev/null 2>&1; then
-    log "Creating namespace $OPERATOR_NAMESPACE..."
-    if ! oc create namespace "$OPERATOR_NAMESPACE"; then
-        error "Failed to create $OPERATOR_NAMESPACE namespace"
+# Get current CSV and channel info for summary (even if not updating)
+if oc get subscription.operators.coreos.com cert-manager -n "$OPERATOR_NAMESPACE" >/dev/null 2>&1; then
+    CSV_NAME=$(oc get subscription.operators.coreos.com cert-manager -n "$OPERATOR_NAMESPACE" -o jsonpath='{.status.currentCSV}' 2>/dev/null || echo "")
+    CHANNEL=$(oc get subscription.operators.coreos.com cert-manager -n "$OPERATOR_NAMESPACE" -o jsonpath='{.spec.channel}' 2>/dev/null || echo "")
+    if [ -z "$CSV_NAME" ] || [ "$CSV_NAME" = "null" ]; then
+        CSV_NAME=$(oc get csv -n "$OPERATOR_NAMESPACE" -o name 2>/dev/null | grep cert-manager | head -1 | sed 's|clusterserviceversion.operators.coreos.com/||' || echo "")
     fi
-    log "✓ Namespace created successfully"
-else
-    log "✓ Namespace already exists"
 fi
 
-# Verify namespace exists and we have access
-if ! oc get namespace "$OPERATOR_NAMESPACE" >/dev/null 2>&1; then
-    error "Cannot access namespace $OPERATOR_NAMESPACE. Check permissions."
-fi
-log "✓ Namespace verified and accessible"
+# Only proceed with subscription updates if needed
+if [ "${NEEDS_UPDATE:-false}" = "true" ] || [ ! -v NEEDS_UPDATE ]; then
+    # Install or update cert-manager operator
+    log ""
+    log "========================================================="
+    if [ "${NEEDS_UPDATE:-false}" = "true" ]; then
+        log "Updating cert-manager operator"
+    else
+        log "Installing cert-manager operator"
+    fi
+    log "========================================================="
+    log ""
+    log "Following idempotent installation steps (safe to run multiple times)..."
+    log ""
 
-# Step 2: Wait for catalog to be ready
-log ""
-log "Step 2: Waiting for catalog source to be ready..."
+    # Step 1: Verify namespace exists
+    log "Step 1: Verifying namespace $OPERATOR_NAMESPACE..."
+    if ! oc get namespace "$OPERATOR_NAMESPACE" >/dev/null 2>&1; then
+        log "Creating namespace $OPERATOR_NAMESPACE..."
+        if ! oc create namespace "$OPERATOR_NAMESPACE"; then
+            error "Failed to create $OPERATOR_NAMESPACE namespace"
+        fi
+        log "✓ Namespace created successfully"
+    else
+        log "✓ Namespace already exists"
+    fi
+
+    # Verify namespace exists and we have access
+    if ! oc get namespace "$OPERATOR_NAMESPACE" >/dev/null 2>&1; then
+        error "Cannot access namespace $OPERATOR_NAMESPACE. Check permissions."
+    fi
+    log "✓ Namespace verified and accessible"
+
+    # Step 2: Wait for catalog to be ready
+    log ""
+    log "Step 2: Waiting for catalog source to be ready..."
 CATALOG_READY=false
 for i in {1..12}; do
     if oc get catalogsource redhat-operators -n openshift-marketplace >/dev/null 2>&1; then
@@ -164,13 +184,13 @@ for i in {1..12}; do
     fi
 done
 
-if [ "$CATALOG_READY" = false ]; then
-    warning "Catalog source may not be ready, but continuing..."
-fi
+    if [ "$CATALOG_READY" = false ]; then
+        warning "Catalog source may not be ready, but continuing..."
+    fi
 
-# Step 3: Determine the correct channel
-log ""
-log "Step 3: Determining available channel for cert-manager..."
+    # Step 3: Determine the correct channel
+    log ""
+    log "Step 3: Determining available channel for cert-manager..."
 
 CHANNEL=""
 if oc get packagemanifest cert-manager -n openshift-marketplace >/dev/null 2>&1; then
@@ -314,7 +334,9 @@ if ! oc wait --for=jsonpath='{.status.phase}'=Succeeded "csv/$CSV_NAME" -n "$OPE
 else
     log "✓ CSV is in Succeeded phase"
 fi
+fi  # End of NEEDS_UPDATE conditional
 
+# Always verify CertManager CR and components (regardless of installation status)
 # Step 7: Create CertManager CR instance (required to deploy cert-manager components)
 log ""
 log "========================================================="
@@ -527,12 +549,19 @@ log "Cert-Manager Operator Installation Completed!"
 log "========================================================="
 log "Operator Namespace: $OPERATOR_NAMESPACE"
 log "Operator: cert-manager"
-log "CSV: $CSV_NAME"
-log "Channel: $CHANNEL"
+if [ -n "${CSV_NAME:-}" ] && [ "$CSV_NAME" != "null" ]; then
+    log "CSV: $CSV_NAME"
+fi
+if [ -n "${CHANNEL:-}" ] && [ "$CHANNEL" != "null" ]; then
+    log "Channel: ${CHANNEL}"
+fi
 log ""
 log "CertManager CR: $CERTMANAGER_CR_NAME"
-if [ "$NAMESPACE_CREATED" = true ]; then
+if [ "${NAMESPACE_CREATED:-false}" = "true" ]; then
     log "Cert-manager Namespace: $CERT_MANAGER_NS"
+    log "  (Contains cert-manager pods, webhook, and CA injector)"
+elif oc get namespace "$CERT_MANAGER_NS" &>/dev/null; then
+    log "Cert-manager Namespace: $CERT_MANAGER_NS (already exists)"
     log "  (Contains cert-manager pods, webhook, and CA injector)"
 fi
 log "========================================================="
