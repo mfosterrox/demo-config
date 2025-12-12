@@ -60,6 +60,15 @@ setup_rhacs_tls_certificate() {
     success "RHACS TLS certificate setup completed successfully"
 }
 
+# Install RHACS operator subscription
+install_rhacs_operator() {
+    log "Installing RHACS operator subscription..."
+    if ! bash "${SCRIPT_DIR}/scripts/04-rhacs-central-install.sh"; then
+        error "RHACS operator installation script failed. Installation stopped."
+    fi
+    success "RHACS operator installation completed successfully"
+}
+
 
 # Main function
 main() {
@@ -88,7 +97,7 @@ main() {
     log "Using script directory: $SCRIPT_DIR"
     
     # Verify scripts exist - fail fast if any script is missing
-    for script in "01-rhacs-delete.sh" "02-install-cert-manager.sh" "03-setup-rhacs-route-tls.sh"; do
+    for script in "01-rhacs-delete.sh" "02-install-cert-manager.sh" "03-setup-rhacs-route-tls.sh" "04-rhacs-central-install.sh"; do
         if [ ! -f "$SCRIPT_DIR/scripts/$script" ]; then
             error "Required script not found: $SCRIPT_DIR/scripts/$script"
         fi
@@ -99,6 +108,7 @@ main() {
     delete_rhacs
     install_cert_manager
     setup_rhacs_tls_certificate
+    install_rhacs_operator
     
     log "========================================================="
     success "Demo Config setup completed successfully!"
