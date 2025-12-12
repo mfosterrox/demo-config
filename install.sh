@@ -134,6 +134,37 @@ main() {
     success "Demo Config setup completed successfully!"
     log "========================================================="
     log ""
+    
+    # Display RHACS access information
+    log "Retrieving RHACS access information..."
+    RHACS_NAMESPACE="rhacs-operator"
+    
+    # Get Central route
+    CENTRAL_ROUTE=$(oc get route central -n "$RHACS_NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+    if [ -n "$CENTRAL_ROUTE" ]; then
+        # Get admin password
+        ADMIN_PASSWORD_B64=$(oc get secret central-htpasswd -n "$RHACS_NAMESPACE" -o jsonpath='{.data.password}' 2>/dev/null || echo "")
+        if [ -n "$ADMIN_PASSWORD_B64" ]; then
+            ADMIN_PASSWORD=$(echo "$ADMIN_PASSWORD_B64" | base64 -d 2>/dev/null || echo "")
+        fi
+        
+        log ""
+        log "========================================================="
+        log "RHACS Access Information"
+        log "========================================================="
+        log "RHACS UI URL:     https://$CENTRAL_ROUTE"
+        log "Username:         admin"
+        if [ -n "$ADMIN_PASSWORD" ]; then
+            log "Password:         $ADMIN_PASSWORD"
+        else
+            log "Password:         (retrieve with: oc get secret central-htpasswd -n $RHACS_NAMESPACE -o jsonpath='{.data.password}' | base64 -d)"
+        fi
+        log "========================================================="
+        log ""
+    else
+        warning "Central route not found. RHACS may still be deploying."
+    fi
+    
     log "Additional scripts will be added one-by-one as needed."
 }
 
