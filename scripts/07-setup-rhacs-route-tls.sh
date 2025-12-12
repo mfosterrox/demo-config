@@ -260,10 +260,67 @@ EOF
     
     if [ "$CERT_READY" = false ]; then
         warning "Certificate did not become Ready within ${MAX_WAIT} seconds"
-        warning "You can continue monitoring with: oc -n $NAMESPACE get certificate $CERT_NAME -w"
-        warning "Or check CertificateRequest: oc -n $NAMESPACE get certificaterequest"
         log ""
-        log "Proceeding with next steps anyway. The certificate may still be issuing..."
+        log "Diagnosing certificate issuance issue..."
+        
+        # Check CertificateRequest status
+        CERT_REQUEST=$(oc get certificaterequest -n "$NAMESPACE" -l cert-manager.io/certificate-name="$CERT_NAME" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+        if [ -n "$CERT_REQUEST" ]; then
+            log "Found CertificateRequest: $CERT_REQUEST"
+            
+            CERT_REQUEST_READY=$(oc get certificaterequest "$CERT_REQUEST" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+            CERT_REQUEST_MESSAGE=$(oc get certificaterequest "$CERT_REQUEST" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null || echo "")
+            CERT_REQUEST_REASON=$(oc get certificaterequest "$CERT_REQUEST" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}' 2>/dev/null || echo "")
+            
+            log "  CertificateRequest Ready status: $CERT_REQUEST_READY"
+            if [ -n "$CERT_REQUEST_REASON" ]; then
+                log "  Reason: $CERT_REQUEST_REASON"
+            fi
+            if [ -n "$CERT_REQUEST_MESSAGE" ]; then
+                log "  Message: $CERT_REQUEST_MESSAGE"
+            fi
+            
+            # Check for failure conditions
+            CERT_REQUEST_FAILURE=$(oc get certificaterequest "$CERT_REQUEST" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Denied")].message}' 2>/dev/null || echo "")
+            if [ -n "$CERT_REQUEST_FAILURE" ]; then
+                warning "CertificateRequest was denied: $CERT_REQUEST_FAILURE"
+            fi
+            
+            # Show CertificateRequest details
+            log ""
+            log "CertificateRequest details:"
+            oc describe certificaterequest "$CERT_REQUEST" -n "$NAMESPACE" 2>/dev/null | grep -A 30 "Status:\|Events:" || log "  Could not get details"
+            
+            # Check for Order/Challenge resources (for ACME/Let's Encrypt)
+            if [ "$ISSUER_KIND" = "ClusterIssuer" ]; then
+                ISSUER_TYPE=$(oc get clusterissuer "$ISSUER_NAME" -o jsonpath='{.spec.acme.server}' 2>/dev/null || echo "")
+                if [ -n "$ISSUER_TYPE" ]; then
+                    log ""
+                    log "ACME/Let's Encrypt issuer detected. Checking for Order resources..."
+                    ORDERS=$(oc get order -n "$NAMESPACE" -l acme.cert-manager.io/certificate-name="$CERT_NAME" 2>/dev/null || echo "")
+                    if [ -n "$ORDERS" ]; then
+                        log "Found Order resources:"
+                        oc get order -n "$NAMESPACE" -l acme.cert-manager.io/certificate-name="$CERT_NAME" 2>/dev/null || true
+                        log ""
+                        log "Check Order details: oc -n $NAMESPACE describe order -l acme.cert-manager.io/certificate-name=$CERT_NAME"
+                        log "Check Challenge resources: oc -n $NAMESPACE get challenge"
+                    fi
+                fi
+            fi
+        else
+            warning "No CertificateRequest found for certificate $CERT_NAME"
+        fi
+        
+        log ""
+        log "Troubleshooting steps:"
+        log "  1. Check CertificateRequest: oc -n $NAMESPACE describe certificaterequest $CERT_REQUEST"
+        log "  2. Check Certificate: oc -n $NAMESPACE describe certificate $CERT_NAME"
+        log "  3. Check cert-manager logs: oc logs -n cert-manager -l app.kubernetes.io/name=cert-manager"
+        log "  4. Verify issuer is configured correctly: oc describe clusterissuer $ISSUER_NAME"
+        log "  5. For Let's Encrypt, ensure DNS is properly configured and the domain is publicly accessible"
+        log ""
+        warning "Proceeding with next steps anyway. The certificate may still be issuing..."
+        warning "Central will continue using the self-signed certificate until the new one is ready."
     fi
 fi
 
@@ -306,6 +363,15 @@ log ""
 log "========================================================="
 log "Step 2: Updating Central CR to Use Custom Certificate"
 log "========================================================="
+
+# Check if certificate is ready before proceeding
+CERT_FINAL_STATUS=$(oc get certificate "$CERT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+if [ "$CERT_FINAL_STATUS" != "True" ]; then
+    warning "Certificate is not Ready yet (status: $CERT_FINAL_STATUS)"
+    warning "Central will continue using the existing certificate (self-signed) until the new certificate is issued."
+    warning "The Central CR will be configured now, and Central will automatically use the new certificate when it's ready."
+    log ""
+fi
 
 log "Checking current Central CR configuration..."
 
