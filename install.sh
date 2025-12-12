@@ -87,6 +87,15 @@ setup_rhacs_scs() {
     success "RHACS Secured Cluster Services setup completed successfully"
 }
 
+# Install Compliance Operator
+install_compliance_operator() {
+    log "Installing Compliance Operator..."
+    if ! bash "${SCRIPT_DIR}/scripts/07-compliance-operator-install.sh"; then
+        error "Compliance Operator installation script failed. Installation stopped."
+    fi
+    success "Compliance Operator installation completed successfully"
+}
+
 
 # Main function
 main() {
@@ -115,7 +124,7 @@ main() {
     log "Using script directory: $SCRIPT_DIR"
     
     # Verify scripts exist - fail fast if any script is missing
-    for script in "01-rhacs-delete.sh" "02-install-cert-manager.sh" "03-setup-rhacs-route-tls.sh" "04-rhacs-subscription-install.sh" "05-central-install.sh" "06-scs-setup.sh"; do
+    for script in "01-rhacs-delete.sh" "02-install-cert-manager.sh" "03-setup-rhacs-route-tls.sh" "04-rhacs-subscription-install.sh" "05-central-install.sh" "06-scs-setup.sh" "07-compliance-operator-install.sh"; do
         if [ ! -f "$SCRIPT_DIR/scripts/$script" ]; then
             error "Required script not found: $SCRIPT_DIR/scripts/$script"
         fi
@@ -129,6 +138,7 @@ main() {
     install_rhacs_operator
     install_rhacs_central
     setup_rhacs_scs
+    install_compliance_operator
     
     log "========================================================="
     success "Demo Config setup completed successfully!"
