@@ -103,51 +103,37 @@ delete_all_resources() {
     fi
 }
 
-# Step 1: Find namespaces with RHACS operator resources (excluding rhacs-operator)
+# Step 1: Find namespaces with RHACS/ACS operator subscriptions (excluding rhacs-operator)
 log "========================================================="
-log "Step 1: Finding namespaces with RHACS operator resources"
+log "Step 1: Finding namespaces with RHACS/ACS operator subscriptions"
 log "========================================================="
 log ""
 
 CORRECT_NAMESPACE="rhacs-operator"
 
-# Find all namespaces that contain RHACS operator resources
-# Check subscriptions, CSVs, and operatorgroups for RHACS-related resources
-RHACS_NAMESPACES=$(oc get subscriptions.operators.coreos.com,csv,operatorgroups.operators.coreos.com --all-namespaces -o json 2>/dev/null | \
+# Find all namespaces that contain RHACS/ACS operator subscriptions
+RHACS_NAMESPACES=$(oc get subscriptions.operators.coreos.com --all-namespaces -o json 2>/dev/null | \
     python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 rhacs_namespaces = set()
 for item in data.get('items', []):
     namespace = item.get('metadata', {}).get('namespace', '')
-    name = item.get('metadata', {}).get('name', '')
-    kind = item.get('kind', '')
-    
-    # Check if resource is RHACS-related
-    is_rhacs = False
-    if kind == 'Subscription':
-        package = item.get('spec', {}).get('name', '')
-        if 'rhacs' in name.lower() or 'rhacs' in package.lower() or 'stackrox' in name.lower() or 'stackrox' in package.lower():
-            is_rhacs = True
-    elif kind == 'ClusterServiceVersion':
-        display_name = item.get('spec', {}).get('displayName', '')
-        if 'rhacs' in name.lower() or 'rhacs' in display_name.lower() or 'stackrox' in name.lower() or 'stackrox' in display_name.lower():
-            is_rhacs = True
-    elif kind == 'OperatorGroup':
-        if 'rhacs' in name.lower() or 'stackrox' in name.lower():
-            is_rhacs = True
-    
-    if is_rhacs and namespace:
+    package = item.get('spec', {}).get('name', '')
+    # Look for rhacs-operator or acs-operator subscriptions
+    if package in ['rhacs-operator', 'acs-operator'] and namespace:
         rhacs_namespaces.add(namespace)
 
 # Exclude the correct namespace
 for ns in sorted(rhacs_namespaces):
     if ns.lower() != 'rhacs-operator':
         print(ns)
-" 2>/dev/null || echo "")
+" 2>/dev/null)
 
-# Remove empty lines
-RHACS_NAMESPACES=$(echo "$RHACS_NAMESPACES" | grep -v '^$')
+# Handle empty result
+if [ -z "$RHACS_NAMESPACES" ]; then
+    RHACS_NAMESPACES=""
+fi
 
 if [ -n "$RHACS_NAMESPACES" ]; then
     log "Found namespaces with RHACS operator resources (excluding $CORRECT_NAMESPACE):"
