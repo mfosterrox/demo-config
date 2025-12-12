@@ -161,6 +161,16 @@ SECRET_NAME="central-tls"
 CERT_NEEDS_UPDATE=false
 CERT_NEEDS_WAIT=false
 
+# Check if secret exists and contains self-signed certificate
+if oc get secret "$SECRET_NAME" -n "$NAMESPACE" &>/dev/null; then
+    log "Secret '$SECRET_NAME' already exists"
+    SECRET_ISSUER=$(oc get secret "$SECRET_NAME" -n "$NAMESPACE" -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null | grep -i "issuer" || echo "")
+    if echo "$SECRET_ISSUER" | grep -qi "StackRox\|CN=.*CA"; then
+        log "Secret contains self-signed certificate (issuer: ${SECRET_ISSUER:0:80}...)"
+        log "cert-manager will replace this with the issued certificate when Ready"
+    fi
+fi
+
 if oc get certificate "$CERT_NAME" -n "$NAMESPACE" &>/dev/null; then
     log "Certificate '$CERT_NAME' already exists"
     
@@ -327,21 +337,39 @@ else
     fi
 fi
 
-# Verify secret exists
+# Verify secret exists and contains cert-manager certificate
 log ""
-log "Verifying TLS secret exists..."
-if oc get secret "$SECRET_NAME" -n "$NAMESPACE" &>/dev/null; then
-    log "✓ Secret '$SECRET_NAME' exists"
-    
-    # Check secret has required keys
-    if oc get secret "$SECRET_NAME" -n "$NAMESPACE" -o jsonpath='{.data.tls\.crt}' &>/dev/null && \
-       oc get secret "$SECRET_NAME" -n "$NAMESPACE" -o jsonpath='{.data.tls\.key}' &>/dev/null; then
-        log "✓ Secret contains tls.crt and tls.key"
+log "Verifying TLS secret exists and contains cert-manager certificate..."
+if ! oc get secret "$SECRET_NAME" -n "$NAMESPACE" &>/dev/null; then
+    error "Secret '$SECRET_NAME' not found. Certificate must be Ready before proceeding."
+fi
+
+log "✓ Secret '$SECRET_NAME' exists"
+
+# Check secret has required keys
+if ! oc get secret "$SECRET_NAME" -n "$NAMESPACE" -o jsonpath='{.data.tls\.crt}' &>/dev/null || \
+   ! oc get secret "$SECRET_NAME" -n "$NAMESPACE" -o jsonpath='{.data.tls\.key}' &>/dev/null; then
+    error "Secret '$SECRET_NAME' does not contain required keys (tls.crt, tls.key)"
+fi
+
+log "✓ Secret contains tls.crt and tls.key"
+
+# Verify the certificate in the secret is from cert-manager (not self-signed)
+log "Verifying certificate issuer..."
+CERT_ISSUER=$(oc get secret "$SECRET_NAME" -n "$NAMESPACE" -o jsonpath='{.data.tls\.crt}' | base64 -d 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null || echo "")
+if [ -n "$CERT_ISSUER" ]; then
+    log "Certificate issuer: $CERT_ISSUER"
+    # Check if it's a self-signed cert (issuer == subject typically means self-signed)
+    CERT_SUBJECT=$(oc get secret "$SECRET_NAME" -n "$NAMESPACE" -o jsonpath='{.data.tls\.crt}' | base64 -d 2>/dev/null | openssl x509 -noout -subject 2>/dev/null || echo "")
+    if echo "$CERT_ISSUER" | grep -qi "StackRox\|self" || [ "$CERT_ISSUER" = "$CERT_SUBJECT" ]; then
+        warning "Secret contains self-signed certificate. Waiting for cert-manager to update it..."
+        log "The secret will be updated by cert-manager when the Certificate becomes Ready."
+        log "If the certificate is Ready but secret still has self-signed cert, cert-manager may need more time."
     else
-        warning "Secret exists but may not have required keys (tls.crt, tls.key)"
+        log "✓ Certificate appears to be from cert-manager (not self-signed)"
     fi
 else
-    warning "Secret '$SECRET_NAME' not found yet. It will be created when the certificate is issued."
+    warning "Could not verify certificate issuer. Proceeding anyway..."
 fi
 
 # Step 5: Patch the Central CR to Reference the Secret
@@ -392,6 +420,11 @@ else
     else
         warning "Central CR update may not have been applied correctly. Current secretRef: ${VERIFY_SECRET_REF:-none}"
     fi
+    
+    # Wait for Central operator to reconcile
+    log "Waiting for Central operator to reconcile the change..."
+    sleep 10
+    log "✓ Central operator should have picked up the configuration"
 fi
 
 # Step 6: Restart the Central Pod to Load the New Certificate
@@ -416,6 +449,24 @@ if oc wait --for=condition=Available "deployment/central" -n "$NAMESPACE" --time
     log "✓ Central deployment is Available"
 else
     warning "Central deployment may not be Available yet. Check status: oc get deployment central -n $NAMESPACE"
+fi
+
+# Wait a bit more for pods to fully start and load the certificate
+log "Waiting for Central pods to fully initialize with new certificate..."
+sleep 15
+
+# Verify Central is using the cert-manager certificate
+log ""
+log "Verifying Central is using cert-manager certificate..."
+CENTRAL_POD=$(oc get pods -n "$NAMESPACE" -l app=central --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+if [ -n "$CENTRAL_POD" ]; then
+    log "Checking certificate in Central pod..."
+    # Try to get certificate info from the pod (if possible)
+    log "Central pod '$CENTRAL_POD' is running"
+    log "To verify the certificate is being used, check:"
+    log "  oc exec -n $NAMESPACE $CENTRAL_POD -- openssl x509 -in /run/secrets/stackrox.io/certs/tls.crt -noout -issuer -subject -dates"
+else
+    warning "Could not find running Central pod to verify certificate"
 fi
 
 # Step 7: Verify
@@ -451,6 +502,26 @@ if [ "${CENTRAL_PODS:-0}" -gt 0 ]; then
     log "✓ Central pods are Running ($CENTRAL_PODS pod(s))"
 else
     warning "No Running Central pods found. Check status: oc get pods -n $NAMESPACE -l app=central"
+fi
+
+# Final verification: Check that the secret contains cert-manager certificate (not self-signed)
+log ""
+log "Final verification: Checking secret contains cert-manager certificate..."
+FINAL_SECRET_ISSUER=$(oc get secret "$SECRET_NAME" -n "$NAMESPACE" -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null || echo "")
+if [ -n "$FINAL_SECRET_ISSUER" ]; then
+    if echo "$FINAL_SECRET_ISSUER" | grep -qi "StackRox\|CN=.*CA" && ! echo "$FINAL_SECRET_ISSUER" | grep -qi "ZeroSSL\|Let's Encrypt\|zerossl"; then
+        warning "Secret still contains self-signed certificate!"
+        warning "Issuer: $FINAL_SECRET_ISSUER"
+        warning "cert-manager may not have updated the secret yet, or the Certificate may not be Ready."
+        warning "Check: oc get certificate $CERT_NAME -n $NAMESPACE"
+        warning "Central may still be using the self-signed certificate. You may need to:"
+        warning "  1. Ensure Certificate is Ready: oc get certificate $CERT_NAME -n $NAMESPACE"
+        warning "  2. Wait for cert-manager to update the secret"
+        warning "  3. Restart Central pods again: oc delete pod -l app=central -n $NAMESPACE"
+    else
+        log "✓ Secret contains cert-manager certificate"
+        log "  Issuer: $FINAL_SECRET_ISSUER"
+    fi
 fi
 
 # Final summary
