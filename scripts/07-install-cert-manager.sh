@@ -336,269 +336,39 @@ else
 fi
 fi  # End of NEEDS_UPDATE conditional
 
-# Always verify CertManager CR and components (regardless of installation status)
-# Step 7: Create CertManager CR instance (required to deploy cert-manager components)
+# Step 7: Verify CertManager CR exists and is Ready
 log ""
 log "========================================================="
-log "Step 7: Creating CertManager CR Instance"
+log "Step 7: Verifying CertManager CR Status"
 log "========================================================="
-log "Red Hat cert-manager Operator requires a CertManager CR instance"
-log "to deploy the actual cert-manager components (pods, webhook, CRDs)."
 
 CERTMANAGER_CR_NAME="cluster"
 
-# Check if CertManager CR already exists
-CERTMANAGER_NEEDS_WAIT=false
-if oc get certmanager "$CERTMANAGER_CR_NAME" &>/dev/null; then
-    log "CertManager CR '$CERTMANAGER_CR_NAME' already exists"
-    
-    # Check status
-    CERTMANAGER_READY=$(oc get certmanager "$CERTMANAGER_CR_NAME" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
-    if [ "$CERTMANAGER_READY" = "True" ]; then
-        log "✓ CertManager CR is Ready"
-        log "Cert-manager components are already deployed"
-    else
-        log "CertManager CR status: $CERTMANAGER_READY"
-        CERTMANAGER_MESSAGE=$(oc get certmanager "$CERTMANAGER_CR_NAME" -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null || echo "")
-        if [ -n "$CERTMANAGER_MESSAGE" ]; then
-            log "  Message: $CERTMANAGER_MESSAGE"
-        fi
-        log "CertManager CR exists but is not Ready. Waiting for it to become Ready..."
-        CERTMANAGER_NEEDS_WAIT=true
-    fi
-else
-    log "Creating CertManager CR instance '$CERTMANAGER_CR_NAME'..."
-    
-    # Create CertManager CR
-    if ! cat <<EOF | oc apply -f -
-apiVersion: operator.openshift.io/v1alpha1
-kind: CertManager
-metadata:
-  name: $CERTMANAGER_CR_NAME
-spec: {}
-EOF
-    then
-        error "Failed to create CertManager CR"
-    fi
-    log "✓ CertManager CR created successfully"
-    log "This will trigger the operator to deploy cert-manager components..."
-    log "This may take 3-10 minutes..."
-    CERTMANAGER_NEEDS_WAIT=true
+if ! oc get certmanager "$CERTMANAGER_CR_NAME" &>/dev/null; then
+    error "CertManager CR '$CERTMANAGER_CR_NAME' not found. Please ensure it exists."
 fi
 
-# Wait for CertManager CR to become Ready if needed
-if [ "$CERTMANAGER_NEEDS_WAIT" = "true" ]; then
-    log ""
-    log "Waiting for CertManager CR to become Ready (timeout: 10 minutes)..."
-    
-    MAX_CERTMANAGER_WAIT=600  # 10 minutes
-    CERTMANAGER_WAIT_COUNT=0
-    CERTMANAGER_READY=false
-    
-    while [ $CERTMANAGER_WAIT_COUNT -lt $MAX_CERTMANAGER_WAIT ]; do
-        CERTMANAGER_READY_STATUS=$(oc get certmanager "$CERTMANAGER_CR_NAME" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
-        
-        if [ "$CERTMANAGER_READY_STATUS" = "True" ]; then
-            CERTMANAGER_READY=true
-            log "✓ CertManager CR is Ready"
-            break
-        fi
-        
-        # Show progress every 30 seconds
-        if [ $((CERTMANAGER_WAIT_COUNT % 30)) -eq 0 ] && [ $CERTMANAGER_WAIT_COUNT -gt 0 ]; then
-            log "  Still waiting... (${CERTMANAGER_WAIT_COUNT}s/${MAX_CERTMANAGER_WAIT}s)"
-            CERTMANAGER_MESSAGE=$(oc get certmanager "$CERTMANAGER_CR_NAME" -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null || echo "")
-            if [ -n "$CERTMANAGER_MESSAGE" ] && [ "$CERTMANAGER_MESSAGE" != "null" ]; then
-                log "  Status: $CERTMANAGER_READY_STATUS - $CERTMANAGER_MESSAGE"
-            else
-                log "  Status: $CERTMANAGER_READY_STATUS"
-            fi
-        fi
-        
-        sleep 5
-        CERTMANAGER_WAIT_COUNT=$((CERTMANAGER_WAIT_COUNT + 5))
-    done
-    
-    if [ "$CERTMANAGER_READY" = "false" ]; then
-        warning "CertManager CR did not become Ready within ${MAX_CERTMANAGER_WAIT} seconds"
-        log "Current CertManager CR status:"
-        oc get certmanager "$CERTMANAGER_CR_NAME" -o yaml 2>/dev/null | grep -A 10 "status:" || log "  Could not retrieve status"
-        log ""
-        log "Troubleshooting commands:"
-        log "  oc get certmanager $CERTMANAGER_CR_NAME -o yaml"
-        log "  oc describe certmanager $CERTMANAGER_CR_NAME"
-        warning "Continuing anyway, but cert-manager components may not be fully deployed..."
-    fi
-fi
+log "✓ CertManager CR '$CERTMANAGER_CR_NAME' found"
 
-# Step 8: Wait for cert-manager namespace and components to be deployed
-log ""
-log "========================================================="
-log "Step 8: Waiting for cert-manager Components to Deploy"
-log "========================================================="
-
-CERT_MANAGER_NS="cert-manager"
-NAMESPACE_CREATED=false
-MAX_NAMESPACE_WAIT=120
-NAMESPACE_WAIT_COUNT=0
-
-log "Waiting for cert-manager namespace to be created..."
-while [ $NAMESPACE_WAIT_COUNT -lt $MAX_NAMESPACE_WAIT ]; do
-    if oc get namespace "$CERT_MANAGER_NS" &>/dev/null; then
-        NAMESPACE_CREATED=true
-        log "✓ cert-manager namespace created"
-        break
-    fi
-    
-    if [ $((NAMESPACE_WAIT_COUNT % 15)) -eq 0 ] && [ $NAMESPACE_WAIT_COUNT -gt 0 ]; then
-        log "  Still waiting for namespace... (${NAMESPACE_WAIT_COUNT}s/${MAX_NAMESPACE_WAIT}s)"
-    fi
-    
-    sleep 2
-    NAMESPACE_WAIT_COUNT=$((NAMESPACE_WAIT_COUNT + 2))
-done
-
-if [ "$NAMESPACE_CREATED" = false ]; then
-    warning "cert-manager namespace not created after ${MAX_NAMESPACE_WAIT} seconds"
-    warning "Check CertManager CR status: oc get certmanager $CERTMANAGER_CR_NAME -o yaml"
-else
-    # Wait for pods to be created and running
-    log ""
-    log "Waiting for cert-manager pods to be running..."
-    log "This may take several minutes..."
-    
-    MAX_POD_WAIT=600  # 10 minutes
-    POD_WAIT_COUNT=0
-    EXPECTED_PODS=("cert-manager" "cert-manager-cainjector" "cert-manager-webhook")
-    ALL_PODS_READY=false
-    
-    while [ $POD_WAIT_COUNT -lt $MAX_POD_WAIT ]; do
-        READY_COUNT=0
-        TOTAL_COUNT=0
-        
-        # Try multiple label selectors (Red Hat cert-manager may use different labels)
-        for pod_name in "${EXPECTED_PODS[@]}"; do
-            # Try app.kubernetes.io/name label
-            POD_COUNT=$(oc get pods -n "$CERT_MANAGER_NS" -l app.kubernetes.io/name="$pod_name" --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l | tr -d '[:space:]')
-            TOTAL_PODS=$(oc get pods -n "$CERT_MANAGER_NS" -l app.kubernetes.io/name="$pod_name" --no-headers 2>/dev/null | wc -l | tr -d '[:space:]')
-            
-            # If not found, try app label
-            if [ "${TOTAL_PODS:-0}" -eq 0 ]; then
-                POD_COUNT=$(oc get pods -n "$CERT_MANAGER_NS" -l app="$pod_name" --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l | tr -d '[:space:]')
-                TOTAL_PODS=$(oc get pods -n "$CERT_MANAGER_NS" -l app="$pod_name" --no-headers 2>/dev/null | wc -l | tr -d '[:space:]')
-            fi
-            
-            # If still not found, try name-based matching
-            if [ "${TOTAL_PODS:-0}" -eq 0 ]; then
-                POD_COUNT=$(oc get pods -n "$CERT_MANAGER_NS" --field-selector=status.phase=Running --no-headers 2>/dev/null | grep -c "^${pod_name}-" || echo "0")
-                TOTAL_PODS=$(oc get pods -n "$CERT_MANAGER_NS" --no-headers 2>/dev/null | grep -c "^${pod_name}-" || echo "0")
-            fi
-            
-            if [ "${TOTAL_PODS:-0}" -gt 0 ]; then
-                TOTAL_COUNT=$((TOTAL_COUNT + TOTAL_PODS))
-                READY_COUNT=$((READY_COUNT + POD_COUNT))
-            fi
-        done
-        
-        # Fallback: check total pods in namespace if specific labels don't work
-        if [ "$TOTAL_COUNT" -eq 0 ]; then
-            TOTAL_PODS_ALL=$(oc get pods -n "$CERT_MANAGER_NS" --no-headers 2>/dev/null | wc -l | tr -d '[:space:]')
-            RUNNING_PODS_ALL=$(oc get pods -n "$CERT_MANAGER_NS" --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l | tr -d '[:space:]')
-            
-            if [ "${TOTAL_PODS_ALL:-0}" -ge 3 ] && [ "${RUNNING_PODS_ALL:-0}" -eq "${TOTAL_PODS_ALL:-0}" ]; then
-                ALL_PODS_READY=true
-                log "✓ All cert-manager pods are Running ($RUNNING_PODS_ALL/$TOTAL_PODS_ALL)"
-                break
-            fi
-            TOTAL_COUNT=${TOTAL_PODS_ALL:-0}
-            READY_COUNT=${RUNNING_PODS_ALL:-0}
-        fi
-        
-        if [ "$TOTAL_COUNT" -ge 3 ] && [ "$READY_COUNT" -eq "$TOTAL_COUNT" ] && [ "$TOTAL_COUNT" -gt 0 ]; then
-            ALL_PODS_READY=true
-            log "✓ All cert-manager pods are Running ($READY_COUNT/$TOTAL_COUNT)"
-            break
-        fi
-        
-        if [ $((POD_WAIT_COUNT % 30)) -eq 0 ] && [ $POD_WAIT_COUNT -gt 0 ]; then
-            log "  Still waiting for pods... (${POD_WAIT_COUNT}s/${MAX_POD_WAIT}s)"
-            log "  Current status: $READY_COUNT/$TOTAL_COUNT pods running"
-            oc get pods -n "$CERT_MANAGER_NS" 2>/dev/null | head -10 || true
-        fi
-        
-        sleep 5
-        POD_WAIT_COUNT=$((POD_WAIT_COUNT + 5))
-    done
-    
-    if [ "$ALL_PODS_READY" = false ]; then
-        warning "Not all cert-manager pods are ready after ${MAX_POD_WAIT} seconds"
-        log "Current pod status:"
-        oc get pods -n "$CERT_MANAGER_NS" 2>/dev/null || true
-        warning "Pods may still be starting. Check status: oc get pods -n $CERT_MANAGER_NS -w"
-    fi
-fi
-
-# Step 9: Verify CertManager CR status and CRDs
-log ""
-log "========================================================="
-log "Step 9: Verifying CertManager CR Status and CRDs"
-log "========================================================="
-
-# Check CertManager CR status and wait if needed
-log "Checking CertManager CR status..."
+# Check status
 CERTMANAGER_READY=$(oc get certmanager "$CERTMANAGER_CR_NAME" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
-CERTMANAGER_MESSAGE=$(oc get certmanager "$CERTMANAGER_CR_NAME" -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null || echo "")
-
 if [ "$CERTMANAGER_READY" = "True" ]; then
     log "✓ CertManager CR is Ready"
 else
-    log "CertManager CR Ready status: $CERTMANAGER_READY"
+    warning "CertManager CR status: $CERTMANAGER_READY"
+    CERTMANAGER_MESSAGE=$(oc get certmanager "$CERTMANAGER_CR_NAME" -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null || echo "")
     if [ -n "$CERTMANAGER_MESSAGE" ] && [ "$CERTMANAGER_MESSAGE" != "null" ]; then
         log "  Message: $CERTMANAGER_MESSAGE"
     fi
-    log "CertManager CR is not Ready yet. Waiting for it to become Ready..."
-    
-    MAX_CERTMANAGER_WAIT=600  # 10 minutes
-    CERTMANAGER_WAIT_COUNT=0
-    CERTMANAGER_READY_FINAL=false
-    
-    while [ $CERTMANAGER_WAIT_COUNT -lt $MAX_CERTMANAGER_WAIT ]; do
-        CERTMANAGER_READY_STATUS=$(oc get certmanager "$CERTMANAGER_CR_NAME" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
-        
-        if [ "$CERTMANAGER_READY_STATUS" = "True" ]; then
-            CERTMANAGER_READY_FINAL=true
-            log "✓ CertManager CR is Ready"
-            break
-        fi
-        
-        # Show progress every 30 seconds
-        if [ $((CERTMANAGER_WAIT_COUNT % 30)) -eq 0 ] && [ $CERTMANAGER_WAIT_COUNT -gt 0 ]; then
-            log "  Still waiting... (${CERTMANAGER_WAIT_COUNT}s/${MAX_CERTMANAGER_WAIT}s)"
-            CERTMANAGER_MESSAGE_CURRENT=$(oc get certmanager "$CERTMANAGER_CR_NAME" -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null || echo "")
-            if [ -n "$CERTMANAGER_MESSAGE_CURRENT" ] && [ "$CERTMANAGER_MESSAGE_CURRENT" != "null" ]; then
-                log "  Status: $CERTMANAGER_READY_STATUS - $CERTMANAGER_MESSAGE_CURRENT"
-            else
-                log "  Status: $CERTMANAGER_READY_STATUS"
-            fi
-        fi
-        
-        sleep 5
-        CERTMANAGER_WAIT_COUNT=$((CERTMANAGER_WAIT_COUNT + 5))
-    done
-    
-    if [ "$CERTMANAGER_READY_FINAL" = "false" ]; then
-        warning "CertManager CR did not become Ready within ${MAX_CERTMANAGER_WAIT} seconds"
-        log "Current CertManager CR status:"
-        oc get certmanager "$CERTMANAGER_CR_NAME" -o yaml 2>/dev/null | grep -A 10 "status:" || log "  Could not retrieve status"
-        log ""
-        log "Troubleshooting commands:"
-        log "  oc get certmanager $CERTMANAGER_CR_NAME -o yaml"
-        log "  oc describe certmanager $CERTMANAGER_CR_NAME"
-        warning "Continuing anyway, but cert-manager components may not be fully deployed..."
-    fi
+    warning "CertManager CR is not Ready. Cert-manager components may not be fully deployed."
 fi
 
+# Step 8: Verify cert-manager CRDs are available
 log ""
+log "========================================================="
+log "Step 8: Verifying cert-manager CRDs"
+log "========================================================="
+
 log "Verifying cert-manager CRDs are available..."
 
 REQUIRED_CRDS=("certificates.cert-manager.io" "issuers.cert-manager.io" "clusterissuers.cert-manager.io" "certificaterequests.cert-manager.io")
@@ -628,10 +398,10 @@ if [ "$ALL_CRDS_AVAILABLE" = false ]; then
     done
 fi
 
-# Step 10: Verify zerossl-production-ec2 ClusterIssuer is Available
+# Step 9: Verify zerossl-production-ec2 ClusterIssuer is Available
 log ""
 log "========================================================="
-log "Step 10: Verifying ClusterIssuer 'zerossl-production-ec2' is Available"
+log "Step 9: Verifying ClusterIssuer 'zerossl-production-ec2' is Available"
 log "========================================================="
 
 CLUSTERISSUER_NAME="zerossl-production-ec2"
@@ -670,22 +440,13 @@ if [ -n "${CHANNEL:-}" ] && [ "$CHANNEL" != "null" ]; then
 fi
 log ""
 log "CertManager CR: $CERTMANAGER_CR_NAME"
-if [ "${NAMESPACE_CREATED:-false}" = "true" ]; then
-    log "Cert-manager Namespace: $CERT_MANAGER_NS"
-    log "  (Contains cert-manager pods, webhook, and CA injector)"
-elif oc get namespace "$CERT_MANAGER_NS" &>/dev/null; then
-    log "Cert-manager Namespace: $CERT_MANAGER_NS (already exists)"
-    log "  (Contains cert-manager pods, webhook, and CA injector)"
-fi
+log "  Status: $CERTMANAGER_READY"
 log ""
 log "ClusterIssuer: $CLUSTERISSUER_NAME"
-log "  (Available for Certificate resources to use)"
+log "  Status: $ISSUER_READY"
 log "========================================================="
 log ""
-log "Cert-manager operator is now installed and ready to use."
-log "The CertManager CR instance has been created, which deployed"
-log "the cert-manager components (pods, webhook, CRDs)."
-log ""
+log "Cert-manager operator is installed and verified."
 log "ClusterIssuer '$CLUSTERISSUER_NAME' has been verified and is ready."
 log "You can now create Certificate resources to manage TLS certificates."
 log ""
