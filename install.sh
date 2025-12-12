@@ -42,6 +42,15 @@ reconfigure_rhacs() {
     success "RHACS reconfigure completed successfully"
 }
 
+# Install cert-manager operator (required for RHACS TLS certificates)
+install_cert_manager() {
+    log "Installing cert-manager operator..."
+    if ! bash "${SCRIPT_DIR}/scripts/02-install-cert-manager.sh"; then
+        error "Cert-manager installation script failed. Installation stopped."
+    fi
+    success "Cert-manager installation completed successfully"
+}
+
 
 # Main function
 main() {
@@ -70,20 +79,24 @@ main() {
     log "Using script directory: $SCRIPT_DIR"
     
     # Verify scripts exist - fail fast if any script is missing
-    if [ ! -f "$SCRIPT_DIR/scripts/01-RHACS-reconfigure.sh" ]; then
-        error "Required script not found: $SCRIPT_DIR/scripts/01-RHACS-reconfigure.sh"
-    fi
-    log "✓ Required script found"
+    for script in "01-RHACS-reconfigure.sh" "02-install-cert-manager.sh"; do
+        if [ ! -f "$SCRIPT_DIR/scripts/$script" ]; then
+            error "Required script not found: $SCRIPT_DIR/scripts/$script"
+        fi
+    done
+    log "✓ All required scripts found"
     
     # Run setup scripts in order
     reconfigure_rhacs
+    install_cert_manager
     
     log "========================================================="
     success "Demo Config setup completed successfully!"
     log "========================================================="
     log ""
     log "Scripts executed:"
-    log "  - RHACS operator reconfigure (cleanup existing operators)"
+    log "  1. RHACS operator reconfigure (cleanup existing operators)"
+    log "  2. Cert-manager operator installation (required for RHACS TLS certificates)"
     log ""
     log "Additional scripts will be added one-by-one as needed."
 }
