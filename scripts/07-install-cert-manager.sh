@@ -348,6 +348,7 @@ log "to deploy the actual cert-manager components (pods, webhook, CRDs)."
 CERTMANAGER_CR_NAME="cluster"
 
 # Check if CertManager CR already exists
+CERTMANAGER_NEEDS_WAIT=false
 if oc get certmanager "$CERTMANAGER_CR_NAME" &>/dev/null; then
     log "CertManager CR '$CERTMANAGER_CR_NAME' already exists"
     
@@ -362,7 +363,8 @@ if oc get certmanager "$CERTMANAGER_CR_NAME" &>/dev/null; then
         if [ -n "$CERTMANAGER_MESSAGE" ]; then
             log "  Message: $CERTMANAGER_MESSAGE"
         fi
-        warning "CertManager CR exists but is not Ready. Components may still be deploying..."
+        log "CertManager CR exists but is not Ready. Waiting for it to become Ready..."
+        CERTMANAGER_NEEDS_WAIT=true
     fi
 else
     log "Creating CertManager CR instance '$CERTMANAGER_CR_NAME'..."
@@ -381,6 +383,52 @@ EOF
     log "✓ CertManager CR created successfully"
     log "This will trigger the operator to deploy cert-manager components..."
     log "This may take 3-10 minutes..."
+    CERTMANAGER_NEEDS_WAIT=true
+fi
+
+# Wait for CertManager CR to become Ready if needed
+if [ "$CERTMANAGER_NEEDS_WAIT" = "true" ]; then
+    log ""
+    log "Waiting for CertManager CR to become Ready (timeout: 10 minutes)..."
+    
+    MAX_CERTMANAGER_WAIT=600  # 10 minutes
+    CERTMANAGER_WAIT_COUNT=0
+    CERTMANAGER_READY=false
+    
+    while [ $CERTMANAGER_WAIT_COUNT -lt $MAX_CERTMANAGER_WAIT ]; do
+        CERTMANAGER_READY_STATUS=$(oc get certmanager "$CERTMANAGER_CR_NAME" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+        
+        if [ "$CERTMANAGER_READY_STATUS" = "True" ]; then
+            CERTMANAGER_READY=true
+            log "✓ CertManager CR is Ready"
+            break
+        fi
+        
+        # Show progress every 30 seconds
+        if [ $((CERTMANAGER_WAIT_COUNT % 30)) -eq 0 ] && [ $CERTMANAGER_WAIT_COUNT -gt 0 ]; then
+            log "  Still waiting... (${CERTMANAGER_WAIT_COUNT}s/${MAX_CERTMANAGER_WAIT}s)"
+            CERTMANAGER_MESSAGE=$(oc get certmanager "$CERTMANAGER_CR_NAME" -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null || echo "")
+            if [ -n "$CERTMANAGER_MESSAGE" ] && [ "$CERTMANAGER_MESSAGE" != "null" ]; then
+                log "  Status: $CERTMANAGER_READY_STATUS - $CERTMANAGER_MESSAGE"
+            else
+                log "  Status: $CERTMANAGER_READY_STATUS"
+            fi
+        fi
+        
+        sleep 5
+        CERTMANAGER_WAIT_COUNT=$((CERTMANAGER_WAIT_COUNT + 5))
+    done
+    
+    if [ "$CERTMANAGER_READY" = "false" ]; then
+        warning "CertManager CR did not become Ready within ${MAX_CERTMANAGER_WAIT} seconds"
+        log "Current CertManager CR status:"
+        oc get certmanager "$CERTMANAGER_CR_NAME" -o yaml 2>/dev/null | grep -A 10 "status:" || log "  Could not retrieve status"
+        log ""
+        log "Troubleshooting commands:"
+        log "  oc get certmanager $CERTMANAGER_CR_NAME -o yaml"
+        log "  oc describe certmanager $CERTMANAGER_CR_NAME"
+        warning "Continuing anyway, but cert-manager components may not be fully deployed..."
+    fi
 fi
 
 # Step 8: Wait for cert-manager namespace and components to be deployed
@@ -496,7 +544,7 @@ log "========================================================="
 log "Step 9: Verifying CertManager CR Status and CRDs"
 log "========================================================="
 
-# Check CertManager CR status
+# Check CertManager CR status and wait if needed
 log "Checking CertManager CR status..."
 CERTMANAGER_READY=$(oc get certmanager "$CERTMANAGER_CR_NAME" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
 CERTMANAGER_MESSAGE=$(oc get certmanager "$CERTMANAGER_CR_NAME" -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null || echo "")
@@ -505,11 +553,49 @@ if [ "$CERTMANAGER_READY" = "True" ]; then
     log "✓ CertManager CR is Ready"
 else
     log "CertManager CR Ready status: $CERTMANAGER_READY"
-    if [ -n "$CERTMANAGER_MESSAGE" ]; then
+    if [ -n "$CERTMANAGER_MESSAGE" ] && [ "$CERTMANAGER_MESSAGE" != "null" ]; then
         log "  Message: $CERTMANAGER_MESSAGE"
     fi
-    warning "CertManager CR is not Ready yet. Components may still be deploying..."
-    log "Check status: oc get certmanager $CERTMANAGER_CR_NAME -o yaml"
+    log "CertManager CR is not Ready yet. Waiting for it to become Ready..."
+    
+    MAX_CERTMANAGER_WAIT=600  # 10 minutes
+    CERTMANAGER_WAIT_COUNT=0
+    CERTMANAGER_READY_FINAL=false
+    
+    while [ $CERTMANAGER_WAIT_COUNT -lt $MAX_CERTMANAGER_WAIT ]; do
+        CERTMANAGER_READY_STATUS=$(oc get certmanager "$CERTMANAGER_CR_NAME" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+        
+        if [ "$CERTMANAGER_READY_STATUS" = "True" ]; then
+            CERTMANAGER_READY_FINAL=true
+            log "✓ CertManager CR is Ready"
+            break
+        fi
+        
+        # Show progress every 30 seconds
+        if [ $((CERTMANAGER_WAIT_COUNT % 30)) -eq 0 ] && [ $CERTMANAGER_WAIT_COUNT -gt 0 ]; then
+            log "  Still waiting... (${CERTMANAGER_WAIT_COUNT}s/${MAX_CERTMANAGER_WAIT}s)"
+            CERTMANAGER_MESSAGE_CURRENT=$(oc get certmanager "$CERTMANAGER_CR_NAME" -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null || echo "")
+            if [ -n "$CERTMANAGER_MESSAGE_CURRENT" ] && [ "$CERTMANAGER_MESSAGE_CURRENT" != "null" ]; then
+                log "  Status: $CERTMANAGER_READY_STATUS - $CERTMANAGER_MESSAGE_CURRENT"
+            else
+                log "  Status: $CERTMANAGER_READY_STATUS"
+            fi
+        fi
+        
+        sleep 5
+        CERTMANAGER_WAIT_COUNT=$((CERTMANAGER_WAIT_COUNT + 5))
+    done
+    
+    if [ "$CERTMANAGER_READY_FINAL" = "false" ]; then
+        warning "CertManager CR did not become Ready within ${MAX_CERTMANAGER_WAIT} seconds"
+        log "Current CertManager CR status:"
+        oc get certmanager "$CERTMANAGER_CR_NAME" -o yaml 2>/dev/null | grep -A 10 "status:" || log "  Could not retrieve status"
+        log ""
+        log "Troubleshooting commands:"
+        log "  oc get certmanager $CERTMANAGER_CR_NAME -o yaml"
+        log "  oc describe certmanager $CERTMANAGER_CR_NAME"
+        warning "Continuing anyway, but cert-manager components may not be fully deployed..."
+    fi
 fi
 
 log ""
