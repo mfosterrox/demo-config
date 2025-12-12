@@ -28,72 +28,26 @@ error() {
 # Trap to show error details on exit
 trap 'error "Command failed: $(cat <<< "$BASH_COMMAND")"' ERR
 
-# Function to load variable from ~/.bashrc if it exists
-load_from_bashrc() {
-    local var_name="$1"
-    
-    # First check if variable is already set in environment
-    local env_value=$(eval "echo \${${var_name}:-}")
-    if [ -n "$env_value" ]; then
-        export "${var_name}=${env_value}"
-        echo "$env_value"
-        return 0
-    fi
-    
-    # Otherwise, try to load from ~/.bashrc
-    if [ -f ~/.bashrc ] && grep -q "^export ${var_name}=" ~/.bashrc; then
-        local var_line=$(grep "^export ${var_name}=" ~/.bashrc | head -1)
-        local var_value=$(echo "$var_line" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
-        export "${var_name}=${var_value}"
-        echo "$var_value"
-    fi
-}
+# Set script directory and project root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-# Function to save variable to ~/.bashrc
-save_to_bashrc() {
-    local var_name="$1"
-    local var_value="$2"
-    
-    # Remove existing export line for this variable
-    if [ -f ~/.bashrc ]; then
-        sed -i "/^export ${var_name}=/d" ~/.bashrc
-    fi
-    
-    # Append export statement to ~/.bashrc
-    echo "export ${var_name}=\"${var_value}\"" >> ~/.bashrc
-    export "${var_name}=${var_value}"
-}
+# RHACS operator namespace
+RHACS_OPERATOR_NAMESPACE="rhacs-operator"
 
-# Load environment variables from ~/.bashrc (set by script 01)
-log "Loading environment variables from ~/.bashrc..."
-
-# Ensure ~/.bashrc exists
-if [ ! -f ~/.bashrc ]; then
-    error "~/.bashrc not found. Please run script 01-compliance-operator-install.sh first to initialize environment variables."
+# Generate ROX_ENDPOINT from Central route
+log "Extracting ROX_ENDPOINT from Central route..."
+CENTRAL_ROUTE=$(oc get route central -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+if [ -z "$CENTRAL_ROUTE" ]; then
+    error "Central route not found in namespace '$RHACS_OPERATOR_NAMESPACE'. Please ensure RHACS Central is installed."
 fi
+ROX_ENDPOINT="$CENTRAL_ROUTE"
+log "✓ Extracted ROX_ENDPOINT: $ROX_ENDPOINT"
 
-# Clean up any malformed source commands in bashrc
-if grep -q "^source $" ~/.bashrc; then
-    log "Cleaning up malformed source commands in ~/.bashrc..."
-    sed -i '/^source $/d' ~/.bashrc
-fi
-
-# Load SCRIPT_DIR and PROJECT_ROOT (set by script 01)
-SCRIPT_DIR=$(load_from_bashrc "SCRIPT_DIR")
-PROJECT_ROOT=$(load_from_bashrc "PROJECT_ROOT")
-
-# Load required variables (set by script 02)
-ROX_ENDPOINT=$(load_from_bashrc "ROX_ENDPOINT")
-ROX_API_TOKEN=$(load_from_bashrc "ROX_API_TOKEN")
-
-# Validate required environment variables
-if [ -z "$ROX_ENDPOINT" ]; then
-    error "ROX_ENDPOINT not set. Please run script 02-rhacs-setup.sh first to generate required variables."
-fi
-log "✓ Required environment variables validated: ROX_ENDPOINT=$ROX_ENDPOINT"
+# Initialize ROX_API_TOKEN (will be generated if needed)
+ROX_API_TOKEN=""
 
 # Check if API token is valid, generate new one if needed
-RHACS_OPERATOR_NAMESPACE="rhacs-operator"
 NEEDS_NEW_TOKEN=false
 
 if [ -z "$ROX_API_TOKEN" ]; then
@@ -204,8 +158,7 @@ if [ "$NEEDS_NEW_TOKEN" = true ]; then
     fi
     
     # Save token to ~/.bashrc
-    save_to_bashrc "ROX_API_TOKEN" "$ROX_API_TOKEN"
-    log "✓ New API token generated and saved to ~/.bashrc"
+    log "✓ New API token generated"
 fi
 
 # Ensure jq is installed
@@ -318,7 +271,6 @@ while [ $RETRY_COUNT -le $MAX_RETRIES ]; do
                 error "Failed to extract API token from roxctl output. Output: ${TOKEN_OUTPUT:0:500}"
             fi
             
-            save_to_bashrc "ROX_API_TOKEN" "$ROX_API_TOKEN"
             log "✓ New API token generated, retrying cluster fetch..."
             RETRY_COUNT=$((RETRY_COUNT + 1))
             continue
@@ -683,10 +635,9 @@ else
     log "✓ Scan configuration ID: $SCAN_CONFIG_ID"
 fi
 
-# Save SCAN_CONFIG_ID to ~/.bashrc for use by script 05
+# SCAN_CONFIG_ID is now available for use in this script
 if [ -n "$SCAN_CONFIG_ID" ] && [ "$SCAN_CONFIG_ID" != "null" ]; then
-    save_to_bashrc "SCAN_CONFIG_ID" "$SCAN_CONFIG_ID"
-    log "✓ Saved SCAN_CONFIG_ID to ~/.bashrc"
+    log "✓ Scan configuration ID ready: $SCAN_CONFIG_ID"
 fi
 
 # Trigger the scan immediately after creation
