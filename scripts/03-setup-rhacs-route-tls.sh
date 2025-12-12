@@ -67,22 +67,48 @@ if ! oc get namespace "$RHACS_OPERATOR_NAMESPACE" &>/dev/null; then
 fi
 log "✓ Namespace '$RHACS_OPERATOR_NAMESPACE' exists"
 
-# Get cluster base domain for DNS name
+# Get cluster base domain for DNS name from existing routes
 log "Determining certificate DNS names..."
-CLUSTER_DOMAIN=$(oc get dns.config/cluster -o jsonpath='{.spec.baseDomain}' 2>/dev/null || echo "")
+CLUSTER_DOMAIN=""
+
+# Try to extract domain from console route
+CONSOLE_ROUTE=$(oc get route console -n openshift-console -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+if [ -n "$CONSOLE_ROUTE" ]; then
+    # Extract domain from console route (e.g., console-openshift-console.apps.cluster-bt6rr.dynamic.redhatworkshops.io)
+    # Remove everything up to and including ".apps." to get the base domain
+    # Pattern: <subdomain>.apps.<domain> -> extract <domain>
+    CLUSTER_DOMAIN=$(echo "$CONSOLE_ROUTE" | sed 's/^[^.]*\.apps\.//')
+    if [ -n "$CLUSTER_DOMAIN" ] && [ "$CLUSTER_DOMAIN" != "$CONSOLE_ROUTE" ]; then
+        log "✓ Extracted domain from console route: $CLUSTER_DOMAIN"
+    else
+        CLUSTER_DOMAIN=""
+    fi
+fi
+
+# If that didn't work, try DNS config
 if [ -z "$CLUSTER_DOMAIN" ]; then
-    # Try alternative method
+    CLUSTER_DOMAIN=$(oc get dns.config/cluster -o jsonpath='{.spec.baseDomain}' 2>/dev/null || echo "")
+    if [ -n "$CLUSTER_DOMAIN" ]; then
+        log "✓ Cluster domain from DNS config: $CLUSTER_DOMAIN"
+    fi
+fi
+
+# If still no domain, try ingress config
+if [ -z "$CLUSTER_DOMAIN" ]; then
     CLUSTER_DOMAIN=$(oc get ingress.config/cluster -o jsonpath='{.spec.domain}' 2>/dev/null || echo "")
+    if [ -n "$CLUSTER_DOMAIN" ]; then
+        log "✓ Cluster domain from ingress config: $CLUSTER_DOMAIN"
+    fi
 fi
 
 if [ -z "$CLUSTER_DOMAIN" ]; then
-    warning "Could not determine cluster domain. Using wildcard certificate."
-    CERT_DNS_NAMES=("*")
-else
-    # Use wildcard for apps subdomain
-    CERT_DNS_NAMES=("*.apps.${CLUSTER_DOMAIN}")
-    log "✓ Cluster domain: $CLUSTER_DOMAIN"
+    error "Could not determine cluster domain. Please ensure cluster routes are accessible."
 fi
+
+# Construct Central DNS name: central.apps.<domain>
+CENTRAL_DNS_NAME="central.apps.${CLUSTER_DOMAIN}"
+CERT_DNS_NAMES=("$CENTRAL_DNS_NAME")
+log "✓ Central DNS name: $CENTRAL_DNS_NAME"
 
 log "Certificate will be valid for: ${CERT_DNS_NAMES[*]}"
 
@@ -102,6 +128,12 @@ if oc get certificate "$CERT_NAME" -n "$RHACS_OPERATOR_NAMESPACE" &>/dev/null; t
 else
     log "Creating Certificate resource..."
     
+    # Build DNS names YAML section
+    DNS_NAMES_YAML=""
+    for dns_name in "${CERT_DNS_NAMES[@]}"; do
+        DNS_NAMES_YAML="${DNS_NAMES_YAML}  - ${dns_name}"$'\n'
+    done
+    
     # Create Certificate resource
     cat <<EOF | oc apply -f -
 apiVersion: cert-manager.io/v1
@@ -112,8 +144,7 @@ metadata:
 spec:
   secretName: $CERT_SECRET_NAME
   dnsNames:
-$(printf "  - %s\n" "${CERT_DNS_NAMES[@]}")
-  issuerRef:
+${DNS_NAMES_YAML}  issuerRef:
     name: $CLUSTERISSUER_NAME
     kind: ClusterIssuer
 EOF
