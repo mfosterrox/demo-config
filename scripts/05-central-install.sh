@@ -149,16 +149,50 @@ spec:
     log "✓ Central resource created"
 fi
 
-# Wait for Central to be ready
+# Wait for Central deployment to be ready
 log ""
-log "Waiting for Central to be available..."
+log "Waiting for Central deployment to be ready..."
 MAX_WAIT=600
 WAIT_COUNT=0
 CENTRAL_READY=false
 
+# Wait for deployment to exist first
+log "Waiting for Central deployment to be created..."
+DEPLOYMENT_WAIT=60
+DEPLOYMENT_COUNT=0
+CENTRAL_DEPLOYMENT=""
+
+while [ $DEPLOYMENT_COUNT -lt $DEPLOYMENT_WAIT ]; do
+    CENTRAL_DEPLOYMENT=$(oc get deployment -n "$RHACS_OPERATOR_NAMESPACE" -l app=central -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+    if [ -n "$CENTRAL_DEPLOYMENT" ]; then
+        log "✓ Central deployment found: $CENTRAL_DEPLOYMENT"
+        break
+    fi
+    sleep 2
+    DEPLOYMENT_COUNT=$((DEPLOYMENT_COUNT + 2))
+done
+
+if [ -z "$CENTRAL_DEPLOYMENT" ]; then
+    warning "Central deployment not found after ${DEPLOYMENT_WAIT} seconds"
+    warning "Continuing to wait for Central resource status..."
+fi
+
+# Wait for deployment to be ready
 while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
-    CENTRAL_STATUS=$(oc get central "$CENTRAL_NAME" -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "Unknown")
+    # Check deployment readiness
+    if [ -n "$CENTRAL_DEPLOYMENT" ]; then
+        DEPLOYMENT_READY_REPLICAS=$(oc get deployment "$CENTRAL_DEPLOYMENT" -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+        DEPLOYMENT_REPLICAS=$(oc get deployment "$CENTRAL_DEPLOYMENT" -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
+        
+        if [ "$DEPLOYMENT_READY_REPLICAS" = "$DEPLOYMENT_REPLICAS" ] && [ "$DEPLOYMENT_REPLICAS" != "0" ]; then
+            CENTRAL_READY=true
+            log "✓ Central deployment is ready ($DEPLOYMENT_READY_REPLICAS/$DEPLOYMENT_REPLICAS replicas)"
+            break
+        fi
+    fi
     
+    # Also check Central resource status
+    CENTRAL_STATUS=$(oc get central "$CENTRAL_NAME" -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "Unknown")
     if [ "$CENTRAL_STATUS" = "True" ]; then
         CENTRAL_READY=true
         log "✓ Central is Available"
@@ -176,10 +210,15 @@ while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
         fi
         
         # Check deployment status
-        CENTRAL_DEPLOYMENT=$(oc get deployment -n "$RHACS_OPERATOR_NAMESPACE" -l app=central -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
         if [ -n "$CENTRAL_DEPLOYMENT" ]; then
             DEPLOYMENT_READY=$(oc get deployment "$CENTRAL_DEPLOYMENT" -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.status.readyReplicas}/{.spec.replicas}' 2>/dev/null || echo "0/0")
             log "  Deployment: $CENTRAL_DEPLOYMENT ($DEPLOYMENT_READY ready)"
+        else
+            # Try to find deployment again
+            CENTRAL_DEPLOYMENT=$(oc get deployment -n "$RHACS_OPERATOR_NAMESPACE" -l app=central -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+            if [ -n "$CENTRAL_DEPLOYMENT" ]; then
+                log "  Deployment found: $CENTRAL_DEPLOYMENT"
+            fi
         fi
     fi
     
@@ -190,8 +229,8 @@ done
 if [ "$CENTRAL_READY" = false ]; then
     warning "Central did not become available within ${MAX_WAIT} seconds"
     log ""
-    log "Central resource details:"
-    oc get central "$CENTRAL_NAME" -n "$RHACS_OPERATOR_NAMESPACE" -o yaml
+    log "Central deployment details:"
+    oc get deployment central -n "$RHACS_OPERATOR_NAMESPACE"
     log ""
     log "Check Central status: oc describe central $CENTRAL_NAME -n $RHACS_OPERATOR_NAMESPACE"
     error "Central is not available. Check the details above and operator logs for more information."
