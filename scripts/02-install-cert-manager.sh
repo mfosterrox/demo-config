@@ -240,9 +240,9 @@ if [ -z "$CHANNEL" ]; then
     log "Using default channel: $CHANNEL (will verify after subscription creation)"
 fi
 
-# Step 4: Create or update Subscription
+# Create or update Subscription
 log ""
-log "Step 4: Creating/updating Subscription..."
+log "Creating/updating Subscription..."
 log "  Channel: $CHANNEL"
 log "  Source: redhat-operators"
 log "  SourceNamespace: openshift-marketplace"
@@ -281,9 +281,9 @@ EOF
     sleep 3
 fi
 
-# Step 5: Wait for CSV to be created
+# Wait for CSV to be created
 log ""
-log "Step 5: Waiting for ClusterServiceVersion to be created..."
+log "Waiting for ClusterServiceVersion to be created..."
 MAX_WAIT=90
 WAIT_COUNT=0
 CSV_CREATED=false
@@ -322,9 +322,9 @@ if [ -z "$CSV_NAME" ]; then
 fi
 log "Found CSV: $CSV_NAME"
 
-# Step 6: Wait for CSV to be in Succeeded phase
+# Wait for CSV to be in Succeeded phase
 log ""
-log "Step 6: Waiting for ClusterServiceVersion to be installed..."
+log "Waiting for ClusterServiceVersion to be installed..."
 if ! oc wait --for=jsonpath='{.status.phase}'=Succeeded "csv/$CSV_NAME" -n "$OPERATOR_NAMESPACE" --timeout=300s 2>/dev/null; then
     CSV_STATUS=$(oc get csv "$CSV_NAME" -n "$OPERATOR_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "unknown")
     warning "CSV did not reach Succeeded phase within timeout. Current status: $CSV_STATUS"
@@ -336,9 +336,9 @@ else
 fi
 fi  # End of NEEDS_UPDATE conditional
 
-# Step 7: Verify CertManager CR exists and is Ready
+# Verify CertManager CR exists and is Ready
 log ""
-log "Step 7: Verifying CertManager CR Status"
+log "Verifying CertManager CR Status"
 
 CERTMANAGER_CR_NAME="cluster"
 
@@ -376,9 +376,9 @@ fi
 # Store status for summary
 CERTMANAGER_READY="$ALL_COMPONENTS_READY"
 
-# Step 8: Verify cert-manager CRDs are available
+# Verify cert-manager CRDs are available
 log ""
-log "Step 8: Verifying cert-manager CRDs"
+log "Verifying cert-manager CRDs"
 
 log "Verifying cert-manager CRDs are available..."
 
@@ -409,9 +409,9 @@ if [ "$ALL_CRDS_AVAILABLE" = false ]; then
     done
 fi
 
-# Step 9: Verify zerossl-production-ec2 ClusterIssuer is Available
+# Verify zerossl-production-ec2 ClusterIssuer is Available
 log ""
-log "Step 9: Verifying ClusterIssuer 'zerossl-production-ec2' is Available"
+log "Verifying ClusterIssuer 'zerossl-production-ec2' is Available"
 
 CLUSTERISSUER_NAME="zerossl-production-ec2"
 
