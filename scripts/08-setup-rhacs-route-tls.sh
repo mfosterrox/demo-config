@@ -388,22 +388,20 @@ log "✓ Central CR found: $CENTRAL_CR_NAME"
 
 log "Checking current Central CR configuration..."
 
-# Check if customCert is already configured
-CURRENT_SECRET_REF=$(oc get central "$CENTRAL_CR_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.central.tls.customCert.secretRef}' 2>/dev/null || echo "")
+# Check if defaultTLS is already configured
+CURRENT_SECRET_REF=$(oc get central "$CENTRAL_CR_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.defaultTLS.secretRef.name}' 2>/dev/null || echo "")
 
 if [ "$CURRENT_SECRET_REF" = "$SECRET_NAME" ]; then
     log "✓ Central CR already configured with secret '$SECRET_NAME'"
 else
     log "Updating Central CR to use secret '$SECRET_NAME'..."
     
-    # Patch Central CR
+    # Patch Central CR with correct field path: spec.defaultTLS.secretRef.name
     if ! oc patch central "$CENTRAL_CR_NAME" -n "$NAMESPACE" --type=merge -p "{
       \"spec\": {
-        \"central\": {
-          \"tls\": {
-            \"customCert\": {
-              \"secretRef\": \"$SECRET_NAME\"
-            }
+        \"defaultTLS\": {
+          \"secretRef\": {
+            \"name\": \"$SECRET_NAME\"
           }
         }
       }
@@ -414,11 +412,13 @@ else
     log "✓ Central CR updated successfully"
     
     # Verify the update
-    VERIFY_SECRET_REF=$(oc get central "$CENTRAL_CR_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.central.tls.customCert.secretRef}' 2>/dev/null || echo "")
+    VERIFY_SECRET_REF=$(oc get central "$CENTRAL_CR_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.defaultTLS.secretRef.name}' 2>/dev/null || echo "")
     if [ "$VERIFY_SECRET_REF" = "$SECRET_NAME" ]; then
         log "✓ Verified: Central CR is configured with secret '$SECRET_NAME'"
     else
         warning "Central CR update may not have been applied correctly. Current secretRef: ${VERIFY_SECRET_REF:-none}"
+        log "Checking Central CR structure:"
+        oc get central "$CENTRAL_CR_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.defaultTLS}' 2>/dev/null || log "  defaultTLS field not found"
     fi
     
     # Wait for Central operator to reconcile
