@@ -90,10 +90,123 @@ ROX_API_TOKEN=$(load_from_bashrc "ROX_API_TOKEN")
 if [ -z "$ROX_ENDPOINT" ]; then
     error "ROX_ENDPOINT not set. Please run script 02-rhacs-setup.sh first to generate required variables."
 fi
-if [ -z "$ROX_API_TOKEN" ]; then
-    error "ROX_API_TOKEN not set. Please run script 02-rhacs-setup.sh first to generate required variables."
-fi
 log "✓ Required environment variables validated: ROX_ENDPOINT=$ROX_ENDPOINT"
+
+# Check if API token is valid, generate new one if needed
+RHACS_OPERATOR_NAMESPACE="rhacs-operator"
+NEEDS_NEW_TOKEN=false
+
+if [ -z "$ROX_API_TOKEN" ]; then
+    log "ROX_API_TOKEN not set, will generate new token..."
+    NEEDS_NEW_TOKEN=true
+else
+    # Test if existing token is valid
+    log "Testing existing API token..."
+    set +e
+    TEST_RESPONSE=$(curl -k -s --connect-timeout 10 --max-time 30 -X GET \
+        -H "Authorization: Bearer $ROX_API_TOKEN" \
+        -H "Content-Type: application/json" \
+        "$ROX_ENDPOINT/v1/clusters" 2>&1)
+    TEST_EXIT_CODE=$?
+    set -e
+    
+    if [ $TEST_EXIT_CODE -ne 0 ] || echo "$TEST_RESPONSE" | grep -q "not authorized\|token validation failed"; then
+        log "Existing API token is invalid or expired, will generate new token..."
+        NEEDS_NEW_TOKEN=true
+    else
+        log "✓ Existing API token is valid"
+    fi
+fi
+
+if [ "$NEEDS_NEW_TOKEN" = true ]; then
+    log "Generating new API token..."
+    
+    # Get ADMIN_PASSWORD from secret
+    ADMIN_PASSWORD_B64=$(oc get secret central-htpasswd -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.data.password}' 2>/dev/null || echo "")
+    if [ -z "$ADMIN_PASSWORD_B64" ]; then
+        error "Admin password secret 'central-htpasswd' not found in namespace '$RHACS_OPERATOR_NAMESPACE'"
+    fi
+    ADMIN_PASSWORD=$(echo "$ADMIN_PASSWORD_B64" | base64 -d)
+    if [ -z "$ADMIN_PASSWORD" ]; then
+        error "Failed to decode admin password from secret"
+    fi
+    
+    # Normalize ROX_ENDPOINT for roxctl (add :443 if no port)
+    normalize_rox_endpoint() {
+        local input="$1"
+        input="${input#https://}"
+        input="${input#http://}"
+        input="${input%/}"
+        if [[ "$input" != *:* ]]; then
+            input="${input}:443"
+        fi
+        echo "$input"
+    }
+    
+    ROX_ENDPOINT_NORMALIZED="$(normalize_rox_endpoint "$ROX_ENDPOINT")"
+    
+    # Download roxctl if not available (Linux bastion host)
+    ROXCTL_CMD=""
+    if ! command -v roxctl &>/dev/null; then
+        log "roxctl not found, downloading..."
+        
+        # Get RHACS version from CSV
+        RHACS_VERSION=$(oc get csv -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.items[?(@.spec.displayName=="Advanced Cluster Security for Kubernetes")].spec.version}' 2>/dev/null || echo "")
+        if [ -z "$RHACS_VERSION" ]; then
+            RHACS_VERSION=$(oc get csv -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.items[0].spec.version}' 2>/dev/null | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+' || echo "latest")
+        fi
+        
+        # Download roxctl for Linux
+        ROXCTL_URL="https://mirror.openshift.com/pub/rhacs/assets/${RHACS_VERSION}/bin/Linux/roxctl"
+        ROXCTL_TMP="/tmp/roxctl"
+        
+        log "Downloading roxctl from: $ROXCTL_URL"
+        if ! curl -L -f -o "$ROXCTL_TMP" "$ROXCTL_URL" 2>/dev/null; then
+            # Try latest if version-specific download fails
+            ROXCTL_URL="https://mirror.openshift.com/pub/rhacs/assets/latest/bin/Linux/roxctl"
+            log "Retrying with latest version: $ROXCTL_URL"
+            if ! curl -L -f -o "$ROXCTL_TMP" "$ROXCTL_URL" 2>/dev/null; then
+                error "Failed to download roxctl. Please install it manually."
+            fi
+        fi
+        
+        chmod +x "$ROXCTL_TMP"
+        ROXCTL_CMD="$ROXCTL_TMP"
+        log "✓ roxctl downloaded to $ROXCTL_TMP"
+    else
+        ROXCTL_CMD="roxctl"
+        log "✓ roxctl found in PATH"
+    fi
+    
+    # Generate API token using roxctl
+    log "Generating API token with roxctl..."
+    set +e
+    TOKEN_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
+        central token generate \
+        --password "$ADMIN_PASSWORD" \
+        --insecure-skip-tls-verify 2>&1)
+    TOKEN_EXIT_CODE=$?
+    set -e
+    
+    if [ $TOKEN_EXIT_CODE -ne 0 ]; then
+        error "Failed to generate API token. roxctl output: ${TOKEN_OUTPUT:0:500}"
+    fi
+    
+    # Extract token from output (roxctl outputs the token)
+    ROX_API_TOKEN=$(echo "$TOKEN_OUTPUT" | grep -oE '[a-zA-Z0-9_-]{40,}' | head -1 || echo "")
+    if [ -z "$ROX_API_TOKEN" ]; then
+        # Try to extract from the full output
+        ROX_API_TOKEN=$(echo "$TOKEN_OUTPUT" | tail -1 | tr -d '[:space:]' || echo "")
+    fi
+    
+    if [ -z "$ROX_API_TOKEN" ]; then
+        error "Failed to extract API token from roxctl output. Output: ${TOKEN_OUTPUT:0:500}"
+    fi
+    
+    # Save token to ~/.bashrc
+    save_to_bashrc "ROX_API_TOKEN" "$ROX_API_TOKEN"
+    log "✓ New API token generated and saved to ~/.bashrc"
+fi
 
 # Ensure jq is installed
 if ! command -v jq >/dev/null 2>&1; then
@@ -130,6 +243,11 @@ CLUSTER_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 120 -X GET \
     "$ROX_ENDPOINT/v1/clusters" 2>&1)
 CLUSTER_CURL_EXIT_CODE=$?
 set -e
+
+# Check for authorization errors
+if echo "$CLUSTER_RESPONSE" | grep -q "not authorized\|token validation failed"; then
+    error "API token authorization failed. Token may have expired. Response: ${CLUSTER_RESPONSE:0:500}"
+fi
 
 if [ $CLUSTER_CURL_EXIT_CODE -ne 0 ]; then
     log "Debug: ROX_ENDPOINT=$ROX_ENDPOINT"
