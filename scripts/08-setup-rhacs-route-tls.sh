@@ -158,23 +158,44 @@ CERT_NAME="central-tls-cert"
 SECRET_NAME="central-tls"
 
 # Check if certificate already exists
+CERT_NEEDS_UPDATE=false
+CERT_NEEDS_WAIT=false
+
 if oc get certificate "$CERT_NAME" -n "$NAMESPACE" &>/dev/null; then
     log "Certificate '$CERT_NAME' already exists"
     
+    # Check if certificate is using the correct issuer
+    CURRENT_ISSUER_NAME=$(oc get certificate "$CERT_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.issuerRef.name}' 2>/dev/null || echo "")
+    CURRENT_ISSUER_KIND=$(oc get certificate "$CERT_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.issuerRef.kind}' 2>/dev/null || echo "")
+    
+    if [ "$CURRENT_ISSUER_NAME" != "$ISSUER_NAME" ] || [ "$CURRENT_ISSUER_KIND" != "$ISSUER_KIND" ]; then
+        log "Certificate is using issuer: $CURRENT_ISSUER_NAME ($CURRENT_ISSUER_KIND)"
+        log "Expected issuer: $ISSUER_NAME ($ISSUER_KIND)"
+        log "Updating certificate to use correct issuer..."
+        CERT_NEEDS_UPDATE=true
+    fi
+    
     # Check certificate status
     CERT_READY=$(oc get certificate "$CERT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
-    if [ "$CERT_READY" = "True" ]; then
+    if [ "$CERT_READY" = "True" ] && [ "$CERT_NEEDS_UPDATE" = "false" ]; then
         log "✓ Certificate is Ready"
     else
-        log "Certificate status: $CERT_READY"
-        CERT_MESSAGE=$(oc get certificate "$CERT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null || echo "")
-        if [ -n "$CERT_MESSAGE" ]; then
-            log "  Message: $CERT_MESSAGE"
+        CERT_NEEDS_WAIT=true
+        if [ "$CERT_READY" != "True" ]; then
+            log "Certificate status: $CERT_READY"
+            CERT_MESSAGE=$(oc get certificate "$CERT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null || echo "")
+            if [ -n "$CERT_MESSAGE" ] && [ "$CERT_MESSAGE" != "null" ]; then
+                log "  Message: $CERT_MESSAGE"
+            fi
         fi
-        warning "Certificate exists but is not Ready. Will wait for it to become Ready..."
     fi
 else
-    log "Creating Certificate resource '$CERT_NAME'..."
+    CERT_NEEDS_WAIT=true
+fi
+
+# Create or update Certificate resource
+if [ "$CERT_NEEDS_UPDATE" = "true" ]; then
+    log "Updating Certificate resource '$CERT_NAME' with correct issuer..."
     
     # Create Certificate YAML
     CERT_YAML=$(cat <<EOF
@@ -197,8 +218,36 @@ EOF
 )
     
     # Apply Certificate
-    echo "$CERT_YAML" | oc apply -f - || error "Failed to create Certificate resource"
-    log "✓ Certificate resource created"
+    echo "$CERT_YAML" | oc apply -f - || error "Failed to update Certificate resource"
+    log "✓ Certificate resource updated"
+elif [ ! -v CERT_NEEDS_UPDATE ] || [ "$CERT_NEEDS_UPDATE" = "false" ]; then
+    if ! oc get certificate "$CERT_NAME" -n "$NAMESPACE" &>/dev/null; then
+        log "Creating Certificate resource '$CERT_NAME'..."
+        
+        # Create Certificate YAML
+        CERT_YAML=$(cat <<EOF
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: $CERT_NAME
+  namespace: $NAMESPACE
+spec:
+  secretName: $SECRET_NAME
+  issuerRef:
+    name: $ISSUER_NAME
+    kind: $ISSUER_KIND
+  commonName: $ROUTE_HOST
+  dnsNames:
+  - $ROUTE_HOST
+  duration: 2160h
+  renewBefore: 360h
+EOF
+)
+        
+        # Apply Certificate
+        echo "$CERT_YAML" | oc apply -f - || error "Failed to create Certificate resource"
+        log "✓ Certificate resource created"
+    fi
 fi
 
 # Step 4: Wait for the Certificate to Be Issued and Ready
@@ -207,37 +256,75 @@ log "========================================================="
 log "Step 4: Waiting for Certificate to Be Ready"
 log "========================================================="
 
-log "Waiting for certificate to be Ready (timeout: 10 minutes)..."
-log "This may take a few minutes depending on your issuer (Let's Encrypt can take 1-2 minutes)..."
+# Only wait if certificate is not already Ready
+CERT_READY_CHECK=$(oc get certificate "$CERT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
 
-# Use oc wait with timeout
-if oc wait --for=condition=Ready "certificate/$CERT_NAME" -n "$NAMESPACE" --timeout=600s 2>/dev/null; then
-    log "✓ Certificate is Ready!"
+if [ "$CERT_READY_CHECK" = "True" ]; then
+    log "✓ Certificate is already Ready!"
 else
-    warning "Certificate did not become Ready within 10 minutes"
-    log ""
-    log "Diagnosing certificate issuance issue..."
+    log "Waiting for certificate to be Ready (timeout: 15 minutes)..."
+    log "This may take a few minutes depending on your issuer..."
     
-    # Check CertificateRequest status
-    CERT_REQUEST=$(oc get certificaterequest -n "$NAMESPACE" -l cert-manager.io/certificate-name="$CERT_NAME" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-    if [ -n "$CERT_REQUEST" ]; then
-        log "Found CertificateRequest: $CERT_REQUEST"
-        log "CertificateRequest details:"
-        oc describe certificaterequest "$CERT_REQUEST" -n "$NAMESPACE" 2>/dev/null | grep -A 20 "Status:\|Events:" || log "  Could not get details"
+    MAX_CERT_WAIT=900  # 15 minutes
+    CERT_WAIT_COUNT=0
+    CERT_READY_FINAL=false
+    
+    while [ $CERT_WAIT_COUNT -lt $MAX_CERT_WAIT ]; do
+        CERT_READY_STATUS=$(oc get certificate "$CERT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+        
+        if [ "$CERT_READY_STATUS" = "True" ]; then
+            CERT_READY_FINAL=true
+            log "✓ Certificate is Ready!"
+            break
+        fi
+        
+        # Show progress every 30 seconds
+        if [ $((CERT_WAIT_COUNT % 30)) -eq 0 ] && [ $CERT_WAIT_COUNT -gt 0 ]; then
+            log "  Still waiting... (${CERT_WAIT_COUNT}s/${MAX_CERT_WAIT}s)"
+            CERT_MESSAGE_CURRENT=$(oc get certificate "$CERT_NAME" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null || echo "")
+            if [ -n "$CERT_MESSAGE_CURRENT" ] && [ "$CERT_MESSAGE_CURRENT" != "null" ]; then
+                log "  Status: $CERT_READY_STATUS - $CERT_MESSAGE_CURRENT"
+            else
+                log "  Status: $CERT_READY_STATUS"
+            fi
+            
+            # Show CertificateRequest status if available
+            CERT_REQUEST=$(oc get certificaterequest -n "$NAMESPACE" -l cert-manager.io/certificate-name="$CERT_NAME" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+            if [ -n "$CERT_REQUEST" ]; then
+                CERT_REQUEST_READY=$(oc get certificaterequest "$CERT_REQUEST" -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+                log "  CertificateRequest: $CERT_REQUEST ($CERT_REQUEST_READY)"
+            fi
+        fi
+        
+        sleep 5
+        CERT_WAIT_COUNT=$((CERT_WAIT_COUNT + 5))
+    done
+    
+    if [ "$CERT_READY_FINAL" = "false" ]; then
+        error "Certificate did not become Ready within ${MAX_CERT_WAIT} seconds"
+        log ""
+        log "Diagnosing certificate issuance issue..."
+        
+        # Check CertificateRequest status
+        CERT_REQUEST=$(oc get certificaterequest -n "$NAMESPACE" -l cert-manager.io/certificate-name="$CERT_NAME" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+        if [ -n "$CERT_REQUEST" ]; then
+            log "Found CertificateRequest: $CERT_REQUEST"
+            log "CertificateRequest details:"
+            oc describe certificaterequest "$CERT_REQUEST" -n "$NAMESPACE" 2>/dev/null | grep -A 20 "Status:\|Events:" || log "  Could not get details"
+        fi
+        
+        log ""
+        log "Certificate details:"
+        oc describe certificate "$CERT_NAME" -n "$NAMESPACE" 2>/dev/null | grep -A 20 "Status:\|Events:" || log "  Could not get details"
+        
+        log ""
+        log "Troubleshooting commands:"
+        log "  oc -n $NAMESPACE describe certificate $CERT_NAME"
+        log "  oc -n $NAMESPACE describe certificaterequest -l cert-manager.io/certificate-name=$CERT_NAME"
+        log "  oc -n $NAMESPACE get certificate $CERT_NAME -w"
+        log ""
+        error "Cannot proceed without a Ready certificate. Please resolve the certificate issue and try again."
     fi
-    
-    log ""
-    log "Certificate details:"
-    oc describe certificate "$CERT_NAME" -n "$NAMESPACE" 2>/dev/null | grep -A 20 "Status:\|Events:" || log "  Could not get details"
-    
-    log ""
-    log "Troubleshooting commands:"
-    log "  oc -n $NAMESPACE describe certificate $CERT_NAME"
-    log "  oc -n $NAMESPACE describe certificaterequest -l cert-manager.io/certificate-name=$CERT_NAME"
-    log "  oc -n $NAMESPACE get certificate $CERT_NAME -w"
-    log ""
-    warning "Proceeding with next steps anyway. The certificate may still be issuing..."
-    warning "Central will continue using the existing certificate until the new one is ready."
 fi
 
 # Verify secret exists
