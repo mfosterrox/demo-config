@@ -60,40 +60,40 @@ configure_rhacs_settings() {
     success "RHACS configuration completed successfully"
 }
 
-# Setup Perses monitoring (Step 4)
-setup_perses_monitoring() {
-    log "Setting up Perses monitoring..."
-    if ! bash "${SCRIPT_DIR}/scripts/04-setup-perses-monitoring.sh"; then
-        error "Perses monitoring setup script failed. Installation stopped."
-    fi
-    success "Perses monitoring setup completed successfully"
-}
-
-# Setup compliance scan schedule (Step 5)
+# Setup compliance scan schedule (Step 4)
 setup_compliance_scan_schedule() {
     log "Setting up compliance scan schedule..."
-    if ! bash "${SCRIPT_DIR}/scripts/05-setup-co-scan-schedule.sh"; then
+    if ! bash "${SCRIPT_DIR}/scripts/04-setup-co-scan-schedule.sh"; then
         error "Compliance scan schedule script failed. Installation stopped."
     fi
     success "Compliance scan schedule setup completed successfully"
 }
 
-# Trigger compliance scan (Step 6)
+# Trigger compliance scan (Step 5)
 trigger_compliance_scan() {
     log "Triggering compliance scan..."
-    if ! bash "${SCRIPT_DIR}/scripts/06-trigger-compliance-scan.sh"; then
+    if ! bash "${SCRIPT_DIR}/scripts/05-trigger-compliance-scan.sh"; then
         error "Compliance scan trigger script failed. Installation stopped."
     fi
     success "Compliance scan trigger completed successfully"
 }
 
-# Deploy applications to OpenShift cluster (Step 7)
+# Deploy applications to OpenShift cluster (Step 6)
 deploy_applications() {
     log "Deploying applications to OpenShift cluster..."
-    if ! bash "${SCRIPT_DIR}/scripts/07-deploy-applications.sh"; then
+    if ! bash "${SCRIPT_DIR}/scripts/06-deploy-applications.sh"; then
         error "Application deployment script failed. Installation stopped."
     fi
     success "Application deployment completed successfully"
+}
+
+# Setup RHACS route TLS (Step 7)
+setup_rhacs_route_tls() {
+    log "Setting up RHACS route TLS..."
+    if ! bash "${SCRIPT_DIR}/scripts/07-setup-rhacs-route-tls.sh"; then
+        error "RHACS route TLS setup script failed. Installation stopped."
+    fi
+    success "RHACS route TLS setup completed successfully"
 }
 
 
@@ -125,7 +125,7 @@ main() {
     
     # Verify scripts exist - fail fast if any script is missing
     # Scripts listed in execution order
-    for script in "01-rhacs-setup.sh" "02-compliance-operator-install.sh" "03-configure-rhacs-settings.sh" "04-setup-perses-monitoring.sh" "05-setup-co-scan-schedule.sh" "06-trigger-compliance-scan.sh" "07-deploy-applications.sh"; do
+    for script in "01-rhacs-setup.sh" "02-compliance-operator-install.sh" "03-configure-rhacs-settings.sh" "04-setup-co-scan-schedule.sh" "05-trigger-compliance-scan.sh" "06-deploy-applications.sh" "07-setup-rhacs-route-tls.sh"; do
         if [ ! -f "$SCRIPT_DIR/scripts/$script" ]; then
             error "Required script not found: $SCRIPT_DIR/scripts/$script"
         fi
@@ -136,10 +136,10 @@ main() {
     setup_rhacs
     install_compliance_operator
     configure_rhacs_settings
-    setup_perses_monitoring
     setup_compliance_scan_schedule
     trigger_compliance_scan
     deploy_applications
+    setup_rhacs_route_tls
     
     log "========================================================="
     success "Demo Config setup completed successfully!"
@@ -149,10 +149,10 @@ main() {
     log "  1. RHACS secured cluster setup"
     log "  2. Red Hat Compliance Operator installation"
     log "  3. RHACS system configuration, exposed metrics, and additional namespaces added to system policies"
-    log "  4. Setup Perses monitoring with RHACS metrics dashboards"
-    log "  5. Compliance scan schedule setup"
-    log "  6. Compliance scan trigger"
-    log "  7. Application deployment"
+    log "  4. Compliance scan schedule setup"
+    log "  5. Compliance scan trigger"
+    log "  6. Application deployment"
+    log "  7. RHACS route TLS setup"
 
     
     # Display RHACS access information

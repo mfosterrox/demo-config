@@ -458,7 +458,7 @@ else
     log "✓ Scan configuration ID: $SCAN_CONFIG_ID"
 fi
 
-# Save SCAN_CONFIG_ID to ~/.bashrc for use by script 06
+# Save SCAN_CONFIG_ID to ~/.bashrc for use by script 05
 if [ -n "$SCAN_CONFIG_ID" ] && [ "$SCAN_CONFIG_ID" != "null" ]; then
     save_to_bashrc "SCAN_CONFIG_ID" "$SCAN_CONFIG_ID"
     log "✓ Saved SCAN_CONFIG_ID to ~/.bashrc"
@@ -484,14 +484,14 @@ else
 
     if [ $TRIGGER_EXIT_CODE -ne 0 ]; then
         warning "Failed to trigger scan (exit code: $TRIGGER_EXIT_CODE). Response: ${TRIGGER_RESPONSE:0:500}"
-        warning "Scan will run on schedule. You can also trigger it manually later using script 06-trigger-compliance-scan.sh"
+        warning "Scan will run on schedule. You can also trigger it manually later using script 05-trigger-compliance-scan.sh"
     elif [ -z "$TRIGGER_RESPONSE" ]; then
         warning "Empty response from scan trigger API"
         warning "Scan may have been triggered. Check scan status in RHACS UI."
     elif echo "$TRIGGER_RESPONSE" | grep -qi "error\|failed"; then
         warning "Scan trigger returned an error response:"
         echo "$TRIGGER_RESPONSE" | head -10
-        warning "Scan will run on schedule. You can also trigger it manually later using script 06-trigger-compliance-scan.sh"
+        warning "Scan will run on schedule. You can also trigger it manually later using script 05-trigger-compliance-scan.sh"
     else
         log "✓ Scan triggered successfully"
         if echo "$TRIGGER_RESPONSE" | jq . >/dev/null 2>&1; then
@@ -614,7 +614,7 @@ if command -v oc &>/dev/null && oc whoami &>/dev/null 2>&1; then
     else
         log ""
         log "No scan results found yet. This is normal if:"
-        log "  - No scans have been run yet (run script 06-trigger-compliance-scan.sh)"
+        log "  - No scans have been run yet (run script 05-trigger-compliance-scan.sh)"
         log "  - Scan is still in progress"
         log ""
         log "If scan completed but results don't appear, restart the sensor:"

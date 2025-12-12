@@ -1,0 +1,12 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: rhacs-tls-cert
+  namespace: tssc-acs
+spec:
+  secretName: rhacs-tls-secret
+  dnsNames:
+  - central-tls.apps.cluster-cl48p.dynamic.redhatworkshops.io  
+  issuerRef:
+    name: zerossl-production-ec2  
+    kind: ClusterIssuer

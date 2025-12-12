@@ -131,7 +131,7 @@ EXISTING_TUTORIAL_HOME=$(load_from_bashrc "TUTORIAL_HOME")
 if [ -n "$EXISTING_TUTORIAL_HOME" ]; then
     log "✓ Loaded TUTORIAL_HOME from ~/.bashrc"
 else
-    log "  TUTORIAL_HOME not found (will be set by script 07-deploy-applications.sh)"
+    log "  TUTORIAL_HOME not found (will be set by script 06-deploy-applications.sh)"
 fi
 
 # Load ADMIN_PASSWORD if it exists (set by script 01)
