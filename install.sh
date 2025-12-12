@@ -33,76 +33,13 @@ error() {
     exit 1
 }
 
-# Run RHACS setup script (Step 1)
-setup_rhacs() {
-    log "Running RHACS secured cluster setup..."
-    if ! bash "${SCRIPT_DIR}/scripts/01-rhacs-setup.sh"; then
-        error "RHACS setup script failed. Installation stopped."
+# Reconfigure RHACS operators (cleanup existing operators)
+reconfigure_rhacs() {
+    log "Reconfiguring RHACS operators (cleaning up existing operators)..."
+    if ! bash "${SCRIPT_DIR}/scripts/01-RHACS-reconfigure.sh"; then
+        error "RHACS reconfigure script failed. Installation stopped."
     fi
-    success "RHACS setup completed successfully"
-}
-
-# Install Red Hat Compliance Operator (Step 2)
-install_compliance_operator() {
-    log "Installing Red Hat Compliance Operator..."
-    if ! bash "${SCRIPT_DIR}/scripts/02-compliance-operator-install.sh"; then
-        error "Compliance Operator installation script failed. Installation stopped."
-    fi
-    success "Compliance Operator installation completed successfully"
-}
-
-# Configure RHACS settings (Step 3)
-configure_rhacs_settings() {
-    log "Configuring RHACS settings..."
-    if ! bash "${SCRIPT_DIR}/scripts/03-configure-rhacs-settings.sh"; then
-        error "RHACS configuration script failed. Installation stopped."
-    fi
-    success "RHACS configuration completed successfully"
-}
-
-# Setup compliance scan schedule (Step 4)
-setup_compliance_scan_schedule() {
-    log "Setting up compliance scan schedule..."
-    if ! bash "${SCRIPT_DIR}/scripts/04-setup-co-scan-schedule.sh"; then
-        error "Compliance scan schedule script failed. Installation stopped."
-    fi
-    success "Compliance scan schedule setup completed successfully"
-}
-
-# Trigger compliance scan (Step 5)
-trigger_compliance_scan() {
-    log "Triggering compliance scan..."
-    if ! bash "${SCRIPT_DIR}/scripts/05-trigger-compliance-scan.sh"; then
-        error "Compliance scan trigger script failed. Installation stopped."
-    fi
-    success "Compliance scan trigger completed successfully"
-}
-
-# Deploy applications to OpenShift cluster (Step 6)
-deploy_applications() {
-    log "Deploying applications to OpenShift cluster..."
-    if ! bash "${SCRIPT_DIR}/scripts/06-deploy-applications.sh"; then
-        error "Application deployment script failed. Installation stopped."
-    fi
-    success "Application deployment completed successfully"
-}
-
-# Install cert-manager operator (Step 7)
-install_cert_manager() {
-    log "Installing cert-manager operator..."
-    if ! bash "${SCRIPT_DIR}/scripts/07-install-cert-manager.sh"; then
-        error "Cert-manager installation script failed. Installation stopped."
-    fi
-    success "Cert-manager installation completed successfully"
-}
-
-# Setup RHACS route TLS (Step 8)
-setup_rhacs_route_tls() {
-    log "Setting up RHACS route TLS..."
-    if ! bash "${SCRIPT_DIR}/scripts/08-setup-rhacs-route-tls.sh"; then
-        error "RHACS route TLS setup script failed. Installation stopped."
-    fi
-    success "RHACS route TLS setup completed successfully"
+    success "RHACS reconfigure completed successfully"
 }
 
 
@@ -112,7 +49,7 @@ main() {
     
     # Clone the repository if running from curl
     # Check if we're running from curl by looking for the scripts directory
-    if [ ! -d "scripts" ] || [ ! -f "scripts/01-rhacs-setup.sh" ]; then
+    if [ ! -d "scripts" ] || [ ! -f "scripts/01-RHACS-reconfigure.sh" ]; then
         log "Scripts not found locally, cloning repository..."
         REPO_DIR="$HOME/demo-config"
         if [ -d "$REPO_DIR" ]; then
@@ -133,70 +70,22 @@ main() {
     log "Using script directory: $SCRIPT_DIR"
     
     # Verify scripts exist - fail fast if any script is missing
-    # Scripts listed in execution order
-    for script in "01-rhacs-setup.sh" "02-compliance-operator-install.sh" "03-configure-rhacs-settings.sh" "04-setup-co-scan-schedule.sh" "05-trigger-compliance-scan.sh" "06-deploy-applications.sh" "07-install-cert-manager.sh" "08-setup-rhacs-route-tls.sh"; do
-        if [ ! -f "$SCRIPT_DIR/scripts/$script" ]; then
-            error "Required script not found: $SCRIPT_DIR/scripts/$script"
-        fi
-    done
-    log "✓ All required scripts found"
+    if [ ! -f "$SCRIPT_DIR/scripts/01-RHACS-reconfigure.sh" ]; then
+        error "Required script not found: $SCRIPT_DIR/scripts/01-RHACS-reconfigure.sh"
+    fi
+    log "✓ Required script found"
     
     # Run setup scripts in order
-    setup_rhacs
-    install_compliance_operator
-    configure_rhacs_settings
-    setup_compliance_scan_schedule
-    trigger_compliance_scan
-    deploy_applications
-    install_cert_manager
-    setup_rhacs_route_tls
+    reconfigure_rhacs
     
     log "========================================================="
     success "Demo Config setup completed successfully!"
     log "========================================================="
     log ""
-    log "All scripts have been executed in order:"
-    log "  1. RHACS secured cluster setup"
-    log "  2. Red Hat Compliance Operator installation"
-    log "  3. RHACS system configuration, exposed metrics, and additional namespaces added to system policies"
-    log "  4. Compliance scan schedule setup"
-    log "  5. Compliance scan trigger"
-    log "  6. Application deployment"
-    log "  7. Cert-manager operator installation"
-    log "  8. RHACS route TLS setup"
-
-    
-    # Display RHACS access information
+    log "Scripts executed:"
+    log "  - RHACS operator reconfigure (cleanup existing operators)"
     log ""
-    log "========================================================="
-    log "RHACS ACCESS INFORMATION"
-    log "========================================================="
-    
-    # Source bashrc to get the environment variables
-    # Temporarily disable unbound variable checking to avoid errors from /etc/bashrc
-    if [ -f ~/.bashrc ]; then
-        set +u  # Temporarily disable unbound variable checking
-        source ~/.bashrc || true
-        set -u  # Re-enable unbound variable checking
-    fi
-    
-    log "RHACS UI:     https://$ROX_ENDPOINT"
-    log "User:         admin"
-    
-    # Try to get the admin password from the RHACS secret
-    if command -v oc &>/dev/null && oc whoami &>/dev/null; then
-        ADMIN_PASSWORD=$(oc get secret central-htpasswd -n tssc-acs -o jsonpath='{.data.password}' 2>/dev/null | base64 -d 2>/dev/null)
-        if [ -n "$ADMIN_PASSWORD" ]; then
-            log "Password:     $ADMIN_PASSWORD"
-        else
-            ADMIN_PASSWORD=$(oc get secret central-htpasswd -n tssc-acs -o jsonpath='{.data.password}' 2>/dev/null | base64 -d 2>/dev/null)
-            log "Password:     $ADMIN_PASSWORD"
-        fi
-    else
-        log "Password:     (Check RHACS Central secret)"
-    fi
-    
-    log "========================================================="
+    log "Additional scripts will be added one-by-one as needed."
 }
 
 # Run main function
