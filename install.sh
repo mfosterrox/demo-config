@@ -36,7 +36,7 @@ error() {
 # Reconfigure RHACS operators (cleanup existing operators)
 reconfigure_rhacs() {
     log "Reconfiguring RHACS operators (cleaning up existing operators)..."
-    if ! bash "${SCRIPT_DIR}/scripts/01-RHACS-reconfigure.sh"; then
+    if ! bash "${SCRIPT_DIR}/scripts/01-rhacs-reconfigure.sh"; then
         error "RHACS reconfigure script failed. Installation stopped."
     fi
     success "RHACS reconfigure completed successfully"
@@ -49,7 +49,7 @@ main() {
     
     # Clone the repository if running from curl
     # Check if we're running from curl by looking for the scripts directory
-    if [ ! -d "scripts" ] || [ ! -f "scripts/01-RHACS-reconfigure.sh" ]; then
+    if [ ! -d "scripts" ] || [ ! -f "scripts/01-rhacs-reconfigure.sh" ]; then
         log "Scripts not found locally, cloning repository..."
         REPO_DIR="$HOME/demo-config"
         if [ -d "$REPO_DIR" ]; then
@@ -70,8 +70,8 @@ main() {
     log "Using script directory: $SCRIPT_DIR"
     
     # Verify scripts exist - fail fast if any script is missing
-    if [ ! -f "$SCRIPT_DIR/scripts/01-RHACS-reconfigure.sh" ]; then
-        error "Required script not found: $SCRIPT_DIR/scripts/01-RHACS-reconfigure.sh"
+    if [ ! -f "$SCRIPT_DIR/scripts/01-rhacs-reconfigure.sh" ]; then
+        error "Required script not found: $SCRIPT_DIR/scripts/01-rhacs-reconfigure.sh"
     fi
     log "✓ Required script found"
     
