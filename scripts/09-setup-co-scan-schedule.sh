@@ -146,18 +146,36 @@ if ! echo "$CLUSTER_RESPONSE" | jq . >/dev/null 2>&1; then
     error "Invalid JSON response from cluster API. Response: ${CLUSTER_RESPONSE:0:300}"
 fi
 
-# Try to find cluster by name "production" first (RHACS cluster name)
-EXPECTED_CLUSTER_NAME="production"
-PRODUCTION_CLUSTER_ID=$(echo "$CLUSTER_RESPONSE" | jq -r ".clusters[] | select(.name == \"$EXPECTED_CLUSTER_NAME\") | .id" 2>/dev/null | head -1)
+# Get the cluster name from the SecuredCluster resource
+RHACS_OPERATOR_NAMESPACE="rhacs-operator"
+SECURED_CLUSTER_NAME="rhacs-secured-cluster-services"
+EXPECTED_CLUSTER_NAME=$(oc get securedcluster "$SECURED_CLUSTER_NAME" -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.spec.clusterName}' 2>/dev/null || echo "")
+
+PRODUCTION_CLUSTER_ID=""
+if [ -n "$EXPECTED_CLUSTER_NAME" ]; then
+    log "Attempting to find cluster by name from SecuredCluster resource: '$EXPECTED_CLUSTER_NAME'..."
+    # Use set +e to prevent failure if jq doesn't find a match
+    set +e
+    PRODUCTION_CLUSTER_ID=$(echo "$CLUSTER_RESPONSE" | jq -r ".clusters[] | select(.name == \"$EXPECTED_CLUSTER_NAME\") | .id" 2>/dev/null | head -1 || echo "")
+    set -e
+fi
 
 if [ -z "$PRODUCTION_CLUSTER_ID" ] || [ "$PRODUCTION_CLUSTER_ID" = "null" ]; then
-    log "Cluster '$EXPECTED_CLUSTER_NAME' not found, looking for any connected cluster..."
+    if [ -n "$EXPECTED_CLUSTER_NAME" ]; then
+        log "Cluster '$EXPECTED_CLUSTER_NAME' not found. Looking for any connected cluster..."
+    else
+        log "Cluster name not set in SecuredCluster. Looking for any connected cluster..."
+    fi
     # Fall back to first connected/healthy cluster
-    PRODUCTION_CLUSTER_ID=$(echo "$CLUSTER_RESPONSE" | jq -r '.clusters[] | select(.healthStatus.overallHealthStatus == "HEALTHY" or .healthStatus.overallHealthStatus == "UNHEALTHY" or .healthStatus == null) | .id' 2>/dev/null | head -1)
+    set +e
+    PRODUCTION_CLUSTER_ID=$(echo "$CLUSTER_RESPONSE" | jq -r '.clusters[] | select(.healthStatus.overallHealthStatus == "HEALTHY" or .healthStatus.overallHealthStatus == "UNHEALTHY" or .healthStatus == null) | .id' 2>/dev/null | head -1 || echo "")
+    set -e
     
     if [ -z "$PRODUCTION_CLUSTER_ID" ] || [ "$PRODUCTION_CLUSTER_ID" = "null" ]; then
         # Last resort: use first cluster
-        PRODUCTION_CLUSTER_ID=$(echo "$CLUSTER_RESPONSE" | jq -r '.clusters[0].id' 2>/dev/null)
+        set +e
+        PRODUCTION_CLUSTER_ID=$(echo "$CLUSTER_RESPONSE" | jq -r '.clusters[0].id // empty' 2>/dev/null || echo "")
+        set -e
     fi
 fi
 

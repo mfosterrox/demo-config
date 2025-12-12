@@ -1,16 +1,16 @@
 apiVersion: monitoring.rhobs/v1alpha1
 kind: ScrapeConfig
 metadata:
-  name: rhacs-scrape-config
-  namespace: tssc-acs
+  name: sample-rhacs-operator-scrape-config
+  namespace: rhacs-operator
   labels:
     app: central
 spec:
-  jobName: rhacs-metrics
+  jobName: sample-rhacs-operator-metrics
   scheme: HTTPS
   staticConfigs:
     - targets:
-        - "rhacs-monitoring-stack.tssc-acs.svc:443"
+        - "central.rhacs-operator.svc.cluster.local:443"
   tlsConfig:
     ca:
       secret:
@@ -19,7 +19,7 @@ spec:
     cert:
       secret:
         key: tls.crt
-        name: rhacs-prometheus-tls
+        name: sample-rhacs-operator-prometheus-tls
     keySecret:
       key: tls.key
-      name: rhacs-prometheus-tls
+      name: sample-rhacs-operator-prometheus-tls

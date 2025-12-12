@@ -1,8 +1,8 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: rhacs-prometheus-declarative-configuration
-  namespace: tssc-acs
+  name: sample-rhacs-operator-prometheus-declarative-configuration
+  namespace: rhacs-operator
 data:
   prometheus.yaml: |
     ---

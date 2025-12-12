@@ -1,8 +1,8 @@
 apiVersion: perses.dev/v1alpha1
 kind: PersesDashboard
 metadata:
-  name: rhacs-dashboard
-  namespace: tssc-acs
+  name: sample-rhacs-operator-dashboard
+  namespace: rhacs-operator
 spec:
   display:
     name: Advanced Cluster Security / Overview
