@@ -96,6 +96,24 @@ install_compliance_operator() {
     success "Compliance Operator installation completed successfully"
 }
 
+# Deploy demo applications
+deploy_applications() {
+    log "Deploying demo applications..."
+    if ! bash "${SCRIPT_DIR}/scripts/08-deploy-applications.sh"; then
+        error "Application deployment script failed. Installation stopped."
+    fi
+    success "Application deployment completed successfully"
+}
+
+# Setup Compliance Operator scan schedule
+setup_co_scan_schedule() {
+    log "Setting up Compliance Operator scan schedule..."
+    if ! bash "${SCRIPT_DIR}/scripts/09-setup-co-scan-schedule.sh"; then
+        error "Compliance Operator scan schedule setup script failed. Installation stopped."
+    fi
+    success "Compliance Operator scan schedule setup completed successfully"
+}
+
 
 # Main function
 main() {
@@ -124,7 +142,7 @@ main() {
     log "Using script directory: $SCRIPT_DIR"
     
     # Verify scripts exist - fail fast if any script is missing
-    for script in "01-rhacs-delete.sh" "02-install-cert-manager.sh" "03-setup-rhacs-route-tls.sh" "04-rhacs-subscription-install.sh" "05-central-install.sh" "06-scs-setup.sh" "07-compliance-operator-install.sh"; do
+    for script in "01-rhacs-delete.sh" "02-install-cert-manager.sh" "03-setup-rhacs-route-tls.sh" "04-rhacs-subscription-install.sh" "05-central-install.sh" "06-scs-setup.sh" "07-compliance-operator-install.sh" "08-deploy-applications.sh" "09-setup-co-scan-schedule.sh"; do
         if [ ! -f "$SCRIPT_DIR/scripts/$script" ]; then
             error "Required script not found: $SCRIPT_DIR/scripts/$script"
         fi
@@ -139,6 +157,8 @@ main() {
     install_rhacs_central
     setup_rhacs_scs
     install_compliance_operator
+    deploy_applications
+    setup_co_scan_schedule
     
     log "========================================================="
     success "Demo Config setup completed successfully!"
