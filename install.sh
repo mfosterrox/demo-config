@@ -33,13 +33,13 @@ error() {
     exit 1
 }
 
-# Reconfigure RHACS operators (cleanup existing operators)
-reconfigure_rhacs() {
-    log "Reconfiguring RHACS operators (cleaning up existing operators)..."
-    if ! bash "${SCRIPT_DIR}/scripts/01-rhacs-reconfigure.sh"; then
-        error "RHACS reconfigure script failed. Installation stopped."
+# Delete RHACS operators (cleanup existing operators)
+delete_rhacs() {
+    log "Deleting RHACS operators (cleaning up existing operators)..."
+    if ! bash "${SCRIPT_DIR}/scripts/01-rhacs-delete.sh"; then
+        error "RHACS delete script failed. Installation stopped."
     fi
-    success "RHACS reconfigure completed successfully"
+    success "RHACS delete completed successfully"
 }
 
 # Install cert-manager operator (required for RHACS TLS certificates)
@@ -67,7 +67,7 @@ main() {
     
     # Clone the repository if running from curl
     # Check if we're running from curl by looking for the scripts directory
-    if [ ! -d "scripts" ] || [ ! -f "scripts/01-rhacs-reconfigure.sh" ]; then
+    if [ ! -d "scripts" ] || [ ! -f "scripts/01-rhacs-delete.sh" ]; then
         log "Scripts not found locally, cloning repository..."
         REPO_DIR="$HOME/demo-config"
         if [ -d "$REPO_DIR" ]; then
@@ -88,7 +88,7 @@ main() {
     log "Using script directory: $SCRIPT_DIR"
     
     # Verify scripts exist - fail fast if any script is missing
-    for script in "01-rhacs-reconfigure.sh" "02-install-cert-manager.sh" "03-setup-rhacs-route-tls.sh"; do
+    for script in "01-rhacs-delete.sh" "02-install-cert-manager.sh" "03-setup-rhacs-route-tls.sh"; do
         if [ ! -f "$SCRIPT_DIR/scripts/$script" ]; then
             error "Required script not found: $SCRIPT_DIR/scripts/$script"
         fi
@@ -96,7 +96,7 @@ main() {
     log "✓ All required scripts found"
     
     # Run setup scripts in order
-    reconfigure_rhacs
+    delete_rhacs
     install_cert_manager
     setup_rhacs_tls_certificate
     

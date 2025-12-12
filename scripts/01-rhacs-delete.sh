@@ -149,6 +149,7 @@ if [ -n "$RHACS_NAMESPACES" ]; then
     log "Step 2: Deleting namespaces with RHACS operator resources"
     log "========================================================="
     log ""
+    
     log "Note: '$CORRECT_NAMESPACE' is the correct namespace and will NOT be deleted"
     log ""
     
