@@ -124,7 +124,7 @@ fi
 log "Fetching cluster ID..."
 # Temporarily disable exit on error to capture curl exit code
 set +e
-CLUSTER_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
+CLUSTER_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 120 -X GET \
     -H "Authorization: Bearer $ROX_API_TOKEN" \
     -H "Content-Type: application/json" \
     "$ROX_ENDPOINT/v1/clusters" 2>&1)
@@ -266,7 +266,7 @@ log ""
 # Check if acs-catch-all scan configuration already exists and delete it if it does
 log "Checking if 'acs-catch-all' scan configuration exists..."
 set +e
-EXISTING_CONFIGS=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
+EXISTING_CONFIGS=$(curl -k -s --connect-timeout 15 --max-time 120 -X GET \
     -H "Authorization: Bearer $ROX_API_TOKEN" \
     -H "Content-Type: application/json" \
     "$ROX_ENDPOINT/v2/compliance/scan/configurations" 2>&1)
@@ -292,7 +292,7 @@ if [ -n "$EXISTING_SCAN" ] && [ "$EXISTING_SCAN" != "null" ]; then
     log "Deleting existing scan configuration to reapply..."
     
     set +e
-    DELETE_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X DELETE \
+    DELETE_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 120 -X DELETE \
         -H "Authorization: Bearer $ROX_API_TOKEN" \
         -H "Content-Type: application/json" \
         "$ROX_ENDPOINT/v2/compliance/scan/configurations/$EXISTING_SCAN" 2>&1)
@@ -314,7 +314,7 @@ fi
 # Create compliance scan configuration (always recreate)
 log "Creating compliance scan configuration 'acs-catch-all'..."
 set +e
-SCAN_CONFIG_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X POST \
+SCAN_CONFIG_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 120 -X POST \
         -H "Authorization: Bearer $ROX_API_TOKEN" \
         -H "Content-Type: application/json" \
         --data-raw "{
@@ -415,7 +415,7 @@ if [ -z "$SCAN_CONFIG_ID" ] || [ "$SCAN_CONFIG_ID" = "null" ]; then
         
         # Get scan configurations to find our configuration
         set +e
-        CONFIGS_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
+        CONFIGS_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 120 -X GET \
             -H "Authorization: Bearer $ROX_API_TOKEN" \
             -H "Content-Type: application/json" \
             "$ROX_ENDPOINT/v2/compliance/scan/configurations" 2>&1)
@@ -475,7 +475,7 @@ if [ -z "$SCAN_CONFIG_ID" ] || [ "$SCAN_CONFIG_ID" = "null" ]; then
 else
     log "Triggering scan for configuration ID: $SCAN_CONFIG_ID"
     set +e
-    TRIGGER_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 45 -X POST \
+    TRIGGER_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 120 -X POST \
         -H "Authorization: Bearer $ROX_API_TOKEN" \
         -H "Content-Type: application/json" \
         "$ROX_ENDPOINT/v2/compliance/scan/configurations/$SCAN_CONFIG_ID/run" 2>&1)
@@ -520,7 +520,7 @@ NAMESPACE="${NAMESPACE:-tssc-acs}"
 
 # Check scan configuration status
 log "Checking scan configuration status..."
-CURRENT_CONFIGS=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
+CURRENT_CONFIGS=$(curl -k -s --connect-timeout 15 --max-time 120 -X GET \
     -H "Authorization: Bearer $ROX_API_TOKEN" \
     -H "Content-Type: application/json" \
     "$ROX_ENDPOINT/v2/compliance/scan/configurations" 2>&1)
@@ -537,7 +537,7 @@ fi
 
 # Check if results are available in RHACS
 log "Checking if scan results are available in RHACS..."
-SCAN_RESULTS=$(curl -k -s --connect-timeout 15 --max-time 45 -X GET \
+SCAN_RESULTS=$(curl -k -s --connect-timeout 15 --max-time 120 -X GET \
     -H "Authorization: Bearer $ROX_API_TOKEN" \
     -H "Content-Type: application/json" \
     "$ROX_ENDPOINT/v2/compliance/scan/results" 2>&1)
