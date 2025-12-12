@@ -88,5 +88,6 @@ main() {
     log "Additional scripts will be added one-by-one as needed."
 }
 
+
 # Run main function
 main "$@"
