@@ -1,6 +1,7 @@
 #!/bin/bash
 # Compliance Management Scan Trigger Script
-# Triggers a HIPAA 164 compliance scan for the Production cluster in Red Hat Advanced Cluster Security
+# Triggers compliance scans for multiple standards (CIS Kubernetes v1.5, HIPAA 164, NIST SP 800-190, NIST SP 800-53, PCI DSS 3.2.1)
+# for the Production cluster in Red Hat Advanced Cluster Security
 
 # Exit immediately on error, show exact error message
 set -euo pipefail
@@ -305,13 +306,21 @@ if [ "$CLUSTER_STATUS" = "DISCONNECTED" ] || [ "$CLUSTER_STATUS" = "UNINITIALIZE
     warning "This may cause scan failures. Ensure the cluster is properly connected to RHACS."
 fi
 
-# Fetch HIPAA 164 compliance standard ID
+# Define compliance standards to trigger scans for
+declare -a COMPLIANCE_STANDARDS=(
+    "CIS Kubernetes v1.5"
+    "HIPAA 164"
+    "NIST SP 800-190"
+    "NIST SP 800-53"
+    "PCI DSS 3.2.1"
+)
+
+# Fetch compliance standards
 log ""
 log "========================================================="
-log "Finding HIPAA 164 compliance standard..."
+log "Finding compliance standards..."
 log "========================================================="
 
-COMPLIANCE_STANDARD_ID=""
 log "Fetching available compliance standards..."
 
 # Try the compliance standards endpoint
@@ -325,129 +334,151 @@ set -e
 HTTP_CODE=$(echo "$STANDARDS_RESPONSE" | tail -n1)
 STANDARDS_BODY=$(echo "$STANDARDS_RESPONSE" | head -n -1)
 
-if [ "$HTTP_CODE" -eq 200 ] && [ -n "$STANDARDS_BODY" ]; then
-    if echo "$STANDARDS_BODY" | jq . >/dev/null 2>&1; then
-        # List all available standards for debugging
-        log "Available compliance standards:"
-        echo "$STANDARDS_BODY" | jq -r 'if type == "array" then .[] | "  - \(.name // .id): \(.id)" elif .standards then .standards[]? | "  - \(.name // .id): \(.id)" else .[]? | "  - \(.name // .id): \(.id)" end' 2>/dev/null || \
-        log "  Could not parse standards list"
-        
-        # Look for HIPAA 164 standard - try multiple structures and patterns
-        # First try: direct array or .standards array
-        HIPAA_164_ID=$(echo "$STANDARDS_BODY" | jq -r 'if type == "array" then .[] | select(.name | test("HIPAA.*164|164.*HIPAA|hipaa.*164|164.*hipaa"; "i")) | .id elif .standards then .standards[]? | select(.name | test("HIPAA.*164|164.*HIPAA|hipaa.*164|164.*hipaa"; "i")) | .id else .[]? | select(.name | test("HIPAA.*164|164.*HIPAA|hipaa.*164|164.*hipaa"; "i")) | .id end' 2>/dev/null | head -1)
-        
-        # If not found, try broader search for HIPAA or 164
-        if [ -z "$HIPAA_164_ID" ] || [ "$HIPAA_164_ID" = "null" ]; then
-            HIPAA_164_ID=$(echo "$STANDARDS_BODY" | jq -r 'if type == "array" then .[] | select(.name | test("HIPAA|hipaa|164"; "i")) | .id elif .standards then .standards[]? | select(.name | test("HIPAA|hipaa|164"; "i")) | .id else .[]? | select(.name | test("HIPAA|hipaa|164"; "i")) | .id end' 2>/dev/null | head -1)
-        fi
-        
-        # Try matching by ID if name contains HIPAA or 164
-        if [ -z "$HIPAA_164_ID" ] || [ "$HIPAA_164_ID" = "null" ]; then
-            HIPAA_164_ID=$(echo "$STANDARDS_BODY" | jq -r 'if type == "array" then .[] | select(.id | test("HIPAA|hipaa|164"; "i")) | .id elif .standards then .standards[]? | select(.id | test("HIPAA|hipaa|164"; "i")) | .id else .[]? | select(.id | test("HIPAA|hipaa|164"; "i")) | .id end' 2>/dev/null | head -1)
-        fi
-        
-        if [ -n "$HIPAA_164_ID" ] && [ "$HIPAA_164_ID" != "null" ]; then
-            COMPLIANCE_STANDARD_ID="$HIPAA_164_ID"
-            HIPAA_NAME=$(echo "$STANDARDS_BODY" | jq -r "if type == \"array\" then .[] | select(.id == \"$HIPAA_164_ID\") | .name elif .standards then .standards[]? | select(.id == \"$HIPAA_164_ID\") | .name else .[]? | select(.id == \"$HIPAA_164_ID\") | .name end" 2>/dev/null || echo "HIPAA 164")
-            log "✓ Found HIPAA 164 standard: $HIPAA_NAME (ID: $COMPLIANCE_STANDARD_ID)"
-        else
-            warning "HIPAA 164 standard not found in standards list"
-            log "Full standards response for debugging:"
-            echo "$STANDARDS_BODY" | jq . 2>/dev/null || echo "$STANDARDS_BODY"
-        fi
+if [ "$HTTP_CODE" -ne 200 ] || [ -z "$STANDARDS_BODY" ]; then
+    error "Failed to fetch standards (HTTP $HTTP_CODE). Response: ${STANDARDS_BODY:0:300}"
+fi
+
+if ! echo "$STANDARDS_BODY" | jq . >/dev/null 2>&1; then
+    error "Invalid JSON response from standards API. Response: ${STANDARDS_BODY:0:300}"
+fi
+
+# List all available standards for debugging
+log "Available compliance standards:"
+echo "$STANDARDS_BODY" | jq -r 'if type == "array" then .[] | "  - \(.name // .id): \(.id)" elif .standards then .standards[]? | "  - \(.name // .id): \(.id)" else .[]? | "  - \(.name // .id): \(.id)" end' 2>/dev/null || \
+log "  Could not parse standards list"
+
+# Function to find standard ID by name pattern
+find_standard_id() {
+    local search_name="$1"
+    local standard_id=""
+    
+    # Try exact match first
+    standard_id=$(echo "$STANDARDS_BODY" | jq -r "if type == \"array\" then .[] | select(.name == \"$search_name\") | .id elif .standards then .standards[]? | select(.name == \"$search_name\") | .id else .[]? | select(.name == \"$search_name\") | .id end" 2>/dev/null | head -1)
+    
+    # Try case-insensitive match
+    if [ -z "$standard_id" ] || [ "$standard_id" = "null" ]; then
+        standard_id=$(echo "$STANDARDS_BODY" | jq -r "if type == \"array\" then .[] | select(.name | ascii_downcase == \"$(echo "$search_name" | tr '[:upper:]' '[:lower:]')\") | .id elif .standards then .standards[]? | select(.name | ascii_downcase == \"$(echo "$search_name" | tr '[:upper:]' '[:lower:]')\") | .id else .[]? | select(.name | ascii_downcase == \"$(echo "$search_name" | tr '[:upper:]' '[:lower:]')\") | .id end" 2>/dev/null | head -1)
+    fi
+    
+    # Try pattern matching for partial names
+    if [ -z "$standard_id" ] || [ "$standard_id" = "null" ]; then
+        # Build regex pattern from search name (escape special chars and make flexible)
+        local pattern=$(echo "$search_name" | sed 's/[.*+?^${}()|[\]\\]/\\&/g' | sed 's/ /.*/g')
+        standard_id=$(echo "$STANDARDS_BODY" | jq -r "if type == \"array\" then .[] | select(.name | test(\"$pattern\"; \"i\")) | .id elif .standards then .standards[]? | select(.name | test(\"$pattern\"; \"i\")) | .id else .[]? | select(.name | test(\"$pattern\"; \"i\")) | .id end" 2>/dev/null | head -1)
+    fi
+    
+    echo "$standard_id"
+}
+
+# Find all required standards
+declare -A STANDARD_IDS
+declare -A STANDARD_NAMES
+FOUND_COUNT=0
+
+for standard_name in "${COMPLIANCE_STANDARDS[@]}"; do
+    standard_id=$(find_standard_id "$standard_name")
+    
+    if [ -n "$standard_id" ] && [ "$standard_id" != "null" ]; then
+        STANDARD_IDS["$standard_name"]="$standard_id"
+        # Get the actual name from the response
+        actual_name=$(echo "$STANDARDS_BODY" | jq -r "if type == \"array\" then .[] | select(.id == \"$standard_id\") | .name elif .standards then .standards[]? | select(.id == \"$standard_id\") | .name else .[]? | select(.id == \"$standard_id\") | .name end" 2>/dev/null || echo "$standard_name")
+        STANDARD_NAMES["$standard_name"]="$actual_name"
+        log "✓ Found $standard_name: $actual_name (ID: $standard_id)"
+        FOUND_COUNT=$((FOUND_COUNT + 1))
     else
-        warning "Invalid JSON response from standards API. Response: ${STANDARDS_BODY:0:300}"
+        warning "Standard '$standard_name' not found in available standards"
     fi
-else
-    warning "Failed to fetch standards (HTTP $HTTP_CODE). Response: ${STANDARDS_BODY:0:300}"
+done
+
+if [ $FOUND_COUNT -eq 0 ]; then
+    error "Could not find any of the required compliance standards. Available standards listed above."
 fi
 
-# If still no standard ID, try to get it from existing runs
-if [ -z "$COMPLIANCE_STANDARD_ID" ] || [ "$COMPLIANCE_STANDARD_ID" = "null" ]; then
-    log "Trying to get HIPAA 164 standard ID from existing compliance runs..."
-    set +e
-    RUNS_RESPONSE=$(curl -k -s -w "\n%{http_code}" -X GET \
-        -H "Authorization: Bearer $ROX_API_TOKEN" \
-        -H "Content-Type: application/json" \
-        "$SCAN_ENDPOINT" 2>&1) || true
-    set -e
-    
-    RUNS_HTTP_CODE=$(echo "$RUNS_RESPONSE" | tail -n1)
-    RUNS_BODY=$(echo "$RUNS_RESPONSE" | head -n -1)
-    
-    if [ "$RUNS_HTTP_CODE" -eq 200 ] && [ -n "$RUNS_BODY" ]; then
-        if echo "$RUNS_BODY" | jq . >/dev/null 2>&1; then
-            # Try to extract standardId from existing runs that might be HIPAA 164
-            COMPLIANCE_STANDARD_ID=$(echo "$RUNS_BODY" | jq -r '.runs[]? | select(.selection.standardId? != null) | .selection.standardId' 2>/dev/null | head -1)
-            if [ -n "$COMPLIANCE_STANDARD_ID" ] && [ "$COMPLIANCE_STANDARD_ID" != "null" ]; then
-                log "✓ Found compliance standard ID from existing runs: $COMPLIANCE_STANDARD_ID"
-                warning "Note: Using standard from existing runs. Verify this is HIPAA 164."
-            fi
-        fi
-    fi
-fi
+log ""
+log "Found $FOUND_COUNT out of ${#COMPLIANCE_STANDARDS[@]} required standards"
 
-# If we still don't have a standard ID, we must error since API requires it
-if [ -z "$COMPLIANCE_STANDARD_ID" ] || [ "$COMPLIANCE_STANDARD_ID" = "null" ]; then
-    error "Could not find HIPAA 164 compliance standard ID. Please ensure HIPAA 164 standard is configured in RHACS. Check available standards: curl -k -X GET \"$STANDARDS_ENDPOINT\" -H \"Accept: application/json\" -H \"Authorization: Bearer \$ROX_API_TOKEN\" | jq ."
-fi
-
-# Trigger compliance management scan with HIPAA 164
+# Trigger compliance scans for all found standards
 log ""
 log "========================================================="
-log "Triggering HIPAA 164 compliance scan..."
+log "Triggering compliance scans..."
 log "========================================================="
 log "Endpoint: $SCAN_ENDPOINT"
 log "Cluster: $CLUSTER_NAME (ID: $CLUSTER_ID)"
-log "Standard: HIPAA 164 (ID: $COMPLIANCE_STANDARD_ID)"
+log ""
 
-# Prepare scan request payload with selection object
-SCAN_PAYLOAD=$(cat <<EOF
+SUCCESS_COUNT=0
+FAILED_COUNT=0
+
+for standard_name in "${COMPLIANCE_STANDARDS[@]}"; do
+    if [ -z "${STANDARD_IDS[$standard_name]:-}" ]; then
+        warning "Skipping '$standard_name' - standard ID not found"
+        FAILED_COUNT=$((FAILED_COUNT + 1))
+        continue
+    fi
+    
+    standard_id="${STANDARD_IDS[$standard_name]}"
+    actual_name="${STANDARD_NAMES[$standard_name]}"
+    
+    log "Triggering scan for: $actual_name (ID: $standard_id)..."
+    
+    # Prepare scan request payload
+    SCAN_PAYLOAD=$(cat <<EOF
 {
   "selection": {
     "clusterId": "$CLUSTER_ID",
-    "standardId": "$COMPLIANCE_STANDARD_ID"
+    "standardId": "$standard_id"
   }
 }
 EOF
 )
-
-# Make POST request to trigger the scan
-SCAN_RESPONSE=$(make_api_call "POST" "$SCAN_ENDPOINT" "$SCAN_PAYLOAD" "Trigger HIPAA 164 compliance scan")
-
-log "✓ HIPAA 164 compliance scan triggered successfully"
-
-# Parse and display response if available
-if [ -n "$SCAN_RESPONSE" ]; then
-    if echo "$SCAN_RESPONSE" | jq . >/dev/null 2>&1; then
-        log "Scan response:"
-        echo "$SCAN_RESPONSE" | jq '.' 2>/dev/null || echo "$SCAN_RESPONSE"
+    
+    # Make POST request to trigger the scan
+    set +e
+    SCAN_RESPONSE=$(make_api_call "POST" "$SCAN_ENDPOINT" "$SCAN_PAYLOAD" "Trigger $actual_name compliance scan" 2>&1)
+    SCAN_EXIT_CODE=$?
+    set -e
+    
+    if [ $SCAN_EXIT_CODE -eq 0 ]; then
+        log "✓ $actual_name scan triggered successfully"
         
         # Try to extract scan ID or status if present
-        SCAN_ID=$(echo "$SCAN_RESPONSE" | jq -r '.id // .scanId // .runId // empty' 2>/dev/null || echo "")
-        if [ -n "$SCAN_ID" ] && [ "$SCAN_ID" != "null" ]; then
-            log "✓ Scan ID: $SCAN_ID"
+        if echo "$SCAN_RESPONSE" | jq . >/dev/null 2>&1; then
+            SCAN_ID=$(echo "$SCAN_RESPONSE" | jq -r '.id // .scanId // .runId // empty' 2>/dev/null || echo "")
+            if [ -n "$SCAN_ID" ] && [ "$SCAN_ID" != "null" ]; then
+                log "  Scan ID: $SCAN_ID"
+            fi
         fi
         
-        SCAN_STATUS=$(echo "$SCAN_RESPONSE" | jq -r '.status // .state // empty' 2>/dev/null || echo "")
-        if [ -n "$SCAN_STATUS" ] && [ "$SCAN_STATUS" != "null" ]; then
-            log "✓ Scan Status: $SCAN_STATUS"
-        fi
+        SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
     else
-        log "Response received: $SCAN_RESPONSE"
+        warning "Failed to trigger scan for $actual_name"
+        FAILED_COUNT=$((FAILED_COUNT + 1))
     fi
-fi
+    
+    # Small delay between scans
+    sleep 1
+done
 
 log ""
 log "========================================================="
-log "HIPAA 164 Compliance Scan Trigger Completed Successfully"
+log "Compliance Scan Trigger Summary"
 log "========================================================="
+log "Cluster: $CLUSTER_NAME (ID: $CLUSTER_ID)"
+log "Standards found: $FOUND_COUNT/${#COMPLIANCE_STANDARDS[@]}"
+log "Scans triggered successfully: $SUCCESS_COUNT"
+if [ $FAILED_COUNT -gt 0 ]; then
+    warning "Scans failed: $FAILED_COUNT"
+fi
 log ""
-log "Summary:"
-log "  - Cluster: $CLUSTER_NAME (ID: $CLUSTER_ID)"
-log "  - Standard: HIPAA 164 (ID: $COMPLIANCE_STANDARD_ID)"
-log "  - Scan endpoint: $SCAN_ENDPOINT"
+log "Triggered scans:"
+for standard_name in "${COMPLIANCE_STANDARDS[@]}"; do
+    if [ -n "${STANDARD_IDS[$standard_name]:-}" ]; then
+        log "  ✓ ${STANDARD_NAMES[$standard_name]}"
+    else
+        log "  ✗ $standard_name (not found)"
+    fi
+done
 log ""
-log "The scan is now running. It may take several minutes to complete."
+log "The scans are now running. They may take several minutes to complete."
 log "You can monitor progress in RHACS UI: Compliance → Coverage tab"
 log ""
