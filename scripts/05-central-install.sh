@@ -239,7 +239,7 @@ fi
 # Get Central route information
 log ""
 log "Retrieving Central route information..."
-CENTRAL_ROUTE=$(oc get route -n "$RHACS_OPERATOR_NAMESPACE" -l app=central -o jsonpath='{.items[0].spec.host}' 2>/dev/null || echo "")
+CENTRAL_ROUTE=$(oc get route central -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
 if [ -n "$CENTRAL_ROUTE" ]; then
     log "✓ Central route: https://$CENTRAL_ROUTE"
 else
@@ -252,15 +252,11 @@ log "RHACS Central Installation Completed!"
 log "========================================================="
 log "Namespace: $RHACS_OPERATOR_NAMESPACE"
 log "Central Resource: $CENTRAL_NAME"
-log "TLS Secret: $CENTRAL_TLS_SECRET_NAME"
 if [ -n "$CENTRAL_ROUTE" ]; then
     log "Central URL: https://$CENTRAL_ROUTE"
 fi
 log "========================================================="
 log ""
 log "RHACS Central is now deployed and ready."
-if [ -n "$CENTRAL_ROUTE" ]; then
-    log "Access Central at: https://$CENTRAL_ROUTE"
-fi
 log ""
 

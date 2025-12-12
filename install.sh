@@ -78,6 +78,15 @@ install_rhacs_central() {
     success "RHACS Central installation completed successfully"
 }
 
+# Setup RHACS Secured Cluster Services
+setup_rhacs_scs() {
+    log "Setting up RHACS Secured Cluster Services..."
+    if ! bash "${SCRIPT_DIR}/scripts/06-scs-setup.sh"; then
+        error "RHACS Secured Cluster Services setup script failed. Installation stopped."
+    fi
+    success "RHACS Secured Cluster Services setup completed successfully"
+}
+
 
 # Main function
 main() {
@@ -106,7 +115,7 @@ main() {
     log "Using script directory: $SCRIPT_DIR"
     
     # Verify scripts exist - fail fast if any script is missing
-    for script in "01-rhacs-delete.sh" "02-install-cert-manager.sh" "03-setup-rhacs-route-tls.sh" "04-rhacs-subscription-install.sh" "05-central-install.sh"; do
+    for script in "01-rhacs-delete.sh" "02-install-cert-manager.sh" "03-setup-rhacs-route-tls.sh" "04-rhacs-subscription-install.sh" "05-central-install.sh" "06-scs-setup.sh"; do
         if [ ! -f "$SCRIPT_DIR/scripts/$script" ]; then
             error "Required script not found: $SCRIPT_DIR/scripts/$script"
         fi
@@ -119,6 +128,7 @@ main() {
     setup_rhacs_tls_certificate
     install_rhacs_operator
     install_rhacs_central
+    setup_rhacs_scs
     
     log "========================================================="
     success "Demo Config setup completed successfully!"
