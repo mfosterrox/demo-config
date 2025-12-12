@@ -747,174 +747,50 @@ else
     log "✓ Scan configuration ID: $SCAN_CONFIG_ID"
 fi
 
-# SCAN_CONFIG_ID is now available for use in this script
+# SCAN_CONFIG_ID is now available for use by subsequent scripts
 if [ -n "$SCAN_CONFIG_ID" ] && [ "$SCAN_CONFIG_ID" != "null" ]; then
     log "✓ Scan configuration ID ready: $SCAN_CONFIG_ID"
-fi
-
-# Trigger the scan immediately after creation
-log ""
-log "========================================================="
-log "Triggering compliance scan..."
-log "========================================================="
-
-if [ -z "$SCAN_CONFIG_ID" ] || [ "$SCAN_CONFIG_ID" = "null" ]; then
-    warning "Cannot trigger scan: SCAN_CONFIG_ID is not set"
 else
-    log "Triggering scan for configuration ID: $SCAN_CONFIG_ID"
-    set +e
-    TRIGGER_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 120 -X POST \
-        -H "Authorization: Bearer $ROX_API_TOKEN" \
-        -H "Content-Type: application/json" \
-        "$ROX_ENDPOINT/v2/compliance/scan/configurations/$SCAN_CONFIG_ID/run" 2>&1)
-    TRIGGER_EXIT_CODE=$?
-    set -e
-
-    if [ $TRIGGER_EXIT_CODE -ne 0 ]; then
-        warning "Failed to trigger scan (exit code: $TRIGGER_EXIT_CODE). Response: ${TRIGGER_RESPONSE:0:500}"
-        warning "Scan will run on schedule. You can also trigger it manually later using script 05-trigger-compliance-scan.sh"
-    elif [ -z "$TRIGGER_RESPONSE" ]; then
-        warning "Empty response from scan trigger API"
-        warning "Scan may have been triggered. Check scan status in RHACS UI."
-    elif echo "$TRIGGER_RESPONSE" | grep -qi "error\|failed"; then
-        warning "Scan trigger returned an error response:"
-        echo "$TRIGGER_RESPONSE" | head -10
-        warning "Scan will run on schedule. You can also trigger it manually later using script 05-trigger-compliance-scan.sh"
-    else
-        log "✓ Scan triggered successfully"
-        if echo "$TRIGGER_RESPONSE" | jq . >/dev/null 2>&1; then
-            TRIGGER_STATUS=$(echo "$TRIGGER_RESPONSE" | jq -r '.status // .message // "Triggered"' 2>/dev/null)
-            log "  Response: $TRIGGER_STATUS"
-        fi
-        log ""
-        log "The scan is now running. It may take several minutes to complete."
-        log "You can monitor progress in RHACS UI: Compliance → Coverage tab"
-    fi
+    warning "Scan configuration ID not available. Scan schedule may not have been created successfully."
 fi
 
 log ""
-
-log "Compliance scan schedule setup completed successfully!"
-log "Scan configuration ID: $SCAN_CONFIG_ID"
+log "========================================================="
+log "Compliance Scan Schedule Setup Completed!"
+log "========================================================="
+log "Scan Configuration Name: acs-catch-all"
+if [ -n "$SCAN_CONFIG_ID" ] && [ "$SCAN_CONFIG_ID" != "null" ]; then
+    log "Scan Configuration ID: $SCAN_CONFIG_ID"
+fi
+log "Cluster ID: $PRODUCTION_CLUSTER_ID"
+log "Profiles: ocp4-cis, ocp4-cis-node, ocp4-moderate, ocp4-moderate-node, ocp4-e8, ocp4-high, ocp4-high-node, ocp4-nerc-cip, ocp4-nerc-cip-node, ocp4-pci-dss, ocp4-pci-dss-node, ocp4-stig-node"
+log "Schedule: Daily at 12:00"
+log "========================================================="
+log ""
+log "The compliance scan schedule has been created in ACS Central."
+log "The scan will run automatically on the configured schedule."
+log "You can trigger a scan manually using the trigger script."
 log ""
 
-# Diagnostic: Check if compliance scan results are syncing properly
-log "========================================================="
-log "Diagnosing compliance scan results sync..."
-log "========================================================="
-
-# Get namespace from environment or default
-NAMESPACE="${NAMESPACE:-tssc-acs}"
-
-# Check scan configuration status
-log "Checking scan configuration status..."
-CURRENT_CONFIGS=$(curl -k -s --connect-timeout 15 --max-time 120 -X GET \
+# Verify scan configuration was created successfully
+log "Verifying scan configuration..."
+set +e
+VERIFY_CONFIGS=$(curl -k -s --connect-timeout 15 --max-time 120 -X GET \
     -H "Authorization: Bearer $ROX_API_TOKEN" \
     -H "Content-Type: application/json" \
     "$ROX_ENDPOINT/v2/compliance/scan/configurations" 2>&1)
+VERIFY_EXIT_CODE=$?
+set -e
 
-if [ -n "$CURRENT_CONFIGS" ] && echo "$CURRENT_CONFIGS" | jq . >/dev/null 2>&1; then
-    LAST_STATUS=$(echo "$CURRENT_CONFIGS" | jq -r ".configurations[] | select(.id == \"$SCAN_CONFIG_ID\") | .lastScanStatus // \"UNKNOWN\"" 2>/dev/null)
-    LAST_SCANNED=$(echo "$CURRENT_CONFIGS" | jq -r ".configurations[] | select(.id == \"$SCAN_CONFIG_ID\") | .lastScanned // \"Never\"" 2>/dev/null)
-    
-    if [ -n "$LAST_STATUS" ] && [ "$LAST_STATUS" != "null" ]; then
-        log "  Scan Status: $LAST_STATUS"
-        log "  Last Scanned: $LAST_SCANNED"
-    fi
-fi
-
-# Check if results are available in RHACS
-log "Checking if scan results are available in RHACS..."
-SCAN_RESULTS=$(curl -k -s --connect-timeout 15 --max-time 120 -X GET \
-    -H "Authorization: Bearer $ROX_API_TOKEN" \
-    -H "Content-Type: application/json" \
-    "$ROX_ENDPOINT/v2/compliance/scan/results" 2>&1)
-
-RESULTS_AVAILABLE=false
-if [ -n "$SCAN_RESULTS" ] && echo "$SCAN_RESULTS" | jq . >/dev/null 2>&1; then
-    RESULT_COUNT=$(echo "$SCAN_RESULTS" | jq '.results | length' 2>/dev/null || echo "0")
-    if [ "$RESULT_COUNT" -gt 0 ]; then
-        RESULTS_AVAILABLE=true
-        log "  ✓ Found $RESULT_COUNT scan result(s) in RHACS"
+if [ $VERIFY_EXIT_CODE -eq 0 ] && echo "$VERIFY_CONFIGS" | jq . >/dev/null 2>&1; then
+    VERIFY_SCAN=$(echo "$VERIFY_CONFIGS" | jq -r ".configurations[] | select(.scanName == \"acs-catch-all\") | .id" 2>/dev/null | head -1)
+    if [ -n "$VERIFY_SCAN" ] && [ "$VERIFY_SCAN" != "null" ]; then
+        log "✓ Scan configuration verified in ACS Central (ID: $VERIFY_SCAN)"
     else
-        log "  ⚠ No scan results found in RHACS API"
+        warning "Scan configuration not found in verification check"
     fi
 else
-    log "  ⚠ Could not check scan results API"
-fi
-
-# Check Compliance Operator status if oc is available
-if command -v oc &>/dev/null && oc whoami &>/dev/null 2>&1; then
-    log "Checking Compliance Operator scan status..."
-    
-    CHECK_RESULTS=$(oc get compliancecheckresult -A 2>/dev/null | grep -v NAME | wc -l 2>/dev/null | tr -d '[:space:]' || echo "0")
-    CHECK_RESULTS=${CHECK_RESULTS:-0}
-    if [ "$CHECK_RESULTS" -gt 0 ]; then
-        log "  ✓ Found $CHECK_RESULTS ComplianceCheckResult resources"
-        CO_HAS_RESULTS=true
-    else
-        log "  ⚠ No ComplianceCheckResult resources found"
-        CO_HAS_RESULTS=false
-    fi
-    
-    # Check sensor status
-    log "Checking RHACS sensor status..."
-    SENSOR_PODS=$(oc get pods -n "$NAMESPACE" -l app.kubernetes.io/component=sensor 2>/dev/null | grep -v NAME | wc -l 2>/dev/null | tr -d '[:space:]' || echo "0")
-    SENSOR_PODS=${SENSOR_PODS:-0}
-    if [ "$SENSOR_PODS" -gt 0 ]; then
-        READY_PODS=$(oc get pods -n "$NAMESPACE" -l app.kubernetes.io/component=sensor -o jsonpath='{range .items[*]}{.status.containerStatuses[0].ready}{"\n"}{end}' 2>/dev/null | grep -c "true" 2>/dev/null | tr -d '[:space:]' || echo "0")
-        READY_PODS=${READY_PODS:-0}
-        log "  Sensor pods: $READY_PODS/$SENSOR_PODS ready"
-    else
-        log "  ⚠ No sensor pods found in namespace $NAMESPACE"
-    fi
-    
-    # Diagnose sync issue
-    if [ "$CO_HAS_RESULTS" = true ] && [ "$RESULTS_AVAILABLE" = false ]; then
-        log ""
-        warning "ISSUE DETECTED: Compliance Operator has results but RHACS doesn't show them"
-        warning "This indicates a sync issue between Compliance Operator and RHACS"
-        log ""
-        log "NOTE: Compliance Operator is installed after RHACS (script 02),"
-        log "      and script 02 should have restarted the sensor automatically."
-        log "      If results still don't appear, try restarting the sensor manually:"
-        log "  oc delete pods -l app.kubernetes.io/component=sensor -n $NAMESPACE"
-        log ""
-        log "After restarting (if needed), wait 1-2 minutes and check:"
-        log "  - RHACS UI: Compliance → Coverage tab"
-        log "  - Select your scan configuration to view results"
-    elif [ -n "$LAST_STATUS" ] && [ "$LAST_STATUS" = "COMPLETED" ] && [ "$RESULTS_AVAILABLE" = false ]; then
-        log ""
-        warning "ISSUE DETECTED: Scan shows COMPLETED but results not available in RHACS"
-        warning "The scan completed and sent a report, but results haven't synced to RHACS yet"
-        log ""
-        log "NOTE: Compliance Operator is installed after RHACS (script 02),"
-        log "      so sensor should have been restarted. Wait a few minutes for automatic sync."
-        log ""
-        log "If results still don't appear after waiting, restart the sensor:"
-        log "  oc delete pods -l app.kubernetes.io/component=sensor -n $NAMESPACE"
-        log ""
-        log "Then check the Compliance → Coverage tab."
-    elif [ "$RESULTS_AVAILABLE" = true ]; then
-        log ""
-        log "✓ Scan results are available in RHACS"
-        log "  View them in: Compliance → Coverage tab"
-    else
-        log ""
-        log "No scan results found yet. This is normal if:"
-        log "  - No scans have been run yet (run script 05-trigger-compliance-scan.sh)"
-        log "  - Scan is still in progress"
-        log ""
-        log "If scan completed but results don't appear, restart the sensor:"
-        log "  oc delete pods -l app.kubernetes.io/component=sensor -n $NAMESPACE"
-    fi
-else
-    log "  ⚠ OpenShift CLI (oc) not available - skipping Compliance Operator checks"
-    log ""
-    log "If scan results don't appear in the dashboard after completion:"
-    log "  1. Restart RHACS sensor: oc delete pods -l app.kubernetes.io/component=sensor -n $NAMESPACE"
-    log "  2. Wait 1-2 minutes"
-    log "  3. Check Compliance → Coverage tab in RHACS UI"
+    warning "Could not verify scan configuration (this is non-fatal)"
 fi
 
 log ""
