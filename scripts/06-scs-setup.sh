@@ -127,40 +127,10 @@ normalize_rox_endpoint() {
 ROX_ENDPOINT_NORMALIZED="$(normalize_rox_endpoint "$ROX_ENDPOINT")"
 log "Central endpoint: $ROX_ENDPOINT (normalized for API calls: $ROX_ENDPOINT_NORMALIZED)"
 
-# Download roxctl if not available
+# Download roxctl if not available (Linux bastion host)
 ROXCTL_CMD=""
 if ! command -v roxctl &>/dev/null; then
     log "roxctl not found, downloading..."
-    
-    # Determine OS and architecture
-    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-    ARCH=$(uname -m)
-    
-    # Map architecture
-    case "$ARCH" in
-        x86_64)
-            ROXCTL_ARCH="amd64"
-            ;;
-        aarch64|arm64)
-            ROXCTL_ARCH="arm64"
-            ;;
-        *)
-            error "Unsupported architecture: $ARCH"
-            ;;
-    esac
-    
-    # Map OS
-    case "$OS" in
-        linux)
-            ROXCTL_OS="Linux"
-            ;;
-        darwin)
-            ROXCTL_OS="Darwin"
-            ;;
-        *)
-            error "Unsupported OS: $OS"
-            ;;
-    esac
     
     # Get RHACS version from CSV
     RHACS_VERSION=$(oc get csv -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.items[?(@.spec.displayName=="Advanced Cluster Security for Kubernetes")].spec.version}' 2>/dev/null || echo "")
@@ -168,14 +138,14 @@ if ! command -v roxctl &>/dev/null; then
         RHACS_VERSION=$(oc get csv -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.items[0].spec.version}' 2>/dev/null | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+' || echo "latest")
     fi
     
-    # Download roxctl
-    ROXCTL_URL="https://mirror.openshift.com/pub/rhacs/assets/${RHACS_VERSION}/bin/${ROXCTL_OS}/roxctl"
+    # Download roxctl for Linux
+    ROXCTL_URL="https://mirror.openshift.com/pub/rhacs/assets/${RHACS_VERSION}/bin/Linux/roxctl"
     ROXCTL_TMP="/tmp/roxctl"
     
     log "Downloading roxctl from: $ROXCTL_URL"
     if ! curl -L -f -o "$ROXCTL_TMP" "$ROXCTL_URL" 2>/dev/null; then
         # Try latest if version-specific download fails
-        ROXCTL_URL="https://mirror.openshift.com/pub/rhacs/assets/latest/bin/${ROXCTL_OS}/roxctl"
+        ROXCTL_URL="https://mirror.openshift.com/pub/rhacs/assets/latest/bin/Linux/roxctl"
         log "Retrying with latest version: $ROXCTL_URL"
         if ! curl -L -f -o "$ROXCTL_TMP" "$ROXCTL_URL" 2>/dev/null; then
             error "Failed to download roxctl. Please install it manually."
@@ -198,11 +168,8 @@ if ! $ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" central whoami --password "$ADMIN
 fi
 log "✓ roxctl connectivity verified"
 
-# Get cluster name
-CLUSTER_NAME=$(oc get infrastructure cluster -o jsonpath='{.status.infrastructureName}' 2>/dev/null || echo "")
-if [ -z "$CLUSTER_NAME" ]; then
-    CLUSTER_NAME=$(oc config view --minify -o jsonpath='{.clusters[0].name}' 2>/dev/null | sed 's/[^a-zA-Z0-9-]/-/g' || echo "local-cluster")
-fi
+# Set cluster name
+CLUSTER_NAME=production
 
 # Check if SecuredCluster already exists
 SECURED_CLUSTER_NAME="rhacs-secured-cluster-services"
@@ -270,45 +237,14 @@ metadata:
   namespace: $RHACS_OPERATOR_NAMESPACE
 spec:
   clusterName: "$CLUSTER_NAME"
-  centralEndpoint: "$ROX_ENDPOINT"
-  admissionControl:
-    listenOnCreates: true
-    listenOnEvents: true 
-    listenOnUpdates: true
-    enforceOnCreates: false
-    enforceOnUpdates: false
-    scanInline: true
-    disableBypass: false
-    timeoutSeconds: 20
   auditLogs:
     collection: Auto
-  perNode:
-    collector:
-      collection: EBPF
-      imageFlavor: Regular
-      resources:
-        limits:
-          cpu: 750m
-          memory: 1Gi
-        requests:
-          cpu: 50m
-          memory: 320Mi
-    taintToleration: TolerateTaints
-  scanner:
-    analyzer:
-      scaling:
-        autoScaling: Enabled
-        maxReplicas: 5
-        minReplicas: 1
-        replicas: 3
-      resources:
-        limits:
-          cpu: 2000m
-          memory: 4Gi
-        requests:
-          cpu: 1000m
-          memory: 1500Mi
-    scannerComponent: AutoSense
+  admissionControl:
+    enforcement: Enabled
+    bypass: BreakGlassAnnotation
+    failurePolicy: Ignore
+  scannerV4:
+    scannerComponent: Default
   processBaselines:
     autoLock: Enabled
 EOF
@@ -457,8 +393,8 @@ log "========================================================="
 log "Namespace: $RHACS_OPERATOR_NAMESPACE"
 log "SecuredCluster Resource: $SECURED_CLUSTER_NAME"
 log "Cluster Name: $CLUSTER_NAME"
-log "Central Endpoint: $ROX_ENDPOINT"
 log "========================================================="
 log ""
 log "Secured Cluster Services are now configured and ready."
+log "The SecuredCluster will auto-discover Central in the same namespace."
 log ""
