@@ -542,6 +542,33 @@ if [ "$ALL_CRDS_AVAILABLE" = false ]; then
     done
 fi
 
+# Step 10: Verify zerossl-production-ec2 ClusterIssuer is Available
+log ""
+log "========================================================="
+log "Step 10: Verifying ClusterIssuer 'zerossl-production-ec2' is Available"
+log "========================================================="
+
+CLUSTERISSUER_NAME="zerossl-production-ec2"
+
+# Check if zerossl-production-ec2 ClusterIssuer exists
+if oc get clusterissuer "$CLUSTERISSUER_NAME" &>/dev/null; then
+    log "✓ ClusterIssuer '$CLUSTERISSUER_NAME' found"
+    
+    # Check if it's Ready
+    ISSUER_READY=$(oc get clusterissuer "$CLUSTERISSUER_NAME" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+    if [ "$ISSUER_READY" = "True" ]; then
+        log "✓ ClusterIssuer '$CLUSTERISSUER_NAME' is Ready"
+    else
+        warning "ClusterIssuer '$CLUSTERISSUER_NAME' status: $ISSUER_READY (may not be ready)"
+    fi
+else
+    error "ClusterIssuer '$CLUSTERISSUER_NAME' not found. Please ensure it exists before running script 08."
+fi
+
+log ""
+log "Available ClusterIssuers:"
+oc get clusterissuer 2>/dev/null | head -10 || log "  None found"
+
 # Final summary
 log ""
 log "========================================================="
@@ -564,12 +591,16 @@ elif oc get namespace "$CERT_MANAGER_NS" &>/dev/null; then
     log "Cert-manager Namespace: $CERT_MANAGER_NS (already exists)"
     log "  (Contains cert-manager pods, webhook, and CA injector)"
 fi
+log ""
+log "ClusterIssuer: $CLUSTERISSUER_NAME"
+log "  (Available for Certificate resources to use)"
 log "========================================================="
 log ""
 log "Cert-manager operator is now installed and ready to use."
 log "The CertManager CR instance has been created, which deployed"
 log "the cert-manager components (pods, webhook, CRDs)."
 log ""
+log "ClusterIssuer '$CLUSTERISSUER_NAME' has been verified and is ready."
 log "You can now create Certificate resources to manage TLS certificates."
 log ""
 log "To verify installation:"

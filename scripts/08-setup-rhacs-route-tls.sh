@@ -118,7 +118,7 @@ log "Step 2: Configuring cert-manager Issuer"
 log "========================================================="
 
 # Prompt for issuer details (with defaults)
-ISSUER_NAME="${CERT_MANAGER_ISSUER_NAME:-letsencrypt-prod}"
+ISSUER_NAME="${CERT_MANAGER_ISSUER_NAME:-zerossl-production-ec2}"
 ISSUER_KIND="${CERT_MANAGER_ISSUER_KIND:-ClusterIssuer}"
 
 log "Using issuer configuration:"
