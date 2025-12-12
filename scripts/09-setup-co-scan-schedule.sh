@@ -235,25 +235,114 @@ fi
 
 # Fetch cluster ID - try to match by name first, then fall back to first connected cluster
 log "Fetching cluster ID..."
-# Temporarily disable exit on error to capture curl exit code
-set +e
-CLUSTER_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 120 -X GET \
-    -H "Authorization: Bearer $ROX_API_TOKEN" \
-    -H "Content-Type: application/json" \
-    "$ROX_ENDPOINT/v1/clusters" 2>&1)
-CLUSTER_CURL_EXIT_CODE=$?
-set -e
+MAX_RETRIES=2
+RETRY_COUNT=0
+CLUSTER_RESPONSE=""
+CLUSTER_CURL_EXIT_CODE=1
 
-# Check for authorization errors
-if echo "$CLUSTER_RESPONSE" | grep -q "not authorized\|token validation failed"; then
-    error "API token authorization failed. Token may have expired. Response: ${CLUSTER_RESPONSE:0:500}"
-fi
-
-if [ $CLUSTER_CURL_EXIT_CODE -ne 0 ]; then
-    log "Debug: ROX_ENDPOINT=$ROX_ENDPOINT"
-    log "Debug: ROX_API_TOKEN length=${#ROX_API_TOKEN} (first 20 chars: ${ROX_API_TOKEN:0:20}...)"
-    error "Cluster API request failed with exit code $CLUSTER_CURL_EXIT_CODE. Response: ${CLUSTER_RESPONSE:0:500}"
-fi
+while [ $RETRY_COUNT -le $MAX_RETRIES ]; do
+    # Temporarily disable exit on error to capture curl exit code
+    set +e
+    CLUSTER_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 120 -X GET \
+        -H "Authorization: Bearer $ROX_API_TOKEN" \
+        -H "Content-Type: application/json" \
+        "$ROX_ENDPOINT/v1/clusters" 2>&1)
+    CLUSTER_CURL_EXIT_CODE=$?
+    set -e
+    
+    # Check for authorization errors
+    if echo "$CLUSTER_RESPONSE" | grep -q "not authorized\|token validation failed"; then
+        if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+            log "API token authorization failed. Generating new token and retrying..."
+            # Generate new token (reuse the token generation logic from above)
+            ADMIN_PASSWORD_B64=$(oc get secret central-htpasswd -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.data.password}' 2>/dev/null || echo "")
+            if [ -z "$ADMIN_PASSWORD_B64" ]; then
+                error "Admin password secret 'central-htpasswd' not found in namespace '$RHACS_OPERATOR_NAMESPACE'"
+            fi
+            ADMIN_PASSWORD=$(echo "$ADMIN_PASSWORD_B64" | base64 -d)
+            
+            normalize_rox_endpoint() {
+                local input="$1"
+                input="${input#https://}"
+                input="${input#http://}"
+                input="${input%/}"
+                if [[ "$input" != *:* ]]; then
+                    input="${input}:443"
+                fi
+                echo "$input"
+            }
+            
+            ROX_ENDPOINT_NORMALIZED="$(normalize_rox_endpoint "$ROX_ENDPOINT")"
+            
+            # Use roxctl if available, otherwise download it
+            ROXCTL_CMD=""
+            if command -v roxctl &>/dev/null; then
+                ROXCTL_CMD="roxctl"
+            else
+                ROXCTL_TMP="/tmp/roxctl"
+                if [ -f "$ROXCTL_TMP" ] && [ -x "$ROXCTL_TMP" ]; then
+                    ROXCTL_CMD="$ROXCTL_TMP"
+                else
+                    RHACS_VERSION=$(oc get csv -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.items[?(@.spec.displayName=="Advanced Cluster Security for Kubernetes")].spec.version}' 2>/dev/null || echo "")
+                    if [ -z "$RHACS_VERSION" ]; then
+                        RHACS_VERSION=$(oc get csv -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.items[0].spec.version}' 2>/dev/null | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+' || echo "latest")
+                    fi
+                    ROXCTL_URL="https://mirror.openshift.com/pub/rhacs/assets/${RHACS_VERSION}/bin/Linux/roxctl"
+                    if ! curl -L -f -o "$ROXCTL_TMP" "$ROXCTL_URL" 2>/dev/null; then
+                        ROXCTL_URL="https://mirror.openshift.com/pub/rhacs/assets/latest/bin/Linux/roxctl"
+                        curl -L -f -o "$ROXCTL_TMP" "$ROXCTL_URL" 2>/dev/null || error "Failed to download roxctl"
+                    fi
+                    chmod +x "$ROXCTL_TMP"
+                    ROXCTL_CMD="$ROXCTL_TMP"
+                fi
+            fi
+            
+            set +e
+            TOKEN_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
+                central token generate \
+                --password "$ADMIN_PASSWORD" \
+                --insecure-skip-tls-verify 2>&1)
+            TOKEN_EXIT_CODE=$?
+            set -e
+            
+            if [ $TOKEN_EXIT_CODE -ne 0 ]; then
+                error "Failed to generate API token. roxctl output: ${TOKEN_OUTPUT:0:500}"
+            fi
+            
+            ROX_API_TOKEN=$(echo "$TOKEN_OUTPUT" | grep -oE '[a-zA-Z0-9_-]{40,}' | head -1 || echo "")
+            if [ -z "$ROX_API_TOKEN" ]; then
+                ROX_API_TOKEN=$(echo "$TOKEN_OUTPUT" | tail -1 | tr -d '[:space:]' || echo "")
+            fi
+            
+            if [ -z "$ROX_API_TOKEN" ]; then
+                error "Failed to extract API token from roxctl output. Output: ${TOKEN_OUTPUT:0:500}"
+            fi
+            
+            save_to_bashrc "ROX_API_TOKEN" "$ROX_API_TOKEN"
+            log "✓ New API token generated, retrying cluster fetch..."
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            continue
+        else
+            error "API token authorization failed after $MAX_RETRIES retries. Response: ${CLUSTER_RESPONSE:0:500}"
+        fi
+    fi
+    
+    if [ $CLUSTER_CURL_EXIT_CODE -ne 0 ]; then
+        if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+            log "Cluster API request failed (exit code: $CLUSTER_CURL_EXIT_CODE), retrying..."
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            sleep 2
+            continue
+        else
+            log "Debug: ROX_ENDPOINT=$ROX_ENDPOINT"
+            log "Debug: ROX_API_TOKEN length=${#ROX_API_TOKEN} (first 20 chars: ${ROX_API_TOKEN:0:20}...)"
+            error "Cluster API request failed with exit code $CLUSTER_CURL_EXIT_CODE after $MAX_RETRIES retries. Response: ${CLUSTER_RESPONSE:0:500}"
+        fi
+    fi
+    
+    # Success - break out of retry loop
+    break
+done
 
 if [ -z "$CLUSTER_RESPONSE" ]; then
     error "Empty response from cluster API"
