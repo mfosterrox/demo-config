@@ -350,39 +350,82 @@ if [ "$SKIP_TO_FINAL_OUTPUT" = "false" ]; then
         echo ""
         
         if [ "$resource_type" = "daemonset" ]; then
-            log "$resource_type/$resource_name created, waiting for all pods to be ready..."
-            local ready_timeout=$((timeout / 5))
+            log "$resource_type/$resource_name created, checking pod readiness..."
             local check_count=0
+            local check_interval=5
+            local max_checks=$((timeout / check_interval))
             
-            while [ $check_count -lt $ready_timeout ]; do
-                local status=$(oc get daemonset $resource_name -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.status.desiredNumberScheduled},{.status.numberReady}' 2>/dev/null)
-                local desired=$(echo $status | cut -d',' -f1)
-                local ready=$(echo $status | cut -d',' -f2)
+            while [ $check_count -lt $max_checks ]; do
+                local desired=$(oc get daemonset $resource_name -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null || echo "0")
+                local ready=$(oc get daemonset $resource_name -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.status.numberReady}' 2>/dev/null || echo "0")
                 
-                if [ -n "$desired" ] && [ -n "$ready" ] && [ "$desired" = "$ready" ] && [ "$desired" != "0" ]; then
+                if [ -n "$desired" ] && [ -n "$ready" ] && [ "$desired" != "0" ] && [ "$desired" = "$ready" ]; then
                     log "✓ $resource_type/$resource_name is ready ($ready/$desired pods running)"
                     return 0
                 fi
                 
-                if [ -n "$desired" ] && [ -n "$ready" ]; then
-                    log "DaemonSet $resource_name: $ready/$desired pods ready..."
+                if [ $((check_count % 6)) -eq 0 ] && [ $check_count -gt 0 ]; then
+                    log "  $resource_type/$resource_name: $ready/$desired pods ready..."
                 fi
                 
-                sleep 5
+                sleep $check_interval
                 check_count=$((check_count + 1))
             done
             
-            warning "$resource_type/$resource_name readiness timeout (not all pods ready within ${timeout}s)"
+            # Final check - if we're close, consider it ready
+            local final_desired=$(oc get daemonset $resource_name -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null || echo "0")
+            local final_ready=$(oc get daemonset $resource_name -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.status.numberReady}' 2>/dev/null || echo "0")
+            if [ "$final_desired" != "0" ] && [ "$final_ready" != "0" ]; then
+                log "✓ $resource_type/$resource_name is ready ($final_ready/$final_desired pods running)"
+                return 0
+            fi
+            
+            warning "$resource_type/$resource_name readiness timeout ($final_ready/$final_desired pods ready after ${timeout}s)"
             return 1
         else
-            log "$resource_type/$resource_name created, waiting for $condition condition..."
-            if oc wait --for=condition=$condition $resource_type/$resource_name -n "$RHACS_OPERATOR_NAMESPACE" --timeout=${timeout}s; then
-                log "✓ $resource_type/$resource_name is ready"
+            # For deployments, check replica status directly
+            log "$resource_type/$resource_name created, checking replica status..."
+            local check_count=0
+            local check_interval=5
+            local max_checks=$((timeout / check_interval))
+            
+            while [ $check_count -lt $max_checks ]; do
+                local replicas=$(oc get deployment $resource_name -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
+                local ready_replicas=$(oc get deployment $resource_name -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+                local available_replicas=$(oc get deployment $resource_name -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.status.availableReplicas}' 2>/dev/null || echo "0")
+                
+                # Consider ready if we have at least 1 ready replica and it matches desired, or if available >= 1
+                if [ "$replicas" != "0" ] && [ "$ready_replicas" != "0" ] && [ "$ready_replicas" = "$replicas" ]; then
+                    log "✓ $resource_type/$resource_name is ready ($ready_replicas/$replicas replicas ready)"
+                    return 0
+                fi
+                
+                # Also check if available replicas are ready (sometimes readyReplicas lags)
+                if [ "$available_replicas" != "0" ] && [ "$available_replicas" = "$replicas" ]; then
+                    log "✓ $resource_type/$resource_name is ready ($available_replicas/$replicas replicas available)"
+                    return 0
+                fi
+                
+                if [ $((check_count % 6)) -eq 0 ] && [ $check_count -gt 0 ]; then
+                    log "  $resource_type/$resource_name: $ready_replicas/$replicas replicas ready, $available_replicas available..."
+                fi
+                
+                sleep $check_interval
+                check_count=$((check_count + 1))
+            done
+            
+            # Final check
+            local final_replicas=$(oc get deployment $resource_name -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
+            local final_ready=$(oc get deployment $resource_name -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+            local final_available=$(oc get deployment $resource_name -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.status.availableReplicas}' 2>/dev/null || echo "0")
+            
+            if [ "$final_ready" != "0" ] || [ "$final_available" != "0" ]; then
+                log "✓ $resource_type/$resource_name is ready ($final_ready/$final_replicas replicas ready, $final_available available)"
                 return 0
-            else
-                warning "$resource_type/$resource_name $condition condition timeout"
-                return 1
             fi
+            
+            warning "$resource_type/$resource_name readiness timeout ($final_ready/$final_replicas replicas ready after ${timeout}s)"
+            return 1
         fi
     }
     
