@@ -134,28 +134,86 @@ if [ "$NEEDS_NEW_TOKEN" = true ]; then
     
     # Generate API token using roxctl
     log "Generating API token with roxctl..."
+    # Generate token using API directly with basic auth (more reliable than roxctl)
+    log "Generating API token using Central API..."
+    ROX_ENDPOINT_FOR_API="${ROX_ENDPOINT#https://}"
+    ROX_ENDPOINT_FOR_API="${ROX_ENDPOINT_FOR_API#http://}"
+    
     set +e
-    TOKEN_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
-        central token generate \
-        --password "$ADMIN_PASSWORD" \
-        --insecure-skip-tls-verify 2>&1)
-    TOKEN_EXIT_CODE=$?
+    TOKEN_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 60 -X POST \
+        -u "admin:${ADMIN_PASSWORD}" \
+        -H "Content-Type: application/json" \
+        "https://${ROX_ENDPOINT_FOR_API}/v1/apitokens/generate" \
+        -d '{"name":"script-generated-token","roles":["Admin"]}' 2>&1)
+    TOKEN_CURL_EXIT_CODE=$?
     set -e
     
-    if [ $TOKEN_EXIT_CODE -ne 0 ]; then
-        error "Failed to generate API token. roxctl output: ${TOKEN_OUTPUT:0:500}"
+    if [ $TOKEN_CURL_EXIT_CODE -ne 0 ]; then
+        log "API token generation via curl failed, trying roxctl..."
+        # Fallback to roxctl
+        set +e
+        TOKEN_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
+            central token generate \
+            --password "$ADMIN_PASSWORD" \
+            --insecure-skip-tls-verify 2>&1)
+        TOKEN_EXIT_CODE=$?
+        set -e
+        
+        if [ $TOKEN_EXIT_CODE -ne 0 ]; then
+            error "Failed to generate API token. roxctl output: ${TOKEN_OUTPUT:0:500}"
+        fi
+        
+        # Extract token from roxctl output
+        ROX_API_TOKEN=$(echo "$TOKEN_OUTPUT" | grep -oE '[a-zA-Z0-9_-]{40,}' | head -1 || echo "")
+        if [ -z "$ROX_API_TOKEN" ]; then
+            ROX_API_TOKEN=$(echo "$TOKEN_OUTPUT" | tail -1 | tr -d '[:space:]' || echo "")
+        fi
+        
+        if [ -z "$ROX_API_TOKEN" ]; then
+            error "Failed to extract API token from roxctl output. Output: ${TOKEN_OUTPUT:0:500}"
+        fi
+    else
+        # Extract token from API response
+        if echo "$TOKEN_RESPONSE" | jq . >/dev/null 2>&1; then
+            ROX_API_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.token // .data.token // empty' 2>/dev/null || echo "")
+        fi
+        
+        if [ -z "$ROX_API_TOKEN" ] || [ "$ROX_API_TOKEN" = "null" ]; then
+            # Try to extract token from response text
+            ROX_API_TOKEN=$(echo "$TOKEN_RESPONSE" | grep -oE '[a-zA-Z0-9_-]{40,}' | head -1 || echo "")
+        fi
+        
+        if [ -z "$ROX_API_TOKEN" ]; then
+            log "Failed to extract token from API response, trying roxctl fallback..."
+            log "API Response: ${TOKEN_RESPONSE:0:300}"
+            # Fallback to roxctl
+            set +e
+            TOKEN_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
+                central token generate \
+                --password "$ADMIN_PASSWORD" \
+                --insecure-skip-tls-verify 2>&1)
+            TOKEN_EXIT_CODE=$?
+            set -e
+            
+            if [ $TOKEN_EXIT_CODE -eq 0 ]; then
+                ROX_API_TOKEN=$(echo "$TOKEN_OUTPUT" | grep -oE '[a-zA-Z0-9_-]{40,}' | head -1 || echo "")
+                if [ -z "$ROX_API_TOKEN" ]; then
+                    ROX_API_TOKEN=$(echo "$TOKEN_OUTPUT" | tail -1 | tr -d '[:space:]' || echo "")
+                fi
+            fi
+        fi
+        
+        if [ -z "$ROX_API_TOKEN" ]; then
+            error "Failed to extract API token. API Response: ${TOKEN_RESPONSE:0:500}"
+        fi
     fi
     
-    # Extract token from output (roxctl outputs the token)
-    ROX_API_TOKEN=$(echo "$TOKEN_OUTPUT" | grep -oE '[a-zA-Z0-9_-]{40,}' | head -1 || echo "")
-    if [ -z "$ROX_API_TOKEN" ]; then
-        # Try to extract from the full output
-        ROX_API_TOKEN=$(echo "$TOKEN_OUTPUT" | tail -1 | tr -d '[:space:]' || echo "")
+    # Verify token is not empty and has reasonable length
+    if [ ${#ROX_API_TOKEN} -lt 20 ]; then
+        error "Generated token appears to be invalid (too short: ${#ROX_API_TOKEN} chars). Token: ${ROX_API_TOKEN:0:20}..."
     fi
     
-    if [ -z "$ROX_API_TOKEN" ]; then
-        error "Failed to extract API token from roxctl output. Output: ${TOKEN_OUTPUT:0:500}"
-    fi
+    log "✓ API token generated (length: ${#ROX_API_TOKEN} chars)"
     
     # Save token to ~/.bashrc
     log "✓ New API token generated"
@@ -250,26 +308,80 @@ while [ $RETRY_COUNT -le $MAX_RETRIES ]; do
                 fi
             fi
             
+            # Generate token using API directly with basic auth (more reliable than roxctl)
+            ROX_ENDPOINT_FOR_API="${ROX_ENDPOINT#https://}"
+            ROX_ENDPOINT_FOR_API="${ROX_ENDPOINT_FOR_API#http://}"
+            
             set +e
-            TOKEN_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
-                central token generate \
-                --password "$ADMIN_PASSWORD" \
-                --insecure-skip-tls-verify 2>&1)
-            TOKEN_EXIT_CODE=$?
+            TOKEN_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 60 -X POST \
+                -u "admin:${ADMIN_PASSWORD}" \
+                -H "Content-Type: application/json" \
+                "https://${ROX_ENDPOINT_FOR_API}/v1/apitokens/generate" \
+                -d '{"name":"script-generated-token-retry","roles":["Admin"]}' 2>&1)
+            TOKEN_CURL_EXIT_CODE=$?
             set -e
             
-            if [ $TOKEN_EXIT_CODE -ne 0 ]; then
-                error "Failed to generate API token. roxctl output: ${TOKEN_OUTPUT:0:500}"
+            if [ $TOKEN_CURL_EXIT_CODE -ne 0 ]; then
+                log "API token generation via curl failed, trying roxctl..."
+                set +e
+                TOKEN_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
+                    central token generate \
+                    --password "$ADMIN_PASSWORD" \
+                    --insecure-skip-tls-verify 2>&1)
+                TOKEN_EXIT_CODE=$?
+                set -e
+                
+                if [ $TOKEN_EXIT_CODE -ne 0 ]; then
+                    error "Failed to generate API token. roxctl output: ${TOKEN_OUTPUT:0:500}"
+                fi
+                
+                ROX_API_TOKEN=$(echo "$TOKEN_OUTPUT" | grep -oE '[a-zA-Z0-9_-]{40,}' | head -1 || echo "")
+                if [ -z "$ROX_API_TOKEN" ]; then
+                    ROX_API_TOKEN=$(echo "$TOKEN_OUTPUT" | tail -1 | tr -d '[:space:]' || echo "")
+                fi
+                
+                if [ -z "$ROX_API_TOKEN" ]; then
+                    error "Failed to extract API token from roxctl output. Output: ${TOKEN_OUTPUT:0:500}"
+                fi
+            else
+                # Extract token from API response
+                if echo "$TOKEN_RESPONSE" | jq . >/dev/null 2>&1; then
+                    ROX_API_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.token // .data.token // empty' 2>/dev/null || echo "")
+                fi
+                
+                if [ -z "$ROX_API_TOKEN" ] || [ "$ROX_API_TOKEN" = "null" ]; then
+                    ROX_API_TOKEN=$(echo "$TOKEN_RESPONSE" | grep -oE '[a-zA-Z0-9_-]{40,}' | head -1 || echo "")
+                fi
+                
+                if [ -z "$ROX_API_TOKEN" ]; then
+                    log "Failed to extract token from API response, trying roxctl fallback..."
+                    set +e
+                    TOKEN_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
+                        central token generate \
+                        --password "$ADMIN_PASSWORD" \
+                        --insecure-skip-tls-verify 2>&1)
+                    TOKEN_EXIT_CODE=$?
+                    set -e
+                    
+                    if [ $TOKEN_EXIT_CODE -eq 0 ]; then
+                        ROX_API_TOKEN=$(echo "$TOKEN_OUTPUT" | grep -oE '[a-zA-Z0-9_-]{40,}' | head -1 || echo "")
+                        if [ -z "$ROX_API_TOKEN" ]; then
+                            ROX_API_TOKEN=$(echo "$TOKEN_OUTPUT" | tail -1 | tr -d '[:space:]' || echo "")
+                        fi
+                    fi
+                fi
+                
+                if [ -z "$ROX_API_TOKEN" ]; then
+                    error "Failed to extract API token. API Response: ${TOKEN_RESPONSE:0:500}"
+                fi
             fi
             
-            ROX_API_TOKEN=$(echo "$TOKEN_OUTPUT" | grep -oE '[a-zA-Z0-9_-]{40,}' | head -1 || echo "")
-            if [ -z "$ROX_API_TOKEN" ]; then
-                ROX_API_TOKEN=$(echo "$TOKEN_OUTPUT" | tail -1 | tr -d '[:space:]' || echo "")
+            # Verify token is not empty and has reasonable length
+            if [ ${#ROX_API_TOKEN} -lt 20 ]; then
+                error "Generated token appears to be invalid (too short: ${#ROX_API_TOKEN} chars)"
             fi
             
-            if [ -z "$ROX_API_TOKEN" ]; then
-                error "Failed to extract API token from roxctl output. Output: ${TOKEN_OUTPUT:0:500}"
-            fi
+            log "✓ API token generated (length: ${#ROX_API_TOKEN} chars)"
             
             log "✓ New API token generated, retrying cluster fetch..."
             RETRY_COUNT=$((RETRY_COUNT + 1))
