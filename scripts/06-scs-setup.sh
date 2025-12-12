@@ -31,6 +31,33 @@ error() {
 # Trap to show error details on exit
 trap 'error "Command failed: $(cat <<< "$BASH_COMMAND")"' ERR
 
+# Function to load variable from ~/.bashrc if it exists
+load_from_bashrc() {
+    local var_name="$1"
+    
+    # First check if variable is already set in environment
+    local env_value=$(eval "echo \${${var_name}:-}")
+    if [ -n "$env_value" ]; then
+        export "${var_name}=${env_value}"
+        echo "$env_value"
+        return 0
+    fi
+    
+    # Otherwise, try to load from ~/.bashrc
+    if [ -f ~/.bashrc ] && grep -q "^export ${var_name}=" ~/.bashrc; then
+        local var_line=$(grep "^export ${var_name}=" ~/.bashrc | head -1)
+        local var_value=$(echo "$var_line" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
+        export "${var_name}=${var_value}"
+        echo "$var_value"
+    fi
+}
+
+# Load environment variables from ~/.bashrc
+log "Loading environment variables from ~/.bashrc..."
+
+# RHACS operator namespace
+RHACS_OPERATOR_NAMESPACE="rhacs-operator"
+
 # Prerequisites validation
 log "Validating prerequisites..."
 
@@ -41,50 +68,68 @@ if ! oc whoami &>/dev/null; then
 fi
 log "✓ OpenShift CLI connected as: $(oc whoami)"
 
-log "Prerequisites validated successfully"
-
-# RHACS operator namespace
-RHACS_OPERATOR_NAMESPACE="rhacs-operator"
-
-# Ensure namespace exists
+# Verify namespace exists
 log "Ensuring namespace '$RHACS_OPERATOR_NAMESPACE' exists..."
 if ! oc get namespace "$RHACS_OPERATOR_NAMESPACE" &>/dev/null; then
     error "Namespace '$RHACS_OPERATOR_NAMESPACE' does not exist. Please run the Central install script first."
 fi
 log "✓ Namespace '$RHACS_OPERATOR_NAMESPACE' exists"
 
-# Get Central route endpoint
+# Get ROX_ENDPOINT from Central route
 log ""
-log "Retrieving Central endpoint..."
+log "Retrieving ROX_ENDPOINT from Central route..."
 CENTRAL_ROUTE=$(oc get route central -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
 if [ -z "$CENTRAL_ROUTE" ]; then
     error "Central route not found. Please ensure Central is installed and ready."
 fi
-CENTRAL_ENDPOINT="https://${CENTRAL_ROUTE}"
-log "✓ Central endpoint: $CENTRAL_ENDPOINT"
+ROX_ENDPOINT="$CENTRAL_ROUTE"
+log "✓ Extracted ROX_ENDPOINT from route: $ROX_ENDPOINT"
 
-# Get Central admin password from secret
-log ""
-log "Retrieving Central admin password..."
-CENTRAL_PASSWORD_SECRET="central-htpasswd"
-if ! oc get secret "$CENTRAL_PASSWORD_SECRET" -n "$RHACS_OPERATOR_NAMESPACE" &>/dev/null; then
-    error "Secret '$CENTRAL_PASSWORD_SECRET' not found. Central may not be fully initialized yet."
+# Save to ~/.bashrc
+sed -i '/^export ROX_ENDPOINT=/d' ~/.bashrc 2>/dev/null || true
+echo "export ROX_ENDPOINT=\"$ROX_ENDPOINT\"" >> ~/.bashrc
+export ROX_ENDPOINT="$ROX_ENDPOINT"
+
+# Load ROX_API_TOKEN from ~/.bashrc
+ROX_API_TOKEN=$(load_from_bashrc "ROX_API_TOKEN")
+
+# Verify ROX_API_TOKEN is set
+if [ -z "${ROX_API_TOKEN:-}" ]; then
+    error "ROX_API_TOKEN not found in ~/.bashrc. Please ensure it is set from previous scripts."
 fi
+log "✓ ROX_API_TOKEN loaded"
 
-CENTRAL_PASSWORD=$(oc get secret "$CENTRAL_PASSWORD_SECRET" -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || echo "")
-if [ -z "$CENTRAL_PASSWORD" ]; then
-    error "Failed to retrieve admin password from secret '$CENTRAL_PASSWORD_SECRET'"
+# Get ADMIN_PASSWORD from secret
+log ""
+log "Retrieving ADMIN_PASSWORD from secret..."
+ADMIN_PASSWORD_B64=$(oc get secret central-htpasswd -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.data.password}' 2>/dev/null || echo "")
+if [ -z "$ADMIN_PASSWORD_B64" ]; then
+    error "Admin password secret 'central-htpasswd' not found in namespace $RHACS_OPERATOR_NAMESPACE"
+fi
+ADMIN_PASSWORD=$(echo "$ADMIN_PASSWORD_B64" | base64 -d)
+if [ -z "$ADMIN_PASSWORD" ]; then
+    error "Failed to decode admin password from secret"
 fi
 log "✓ Admin password retrieved"
 
-# Download and install roxctl if needed
-log ""
-log "Checking for roxctl CLI..."
+# Normalize ROX_ENDPOINT for API calls (add :443 if no port)
+normalize_rox_endpoint() {
+    local input="$1"
+    input="${input#https://}"
+    input="${input#http://}"
+    input="${input%/}"
+    if [[ "$input" != *:* ]]; then
+        input="${input}:443"
+    fi
+    echo "$input"
+}
+
+ROX_ENDPOINT_NORMALIZED="$(normalize_rox_endpoint "$ROX_ENDPOINT")"
+log "Central endpoint: $ROX_ENDPOINT (normalized for API calls: $ROX_ENDPOINT_NORMALIZED)"
+
+# Download roxctl if not available
 ROXCTL_CMD=""
-if command -v roxctl &>/dev/null; then
-    ROXCTL_CMD="roxctl"
-    log "✓ roxctl found in PATH"
-else
+if ! command -v roxctl &>/dev/null; then
     log "roxctl not found, downloading..."
     
     # Determine OS and architecture
@@ -140,83 +185,18 @@ else
     chmod +x "$ROXCTL_TMP"
     ROXCTL_CMD="$ROXCTL_TMP"
     log "✓ roxctl downloaded to $ROXCTL_TMP"
-fi
-
-# Authenticate with Central and get API token
-log ""
-log "Authenticating with Central..."
-ROX_API_TOKEN=""
-AUTH_OUTPUT=$($ROXCTL_CMD central login --insecure-skip-tls-verify -e "$CENTRAL_ENDPOINT" -p "$CENTRAL_PASSWORD" 2>&1 || echo "")
-if echo "$AUTH_OUTPUT" | grep -q "Successfully"; then
-    log "✓ Authenticated with Central"
-    # Extract token from roxctl config or environment
-    ROX_API_TOKEN=$($ROXCTL_CMD central whoami --insecure-skip-tls-verify -e "$CENTRAL_ENDPOINT" --output json 2>/dev/null | grep -oE '"token":"[^"]+"' | cut -d'"' -f4 || echo "")
-    if [ -z "$ROX_API_TOKEN" ]; then
-        # Try to get from roxctl config file
-        if [ -f "$HOME/.config/roxctl/config.yaml" ]; then
-            ROX_API_TOKEN=$(grep -A1 "endpoint:" "$HOME/.config/roxctl/config.yaml" | grep "token:" | awk '{print $2}' || echo "")
-        fi
-    fi
 else
-    error "Failed to authenticate with Central: $AUTH_OUTPUT"
+    ROXCTL_CMD="roxctl"
+    log "✓ roxctl found in PATH"
 fi
 
-if [ -z "$ROX_API_TOKEN" ]; then
-    warning "Could not retrieve API token. Will attempt to generate init bundle without explicit token."
+# Test roxctl connectivity using password authentication
+log "Verifying roxctl connectivity..."
+if ! $ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" central whoami --password "$ADMIN_PASSWORD" --insecure-skip-tls-verify >/dev/null 2>&1; then
+    ROXCTL_ERROR=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" central whoami --password "$ADMIN_PASSWORD" --insecure-skip-tls-verify 2>&1 || true)
+    error "roxctl authentication failed. Error: $ROXCTL_ERROR"
 fi
-
-# Generate init bundle
-log ""
-log "Generating init bundle for Secured Cluster..."
-INIT_BUNDLE_NAME="cluster-init-bundle"
-INIT_BUNDLE_DIR="/tmp/rhacs-init-bundle"
-mkdir -p "$INIT_BUNDLE_DIR"
-
-# Generate init bundle
-if [ -n "$ROX_API_TOKEN" ]; then
-    export ROX_API_TOKEN
-    INIT_BUNDLE_OUTPUT=$($ROXCTL_CMD central init-bundles generate "$INIT_BUNDLE_NAME" \
-        --insecure-skip-tls-verify \
-        -e "$CENTRAL_ENDPOINT" \
-        --output-secrets "$INIT_BUNDLE_DIR" 2>&1 || echo "")
-else
-    INIT_BUNDLE_OUTPUT=$($ROXCTL_CMD central init-bundles generate "$INIT_BUNDLE_NAME" \
-        --insecure-skip-tls-verify \
-        -e "$CENTRAL_ENDPOINT" \
-        -p "$CENTRAL_PASSWORD" \
-        --output-secrets "$INIT_BUNDLE_DIR" 2>&1 || echo "")
-fi
-
-if [ ! -f "$INIT_BUNDLE_DIR/cluster-init-secrets.yaml" ] && [ ! -f "$INIT_BUNDLE_DIR/${INIT_BUNDLE_NAME}-cluster-init-secrets.yaml" ]; then
-    error "Failed to generate init bundle: $INIT_BUNDLE_OUTPUT"
-fi
-
-# Find the generated secrets file
-INIT_BUNDLE_FILE=""
-if [ -f "$INIT_BUNDLE_DIR/cluster-init-secrets.yaml" ]; then
-    INIT_BUNDLE_FILE="$INIT_BUNDLE_DIR/cluster-init-secrets.yaml"
-elif [ -f "$INIT_BUNDLE_DIR/${INIT_BUNDLE_NAME}-cluster-init-secrets.yaml" ]; then
-    INIT_BUNDLE_FILE="$INIT_BUNDLE_DIR/${INIT_BUNDLE_NAME}-cluster-init-secrets.yaml"
-else
-    INIT_BUNDLE_FILE=$(find "$INIT_BUNDLE_DIR" -name "*cluster-init-secrets.yaml" | head -1)
-fi
-
-if [ -z "$INIT_BUNDLE_FILE" ] || [ ! -f "$INIT_BUNDLE_FILE" ]; then
-    error "Init bundle secrets file not found in $INIT_BUNDLE_DIR"
-fi
-
-log "✓ Init bundle generated: $INIT_BUNDLE_FILE"
-
-# Apply init bundle secrets
-log ""
-log "Applying init bundle secrets..."
-oc apply -f "$INIT_BUNDLE_FILE" -n "$RHACS_OPERATOR_NAMESPACE" || error "Failed to apply init bundle secrets"
-log "✓ Init bundle secrets applied"
-
-# Create SecuredCluster resource
-log ""
-log "Creating SecuredCluster resource..."
-SECURED_CLUSTER_NAME="rhacs-secured-cluster-services"
+log "✓ roxctl connectivity verified"
 
 # Get cluster name
 CLUSTER_NAME=$(oc get infrastructure cluster -o jsonpath='{.status.infrastructureName}' 2>/dev/null || echo "")
@@ -225,114 +205,217 @@ if [ -z "$CLUSTER_NAME" ]; then
 fi
 
 # Check if SecuredCluster already exists
-if oc get securedcluster "$SECURED_CLUSTER_NAME" -n "$RHACS_OPERATOR_NAMESPACE" &>/dev/null; then
-    log "SecuredCluster resource '$SECURED_CLUSTER_NAME' already exists"
+SECURED_CLUSTER_NAME="rhacs-secured-cluster-services"
+SKIP_TO_FINAL_OUTPUT=false
+
+if oc get securedcluster "$SECURED_CLUSTER_NAME" -n "$RHACS_OPERATOR_NAMESPACE" >/dev/null 2>&1; then
+    log "SecuredCluster resource '$SECURED_CLUSTER_NAME' already exists; skipping init bundle generation and SecuredCluster installation."
+    SKIP_TO_FINAL_OUTPUT=true
     
-    # Verify it's configured correctly
-    EXISTING_CLUSTER_NAME=$(oc get securedcluster "$SECURED_CLUSTER_NAME" -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.spec.clusterName}' 2>/dev/null || echo "")
-    if [ "$EXISTING_CLUSTER_NAME" != "$CLUSTER_NAME" ]; then
-        warning "Existing SecuredCluster has different cluster name: $EXISTING_CLUSTER_NAME"
+    # Verify auto-lock setting
+    CURRENT_AUTO_LOCK=$(oc get securedcluster "$SECURED_CLUSTER_NAME" -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.spec.processBaselines.autoLock}' 2>/dev/null)
+    if [ "$CURRENT_AUTO_LOCK" != "Enabled" ]; then
+        log "Updating SecuredCluster to enable process baseline auto-lock..."
+        oc patch securedcluster "$SECURED_CLUSTER_NAME" -n "$RHACS_OPERATOR_NAMESPACE" --type='merge' -p '{"spec":{"processBaselines":{"autoLock":"Enabled"}}}'
+        if [ $? -eq 0 ]; then
+            log "✓ Process baseline auto-lock enabled on existing SecuredCluster"
+        else
+            warning "Failed to update auto-lock setting"
+        fi
+    else
+        log "✓ Process baseline auto-lock already enabled"
+    fi
+fi
+
+# Generate init bundle if needed
+INIT_BUNDLE_EXISTS=false
+if [ "$SKIP_TO_FINAL_OUTPUT" = "false" ]; then
+    log "Generating init bundle for cluster: $CLUSTER_NAME"
+    log "Using endpoint: $ROX_ENDPOINT_NORMALIZED"
+    
+    # Generate init bundle using password authentication
+    INIT_BUNDLE_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
+      central init-bundles generate "$CLUSTER_NAME" \
+      --output-secrets cluster_init_bundle.yaml \
+      --password "$ADMIN_PASSWORD" \
+      --insecure-skip-tls-verify 2>&1) || INIT_BUNDLE_EXIT_CODE=$?
+    
+    # Check if init bundle already exists
+    if echo "$INIT_BUNDLE_OUTPUT" | grep -q "AlreadyExists"; then
+        log "Init bundle already exists in RHACS Central"
+        INIT_BUNDLE_EXISTS=true
+    elif [ ! -f cluster_init_bundle.yaml ]; then
+        error "Failed to generate init bundle. roxctl output: ${INIT_BUNDLE_OUTPUT:0:500}"
+    else
+        log "✓ Init bundle generated successfully"
+        INIT_BUNDLE_EXISTS=false
     fi
     
-    log "✓ SecuredCluster resource exists"
-else
-    log "Creating new SecuredCluster resource..."
+    # Apply init bundle secrets
+    if [ "$INIT_BUNDLE_EXISTS" = "false" ]; then
+        log "Applying init bundle secrets..."
+        oc apply -f cluster_init_bundle.yaml -n "$RHACS_OPERATOR_NAMESPACE"
+        log "✓ Init bundle secrets applied"
+    else
+        log "Init bundle secrets already exist, skipping application..."
+    fi
     
-    # Build SecuredCluster CR YAML
-    SECURED_CLUSTER_YAML="apiVersion: platform.stackrox.io/v1alpha1
+    # Create SecuredCluster resource
+    log "Creating SecuredCluster resource..."
+cat <<EOF | oc apply -f -
+apiVersion: platform.stackrox.io/v1alpha1
 kind: SecuredCluster
 metadata:
   name: $SECURED_CLUSTER_NAME
   namespace: $RHACS_OPERATOR_NAMESPACE
 spec:
-  clusterName: $CLUSTER_NAME
-  centralEndpoint: $CENTRAL_ENDPOINT
+  clusterName: "$CLUSTER_NAME"
+  centralEndpoint: "$ROX_ENDPOINT"
   admissionControl:
-    enabled: true
+    listenOnCreates: true
+    listenOnEvents: true 
+    listenOnUpdates: true
     enforceOnCreates: false
     enforceOnUpdates: false
-    scanInline: false
+    scanInline: true
+    disableBypass: false
+    timeoutSeconds: 20
   auditLogs:
     collection: Auto
   perNode:
     collector:
-      collection: CORE_BPF
+      collection: EBPF
+      imageFlavor: Regular
+      resources:
+        limits:
+          cpu: 750m
+          memory: 1Gi
+        requests:
+          cpu: 50m
+          memory: 320Mi
     taintToleration: TolerateTaints
   scanner:
-    scannerComponent: Enabled
     analyzer:
       scaling:
         autoScaling: Enabled
-        minReplicas: 2
-        maxReplicas: 5"
+        maxReplicas: 5
+        minReplicas: 1
+        replicas: 3
+      resources:
+        limits:
+          cpu: 2000m
+          memory: 4Gi
+        requests:
+          cpu: 1000m
+          memory: 1500Mi
+    scannerComponent: AutoSense
+  processBaselines:
+    autoLock: Enabled
+EOF
     
-    # Apply the SecuredCluster resource
-    echo "$SECURED_CLUSTER_YAML" | oc apply -f - || error "Failed to create SecuredCluster resource"
     log "✓ SecuredCluster resource created"
+    
+    # Verify auto-lock setting
+    sleep 2
+    AUTO_LOCK_STATUS=$(oc get securedcluster "$SECURED_CLUSTER_NAME" -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.spec.processBaselines.autoLock}' 2>/dev/null)
+    if [ "$AUTO_LOCK_STATUS" = "Enabled" ]; then
+        log "✓ Process baseline auto-lock verified: Enabled"
+    else
+        warning "Process baseline auto-lock setting not found or not Enabled (current: $AUTO_LOCK_STATUS)"
+    fi
 fi
 
 # Wait for SecuredCluster components to be ready
-log ""
-log "Waiting for SecuredCluster components to be ready..."
-MAX_WAIT=600
-WAIT_COUNT=0
-SCS_READY=false
-
-# Wait for sensor deployment
-log "Waiting for sensor deployment..."
-SENSOR_READY=false
-while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
-    SENSOR_DEPLOYMENT=$(oc get deployment -n "$RHACS_OPERATOR_NAMESPACE" -l app=sensor -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-    if [ -n "$SENSOR_DEPLOYMENT" ]; then
-        SENSOR_READY_REPLICAS=$(oc get deployment "$SENSOR_DEPLOYMENT" -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
-        SENSOR_REPLICAS=$(oc get deployment "$SENSOR_DEPLOYMENT" -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
+if [ "$SKIP_TO_FINAL_OUTPUT" = "false" ]; then
+    log "Waiting for SecuredCluster components to be ready..."
+    
+    # Function to wait for resource to exist and then be ready
+    wait_for_resource() {
+        local resource_type=$1
+        local resource_name=$2
+        local condition=$3
+        local timeout=${4:-300}
         
-        if [ "$SENSOR_READY_REPLICAS" = "$SENSOR_REPLICAS" ] && [ "$SENSOR_REPLICAS" != "0" ]; then
-            SENSOR_READY=true
-            log "✓ Sensor deployment is ready ($SENSOR_READY_REPLICAS/$SENSOR_REPLICAS replicas)"
-            break
+        log "Waiting for $resource_type/$resource_name to be created..."
+        local wait_count=0
+        while ! oc get $resource_type $resource_name -n "$RHACS_OPERATOR_NAMESPACE" >/dev/null 2>&1; do
+            if [ $wait_count -ge 60 ]; then
+                warning "$resource_type/$resource_name was not created within 5 minutes"
+                return 1
+            fi
+            sleep 5
+            wait_count=$((wait_count + 1))
+            echo -n "."
+        done
+        echo ""
+        
+        if [ "$resource_type" = "daemonset" ]; then
+            log "$resource_type/$resource_name created, waiting for all pods to be ready..."
+            local ready_timeout=$((timeout / 5))
+            local check_count=0
+            
+            while [ $check_count -lt $ready_timeout ]; do
+                local status=$(oc get daemonset $resource_name -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.status.desiredNumberScheduled},{.status.numberReady}' 2>/dev/null)
+                local desired=$(echo $status | cut -d',' -f1)
+                local ready=$(echo $status | cut -d',' -f2)
+                
+                if [ -n "$desired" ] && [ -n "$ready" ] && [ "$desired" = "$ready" ] && [ "$desired" != "0" ]; then
+                    log "✓ $resource_type/$resource_name is ready ($ready/$desired pods running)"
+                    return 0
+                fi
+                
+                if [ -n "$desired" ] && [ -n "$ready" ]; then
+                    log "DaemonSet $resource_name: $ready/$desired pods ready..."
+                fi
+                
+                sleep 5
+                check_count=$((check_count + 1))
+            done
+            
+            warning "$resource_type/$resource_name readiness timeout (not all pods ready within ${timeout}s)"
+            return 1
+        else
+            log "$resource_type/$resource_name created, waiting for $condition condition..."
+            if oc wait --for=condition=$condition $resource_type/$resource_name -n "$RHACS_OPERATOR_NAMESPACE" --timeout=${timeout}s; then
+                log "✓ $resource_type/$resource_name is ready"
+                return 0
+            else
+                warning "$resource_type/$resource_name $condition condition timeout"
+                return 1
+            fi
         fi
-    fi
+    }
     
-    if [ $((WAIT_COUNT % 30)) -eq 0 ] && [ $WAIT_COUNT -gt 0 ]; then
-        log "  Still waiting for sensor... (${WAIT_COUNT}s/${MAX_WAIT}s)"
-        if [ -n "$SENSOR_DEPLOYMENT" ]; then
-            DEPLOYMENT_STATUS=$(oc get deployment "$SENSOR_DEPLOYMENT" -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.status.readyReplicas}/{.spec.replicas}' 2>/dev/null || echo "0/0")
-            log "  Sensor: $SENSOR_DEPLOYMENT ($DEPLOYMENT_STATUS ready)"
-        fi
-    fi
+    # Wait for sensor deployment
+    wait_for_resource "deployment" "sensor" "Available" 300
     
-    sleep 5
-    WAIT_COUNT=$((WAIT_COUNT + 5))
-done
-
-if [ "$SENSOR_READY" = false ]; then
-    warning "Sensor deployment did not become ready within ${MAX_WAIT} seconds"
-    oc get deployment -n "$RHACS_OPERATOR_NAMESPACE" -l app=sensor || true
-else
-    SCS_READY=true
+    # Wait for admission-control deployment  
+    wait_for_resource "deployment" "admission-control" "Available" 300
+    
+    # Wait for collector daemonset
+    wait_for_resource "daemonset" "collector" "" 300
+    
+    # Verification
+    log "Verifying deployment..."
+    FAILED_PODS=$(oc get pods -n "$RHACS_OPERATOR_NAMESPACE" --field-selector=status.phase!=Running,status.phase!=Succeeded -o name 2>/dev/null | wc -l)
+    if [ "$FAILED_PODS" -gt 0 ]; then
+        warning "$FAILED_PODS pods are not in Running/Succeeded state"
+        oc get pods -n "$RHACS_OPERATOR_NAMESPACE"
+    fi
 fi
 
 # Clean up temporary files
-if [ -d "$INIT_BUNDLE_DIR" ]; then
-    rm -rf "$INIT_BUNDLE_DIR"
-fi
+rm -f cluster_init_bundle.yaml
 
-if [ "$SCS_READY" = true ]; then
-    log ""
-    log "========================================================="
-    log "RHACS Secured Cluster Services Setup Completed!"
-    log "========================================================="
-    log "Namespace: $RHACS_OPERATOR_NAMESPACE"
-    log "SecuredCluster Resource: $SECURED_CLUSTER_NAME"
-    log "Cluster Name: $CLUSTER_NAME"
-    log "Central Endpoint: $CENTRAL_ENDPOINT"
-    log "========================================================="
-    log ""
-    log "Secured Cluster Services are now configured and ready."
-    log ""
-else
-    warning "Some SecuredCluster components may not be fully ready."
-    log "Check component status: oc get pods -n $RHACS_OPERATOR_NAMESPACE -l app=sensor"
-fi
-
+log ""
+log "========================================================="
+log "RHACS Secured Cluster Services Setup Completed!"
+log "========================================================="
+log "Namespace: $RHACS_OPERATOR_NAMESPACE"
+log "SecuredCluster Resource: $SECURED_CLUSTER_NAME"
+log "Cluster Name: $CLUSTER_NAME"
+log "Central Endpoint: $ROX_ENDPOINT"
+log "========================================================="
+log ""
+log "Secured Cluster Services are now configured and ready."
+log ""
