@@ -28,58 +28,149 @@ error() {
 # Trap to show error details on exit
 trap 'error "Command failed: $(cat <<< "$BASH_COMMAND")"' ERR
 
-# Function to load variable from ~/.bashrc if it exists
-load_from_bashrc() {
-    local var_name="$1"
-    
-    # First check if variable is already set in environment
-    local env_value=$(eval "echo \${${var_name}:-}")
-    if [ -n "$env_value" ]; then
-        export "${var_name}=${env_value}"
-        echo "$env_value"
-        return 0
+# Set script directory and project root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+# RHACS operator namespace
+RHACS_OPERATOR_NAMESPACE="rhacs-operator"
+
+# Generate ROX_ENDPOINT from Central route
+log "Extracting ROX_ENDPOINT from Central route..."
+CENTRAL_ROUTE=$(oc get route central -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+if [ -z "$CENTRAL_ROUTE" ]; then
+    error "Central route not found in namespace '$RHACS_OPERATOR_NAMESPACE'. Please ensure RHACS Central is installed."
+fi
+ROX_ENDPOINT="$CENTRAL_ROUTE"
+log "✓ Extracted ROX_ENDPOINT: $ROX_ENDPOINT"
+
+# Generate ROX_API_TOKEN (same method as script 09)
+log "Generating API token..."
+ADMIN_PASSWORD_B64=$(oc get secret central-htpasswd -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.data.password}' 2>/dev/null || echo "")
+if [ -z "$ADMIN_PASSWORD_B64" ]; then
+    error "Admin password secret 'central-htpasswd' not found in namespace '$RHACS_OPERATOR_NAMESPACE'"
+fi
+ADMIN_PASSWORD=$(echo "$ADMIN_PASSWORD_B64" | base64 -d)
+
+# Normalize ROX_ENDPOINT for API calls
+normalize_rox_endpoint() {
+    local input="$1"
+    input="${input#https://}"
+    input="${input#http://}"
+    input="${input%/}"
+    if [[ "$input" != *:* ]]; then
+        input="${input}:443"
     fi
-    
-    # Otherwise, try to load from ~/.bashrc
-    if [ -f ~/.bashrc ] && grep -q "^export ${var_name}=" ~/.bashrc; then
-        local var_line=$(grep "^export ${var_name}=" ~/.bashrc | head -1)
-        local var_value=$(echo "$var_line" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
-        export "${var_name}=${var_value}"
-        echo "$var_value"
-    fi
+    echo "$input"
 }
 
-# Load environment variables from ~/.bashrc (set by script 01)
-log "Loading environment variables from ~/.bashrc..."
+ROX_ENDPOINT_NORMALIZED="$(normalize_rox_endpoint "$ROX_ENDPOINT")"
 
-# Ensure ~/.bashrc exists
-if [ ! -f ~/.bashrc ]; then
-    error "~/.bashrc not found. Please run script 01-rhacs-setup.sh first to initialize environment variables."
+# Download roxctl if not available (Linux bastion host)
+ROXCTL_CMD=""
+if ! command -v roxctl &>/dev/null; then
+    log "roxctl not found, downloading..."
+    
+    RHACS_VERSION=$(oc get csv -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.items[?(@.spec.displayName=="Advanced Cluster Security for Kubernetes")].spec.version}' 2>/dev/null || echo "")
+    if [ -z "$RHACS_VERSION" ]; then
+        RHACS_VERSION=$(oc get csv -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.items[0].spec.version}' 2>/dev/null | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+' || echo "latest")
+    fi
+    
+    ROXCTL_URL="https://mirror.openshift.com/pub/rhacs/assets/${RHACS_VERSION}/bin/Linux/roxctl"
+    ROXCTL_TMP="/tmp/roxctl"
+    
+    log "Downloading roxctl from: $ROXCTL_URL"
+    if ! curl -L -f -o "$ROXCTL_TMP" "$ROXCTL_URL" 2>/dev/null; then
+        ROXCTL_URL="https://mirror.openshift.com/pub/rhacs/assets/latest/bin/Linux/roxctl"
+        log "Retrying with latest version: $ROXCTL_URL"
+        if ! curl -L -f -o "$ROXCTL_TMP" "$ROXCTL_URL" 2>/dev/null; then
+            error "Failed to download roxctl. Please install it manually."
+        fi
+    fi
+    
+    chmod +x "$ROXCTL_TMP"
+    ROXCTL_CMD="$ROXCTL_TMP"
+    log "✓ roxctl downloaded to $ROXCTL_TMP"
+else
+    ROXCTL_CMD="roxctl"
+    log "✓ roxctl found in PATH"
 fi
 
-# Clean up any malformed source commands in bashrc
-if grep -q "^source $" ~/.bashrc; then
-    log "Cleaning up malformed source commands in ~/.bashrc..."
-    sed -i '/^source $/d' ~/.bashrc
+# Generate token using API directly with basic auth (more reliable than roxctl)
+log "Generating API token using Central API..."
+ROX_ENDPOINT_FOR_API="${ROX_ENDPOINT#https://}"
+ROX_ENDPOINT_FOR_API="${ROX_ENDPOINT_FOR_API#http://}"
+
+set +e
+TOKEN_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 60 -X POST \
+    -u "admin:${ADMIN_PASSWORD}" \
+    -H "Content-Type: application/json" \
+    "https://${ROX_ENDPOINT_FOR_API}/v1/apitokens/generate" \
+    -d '{"name":"script-generated-token-trigger","roles":["Admin"]}' 2>&1)
+TOKEN_CURL_EXIT_CODE=$?
+set -e
+
+if [ $TOKEN_CURL_EXIT_CODE -ne 0 ]; then
+    log "API token generation via curl failed, trying roxctl..."
+    set +e
+    TOKEN_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
+        central token generate \
+        --password "$ADMIN_PASSWORD" \
+        --insecure-skip-tls-verify 2>&1)
+    TOKEN_EXIT_CODE=$?
+    set -e
+    
+    if [ $TOKEN_EXIT_CODE -ne 0 ]; then
+        error "Failed to generate API token. roxctl output: ${TOKEN_OUTPUT:0:500}"
+    fi
+    
+    ROX_API_TOKEN=$(echo "$TOKEN_OUTPUT" | grep -oE '[a-zA-Z0-9_-]{40,}' | head -1 || echo "")
+    if [ -z "$ROX_API_TOKEN" ]; then
+        ROX_API_TOKEN=$(echo "$TOKEN_OUTPUT" | tail -1 | tr -d '[:space:]' || echo "")
+    fi
+    
+    if [ -z "$ROX_API_TOKEN" ]; then
+        error "Failed to extract API token from roxctl output. Output: ${TOKEN_OUTPUT:0:500}"
+    fi
+else
+    # Extract token from API response
+    if echo "$TOKEN_RESPONSE" | jq . >/dev/null 2>&1; then
+        ROX_API_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.token // .data.token // empty' 2>/dev/null || echo "")
+    fi
+    
+    if [ -z "$ROX_API_TOKEN" ] || [ "$ROX_API_TOKEN" = "null" ]; then
+        ROX_API_TOKEN=$(echo "$TOKEN_RESPONSE" | grep -oE '[a-zA-Z0-9_-]{40,}' | head -1 || echo "")
+    fi
+    
+    if [ -z "$ROX_API_TOKEN" ]; then
+        log "Failed to extract token from API response, trying roxctl fallback..."
+        set +e
+        TOKEN_OUTPUT=$($ROXCTL_CMD -e "$ROX_ENDPOINT_NORMALIZED" \
+            central token generate \
+            --password "$ADMIN_PASSWORD" \
+            --insecure-skip-tls-verify 2>&1)
+        TOKEN_EXIT_CODE=$?
+        set -e
+        
+        if [ $TOKEN_EXIT_CODE -eq 0 ]; then
+            ROX_API_TOKEN=$(echo "$TOKEN_OUTPUT" | grep -oE '[a-zA-Z0-9_-]{40,}' | head -1 || echo "")
+            if [ -z "$ROX_API_TOKEN" ]; then
+                ROX_API_TOKEN=$(echo "$TOKEN_OUTPUT" | tail -1 | tr -d '[:space:]' || echo "")
+            fi
+        fi
+    fi
+    
+    if [ -z "$ROX_API_TOKEN" ]; then
+        error "Failed to extract API token. API Response: ${TOKEN_RESPONSE:0:500}"
+    fi
 fi
 
-# Load SCRIPT_DIR and PROJECT_ROOT (set by script 01)
-SCRIPT_DIR=$(load_from_bashrc "SCRIPT_DIR")
-PROJECT_ROOT=$(load_from_bashrc "PROJECT_ROOT")
-
-# Load required variables (set by script 01)
-ROX_ENDPOINT=$(load_from_bashrc "ROX_ENDPOINT")
-ROX_API_TOKEN=$(load_from_bashrc "ROX_API_TOKEN")
-
-# Validate required environment variables
-if [ -z "${ROX_API_TOKEN:-}" ]; then
-    error "ROX_API_TOKEN not set. Please run script 01-rhacs-setup.sh first to generate required variables."
+# Verify token is not empty and has reasonable length
+if [ ${#ROX_API_TOKEN} -lt 20 ]; then
+    error "Generated token appears to be invalid (too short: ${#ROX_API_TOKEN} chars)"
 fi
 
-if [ -z "${ROX_ENDPOINT:-}" ]; then
-    error "ROX_ENDPOINT not set. Please run script 01-rhacs-setup.sh first to generate required variables."
-fi
-log "✓ Required environment variables validated: ROX_ENDPOINT=$ROX_ENDPOINT"
+log "✓ API token generated (length: ${#ROX_API_TOKEN} chars)"
 
 # Ensure jq is installed
 if ! command -v jq >/dev/null 2>&1; then
