@@ -338,9 +338,7 @@ fi  # End of NEEDS_UPDATE conditional
 
 # Step 7: Verify CertManager CR exists and is Ready
 log ""
-log "========================================================="
 log "Step 7: Verifying CertManager CR Status"
-log "========================================================="
 
 CERTMANAGER_CR_NAME="cluster"
 
@@ -350,24 +348,37 @@ fi
 
 log "✓ CertManager CR '$CERTMANAGER_CR_NAME' found"
 
-# Check status
-CERTMANAGER_READY=$(oc get certmanager "$CERTMANAGER_CR_NAME" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
-if [ "$CERTMANAGER_READY" = "True" ]; then
-    log "✓ CertManager CR is Ready"
-else
-    warning "CertManager CR status: $CERTMANAGER_READY"
-    CERTMANAGER_MESSAGE=$(oc get certmanager "$CERTMANAGER_CR_NAME" -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null || echo "")
-    if [ -n "$CERTMANAGER_MESSAGE" ] && [ "$CERTMANAGER_MESSAGE" != "null" ]; then
-        log "  Message: $CERTMANAGER_MESSAGE"
-    fi
-    warning "CertManager CR is not Ready. Cert-manager components may not be fully deployed."
+# Check status - CertManager uses deploymentAvailable conditions, not Ready
+CAINJECTOR_AVAILABLE=$(oc get certmanager "$CERTMANAGER_CR_NAME" -o jsonpath='{.status.conditions[?(@.type=="cert-manager-cainjector-deploymentAvailable")].status}' 2>/dev/null || echo "Unknown")
+WEBHOOK_AVAILABLE=$(oc get certmanager "$CERTMANAGER_CR_NAME" -o jsonpath='{.status.conditions[?(@.type=="cert-manager-webhook-deploymentAvailable")].status}' 2>/dev/null || echo "Unknown")
+CONTROLLER_AVAILABLE=$(oc get certmanager "$CERTMANAGER_CR_NAME" -o jsonpath='{.status.conditions[?(@.type=="cert-manager-controller-deploymentAvailable")].status}' 2>/dev/null || echo "Unknown")
+
+ALL_COMPONENTS_READY=true
+if [ "$CAINJECTOR_AVAILABLE" != "True" ]; then
+    warning "CertManager CA Injector deployment not available (status: ${CAINJECTOR_AVAILABLE:-Unknown})"
+    ALL_COMPONENTS_READY=false
 fi
+if [ "$WEBHOOK_AVAILABLE" != "True" ]; then
+    warning "CertManager Webhook deployment not available (status: ${WEBHOOK_AVAILABLE:-Unknown})"
+    ALL_COMPONENTS_READY=false
+fi
+if [ "$CONTROLLER_AVAILABLE" != "True" ]; then
+    warning "CertManager Controller deployment not available (status: ${CONTROLLER_AVAILABLE:-Unknown})"
+    ALL_COMPONENTS_READY=false
+fi
+
+if [ "$ALL_COMPONENTS_READY" = true ]; then
+    log "✓ CertManager CR is Ready (all components available)"
+else
+    warning "CertManager CR components may not be fully deployed yet."
+fi
+
+# Store status for summary
+CERTMANAGER_READY="$ALL_COMPONENTS_READY"
 
 # Step 8: Verify cert-manager CRDs are available
 log ""
-log "========================================================="
 log "Step 8: Verifying cert-manager CRDs"
-log "========================================================="
 
 log "Verifying cert-manager CRDs are available..."
 
@@ -400,9 +411,7 @@ fi
 
 # Step 9: Verify zerossl-production-ec2 ClusterIssuer is Available
 log ""
-log "========================================================="
 log "Step 9: Verifying ClusterIssuer 'zerossl-production-ec2' is Available"
-log "========================================================="
 
 CLUSTERISSUER_NAME="zerossl-production-ec2"
 
@@ -440,7 +449,14 @@ if [ -n "${CHANNEL:-}" ] && [ "$CHANNEL" != "null" ]; then
 fi
 log ""
 log "CertManager CR: $CERTMANAGER_CR_NAME"
-log "  Status: $CERTMANAGER_READY"
+if [ "$ALL_COMPONENTS_READY" = true ]; then
+    log "  Status: Ready (all components available)"
+else
+    log "  Status: Components deploying"
+    log "    CA Injector: ${CAINJECTOR_AVAILABLE:-Unknown}"
+    log "    Webhook: ${WEBHOOK_AVAILABLE:-Unknown}"
+    log "    Controller: ${CONTROLLER_AVAILABLE:-Unknown}"
+fi
 log ""
 log "ClusterIssuer: $CLUSTERISSUER_NAME"
 log "  Status: $ISSUER_READY"

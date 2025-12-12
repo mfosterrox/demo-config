@@ -104,11 +104,6 @@ main() {
     success "Demo Config setup completed successfully!"
     log "========================================================="
     log ""
-    log "Scripts executed:"
-    log "  1. RHACS operator reconfigure (cleanup existing operators)"
-    log "  2. Cert-manager operator installation (required for RHACS TLS certificates)"
-    log "  3. RHACS route TLS certificate setup (creates custom certificate for RHACS)"
-    log ""
     log "Additional scripts will be added one-by-one as needed."
 }
 
