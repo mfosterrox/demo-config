@@ -103,205 +103,107 @@ delete_all_resources() {
     fi
 }
 
-# Step 1: Find and delete RHACS subscriptions across all namespaces
+# Step 1: Find namespaces with RHACS operator resources (excluding rhacs-operator)
 log "========================================================="
-log "Step 1: Deleting RHACS Subscriptions"
+log "Step 1: Finding namespaces with RHACS operator resources"
 log "========================================================="
 log ""
 
-# Search for RHACS subscriptions in all namespaces
-RHACS_SUBSCRIPTIONS=$(oc get subscriptions.operators.coreos.com --all-namespaces -o json 2>/dev/null | \
+CORRECT_NAMESPACE="rhacs-operator"
+
+# Find all namespaces that contain RHACS operator resources
+# Check subscriptions, CSVs, and operatorgroups for RHACS-related resources
+RHACS_NAMESPACES=$(oc get subscriptions.operators.coreos.com,csv,operatorgroups.operators.coreos.com --all-namespaces -o json 2>/dev/null | \
     python3 -c "
 import sys, json
 data = json.load(sys.stdin)
+rhacs_namespaces = set()
 for item in data.get('items', []):
-    name = item.get('metadata', {}).get('name', '')
     namespace = item.get('metadata', {}).get('namespace', '')
-    package = item.get('spec', {}).get('name', '')
-    if 'rhacs' in name.lower() or 'rhacs' in package.lower() or 'stackrox' in name.lower() or 'stackrox' in package.lower():
-        print(f'{namespace}/{name}')
+    name = item.get('metadata', {}).get('name', '')
+    kind = item.get('kind', '')
+    
+    # Check if resource is RHACS-related
+    is_rhacs = False
+    if kind == 'Subscription':
+        package = item.get('spec', {}).get('name', '')
+        if 'rhacs' in name.lower() or 'rhacs' in package.lower() or 'stackrox' in name.lower() or 'stackrox' in package.lower():
+            is_rhacs = True
+    elif kind == 'ClusterServiceVersion':
+        display_name = item.get('spec', {}).get('displayName', '')
+        if 'rhacs' in name.lower() or 'rhacs' in display_name.lower() or 'stackrox' in name.lower() or 'stackrox' in display_name.lower():
+            is_rhacs = True
+    elif kind == 'OperatorGroup':
+        if 'rhacs' in name.lower() or 'stackrox' in name.lower():
+            is_rhacs = True
+    
+    if is_rhacs and namespace:
+        rhacs_namespaces.add(namespace)
+
+# Exclude the correct namespace
+for ns in sorted(rhacs_namespaces):
+    if ns.lower() != 'rhacs-operator':
+        print(ns)
 " 2>/dev/null || echo "")
 
-if [ -n "$RHACS_SUBSCRIPTIONS" ]; then
-    log "Found RHACS subscriptions:"
-    echo "$RHACS_SUBSCRIPTIONS" | while IFS='/' read -r namespace name; do
-        log "  - $namespace/$name"
+# Remove empty lines
+RHACS_NAMESPACES=$(echo "$RHACS_NAMESPACES" | grep -v '^$')
+
+if [ -n "$RHACS_NAMESPACES" ]; then
+    log "Found namespaces with RHACS operator resources (excluding $CORRECT_NAMESPACE):"
+    echo "$RHACS_NAMESPACES" | while read -r namespace; do
+        if [ -n "$namespace" ]; then
+            log "  - $namespace"
+        fi
     done
     log ""
     
-    echo "$RHACS_SUBSCRIPTIONS" | while IFS='/' read -r namespace name; do
-        delete_resource "subscription.operators.coreos.com" "$name" "$namespace" "Subscription $name"
-    done
-else
-    log "No RHACS subscriptions found"
-fi
-
-log ""
-
-# Step 2: Find and delete RHACS CSV resources across all namespaces
-log "========================================================="
-log "Step 2: Deleting RHACS ClusterServiceVersions"
-log "========================================================="
-log ""
-
-# Search for RHACS CSV resources in all namespaces
-RHACS_CSVS=$(oc get csv --all-namespaces -o json 2>/dev/null | \
-    python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-for item in data.get('items', []):
-    name = item.get('metadata', {}).get('name', '')
-    namespace = item.get('metadata', {}).get('namespace', '')
-    display_name = item.get('spec', {}).get('displayName', '')
-    if 'rhacs' in name.lower() or 'rhacs' in display_name.lower() or 'stackrox' in name.lower() or 'stackrox' in display_name.lower():
-        print(f'{namespace}/{name}')
-" 2>/dev/null || echo "")
-
-if [ -n "$RHACS_CSVS" ]; then
-    log "Found RHACS CSV resources:"
-    echo "$RHACS_CSVS" | while IFS='/' read -r namespace name; do
-        log "  - $namespace/$name"
-    done
+    # Step 2: Delete the incorrect namespaces
+    log "========================================================="
+    log "Step 2: Deleting namespaces with RHACS operator resources"
+    log "========================================================="
+    log ""
+    log "Note: '$CORRECT_NAMESPACE' is the correct namespace and will NOT be deleted"
     log ""
     
-    echo "$RHACS_CSVS" | while IFS='/' read -r namespace name; do
-        delete_resource "csv" "$name" "$namespace" "CSV $name"
+    echo "$RHACS_NAMESPACES" | while read -r namespace; do
+        if [ -n "$namespace" ] && [ "$namespace" != "$CORRECT_NAMESPACE" ]; then
+            log "Deleting namespace: $namespace"
+            if oc delete namespace "$namespace" --timeout=120s &>/dev/null; then
+                log "✓ Namespace $namespace deletion initiated"
+            else
+                warning "Failed to delete namespace $namespace (may already be deleting)"
+            fi
+        fi
     done
-else
-    log "No RHACS CSV resources found"
-fi
-
-log ""
-
-# Step 3: Find and delete RHACS OperatorGroups
-log "========================================================="
-log "Step 3: Deleting RHACS OperatorGroups"
-log "========================================================="
-log ""
-
-# Search for RHACS OperatorGroups in all namespaces
-RHACS_OPERATORGROUPS=$(oc get operatorgroups.operators.coreos.com --all-namespaces -o json 2>/dev/null | \
-    python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-for item in data.get('items', []):
-    name = item.get('metadata', {}).get('name', '')
-    namespace = item.get('metadata', {}).get('namespace', '')
-    if 'rhacs' in name.lower() or 'stackrox' in name.lower():
-        print(f'{namespace}/{name}')
-" 2>/dev/null || echo "")
-
-if [ -n "$RHACS_OPERATORGROUPS" ]; then
-    log "Found RHACS OperatorGroups:"
-    echo "$RHACS_OPERATORGROUPS" | while IFS='/' read -r namespace name; do
-        log "  - $namespace/$name"
-    done
+    
+    log ""
+    log "Waiting for namespace deletion(s) to complete..."
+    sleep 15
+    
+    # Step 3: Verify deletion
+    log "========================================================="
+    log "Step 3: Verifying namespace deletion"
+    log "========================================================="
     log ""
     
-    echo "$RHACS_OPERATORGROUPS" | while IFS='/' read -r namespace name; do
-        delete_resource "operatorgroup.operators.coreos.com" "$name" "$namespace" "OperatorGroup $name"
+    echo "$RHACS_NAMESPACES" | while read -r namespace; do
+        if [ -n "$namespace" ] && [ "$namespace" != "$CORRECT_NAMESPACE" ]; then
+            if oc get namespace "$namespace" &>/dev/null 2>&1; then
+                NS_PHASE=$(oc get namespace "$namespace" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+                if [ "$NS_PHASE" = "Terminating" ]; then
+                    log "  Namespace $namespace is still terminating (this is normal - deletion in progress)"
+                else
+                    warning "  Namespace $namespace still exists (phase: $NS_PHASE)"
+                fi
+            else
+                log "✓ Namespace $namespace has been deleted"
+            fi
+        fi
     done
 else
-    log "No RHACS OperatorGroups found"
-fi
-
-log ""
-
-# Step 4: Check for and delete InstallPlans related to RHACS
-log "========================================================="
-log "Step 4: Deleting RHACS InstallPlans"
-log "========================================================="
-log ""
-
-# Search for RHACS InstallPlans in all namespaces
-RHACS_INSTALLPLANS=$(oc get installplans.operators.coreos.com --all-namespaces -o json 2>/dev/null | \
-    python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-for item in data.get('items', []):
-    name = item.get('metadata', {}).get('name', '')
-    namespace = item.get('metadata', {}).get('namespace', '')
-    csv_name = item.get('spec', {}).get('clusterServiceVersionNames', [])
-    csv_str = ' '.join(csv_name).lower()
-    if 'rhacs' in name.lower() or 'rhacs' in csv_str or 'stackrox' in name.lower() or 'stackrox' in csv_str:
-        print(f'{namespace}/{name}')
-" 2>/dev/null || echo "")
-
-if [ -n "$RHACS_INSTALLPLANS" ]; then
-    log "Found RHACS InstallPlans:"
-    echo "$RHACS_INSTALLPLANS" | while IFS='/' read -r namespace name; do
-        log "  - $namespace/$name"
-    done
-    log ""
-    
-    echo "$RHACS_INSTALLPLANS" | while IFS='/' read -r namespace name; do
-        delete_resource "installplan.operators.coreos.com" "$name" "$namespace" "InstallPlan $name"
-    done
-else
-    log "No RHACS InstallPlans found"
-fi
-
-log ""
-
-# Step 5: Wait for resources to be fully deleted
-log "========================================================="
-log "Step 5: Waiting for resources to be fully deleted"
-log "========================================================="
-log ""
-
-log "Waiting for finalizers to complete and resources to be fully removed..."
-sleep 10
-
-# Verify deletions
-log "Verifying deletions..."
-
-VERIFICATION_FAILED=false
-
-# Check subscriptions
-REMAINING_SUBS=$(oc get subscriptions.operators.coreos.com --all-namespaces -o json 2>/dev/null | \
-    python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-for item in data.get('items', []):
-    name = item.get('metadata', {}).get('name', '')
-    package = item.get('spec', {}).get('name', '')
-    if 'rhacs' in name.lower() or 'rhacs' in package.lower() or 'stackrox' in name.lower() or 'stackrox' in package.lower():
-        print(f'{item.get(\"metadata\", {}).get(\"namespace\", \"\")}/{name}')
-" 2>/dev/null || echo "")
-
-if [ -n "$REMAINING_SUBS" ]; then
-    warning "Some subscriptions still exist:"
-    echo "$REMAINING_SUBS" | while IFS='/' read -r namespace name; do
-        warning "  - $namespace/$name"
-    done
-    VERIFICATION_FAILED=true
-fi
-
-# Check CSVs
-REMAINING_CSVS=$(oc get csv --all-namespaces -o json 2>/dev/null | \
-    python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-for item in data.get('items', []):
-    name = item.get('metadata', {}).get('name', '')
-    display_name = item.get('spec', {}).get('displayName', '')
-    if 'rhacs' in name.lower() or 'rhacs' in display_name.lower() or 'stackrox' in name.lower() or 'stackrox' in display_name.lower():
-        print(f'{item.get(\"metadata\", {}).get(\"namespace\", \"\")}/{name}')
-" 2>/dev/null || echo "")
-
-if [ -n "$REMAINING_CSVS" ]; then
-    warning "Some CSV resources still exist (may be in terminating state):"
-    echo "$REMAINING_CSVS" | while IFS='/' read -r namespace name; do
-        warning "  - $namespace/$name"
-    done
-    VERIFICATION_FAILED=true
-fi
-
-if [ "$VERIFICATION_FAILED" = true ]; then
-    warning "Some resources may still be terminating. This is normal if they have finalizers."
-    warning "You can check status with: oc get subscriptions,csv,operatorgroups --all-namespaces | grep -i rhacs"
-else
-    log "✓ All RHACS operator resources have been deleted"
+    log "No namespaces with RHACS operator resources found (excluding $CORRECT_NAMESPACE)"
+    log "  (No cleanup needed)"
 fi
 
 log ""
@@ -310,13 +212,10 @@ log "✓ RHACS Operator cleanup completed!"
 log "========================================================="
 log ""
 log "Summary:"
-log "  - RHACS Subscriptions: Deleted"
-log "  - RHACS ClusterServiceVersions: Deleted"
-log "  - RHACS OperatorGroups: Deleted"
-log "  - RHACS InstallPlans: Deleted"
+log "  - Namespaces with RHACS operator resources (excluding $CORRECT_NAMESPACE) deleted"
 log ""
-log "Note: If any resources are still showing, they may be in"
-log "      'Terminating' state due to finalizers. This is normal"
-log "      and they will be removed automatically."
+log "Note: Namespace deletion may take a few minutes to complete"
+log "      if there are finalizers. Resources will be removed"
+log "      automatically once the namespace is fully deleted."
 log ""
 
