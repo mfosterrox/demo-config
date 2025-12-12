@@ -552,8 +552,8 @@ fi
 
 log ""
 
-# Check if acs-catch-all scan configuration already exists and delete it if it does
-log "Checking if 'acs-catch-all' scan configuration exists..."
+# Always delete existing acs-catch-all scan configuration before creating a new one
+log "Checking for existing 'acs-catch-all' scan configuration..."
 set +e
 EXISTING_CONFIGS=$(curl -k -s --connect-timeout 15 --max-time 120 -X GET \
     -H "Authorization: Bearer $ROX_API_TOKEN" \
@@ -577,8 +577,8 @@ fi
 EXISTING_SCAN=$(echo "$EXISTING_CONFIGS" | jq -r '.configurations[] | select(.scanName == "acs-catch-all") | .id' 2>/dev/null || echo "")
     
 if [ -n "$EXISTING_SCAN" ] && [ "$EXISTING_SCAN" != "null" ]; then
-    log "✓ Scan configuration 'acs-catch-all' exists (ID: $EXISTING_SCAN)"
-    log "Deleting existing scan configuration to reapply..."
+    log "Found existing scan configuration 'acs-catch-all' (ID: $EXISTING_SCAN)"
+    log "Deleting existing scan configuration..."
     
     set +e
     DELETE_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 120 -X DELETE \
@@ -586,18 +586,24 @@ if [ -n "$EXISTING_SCAN" ] && [ "$EXISTING_SCAN" != "null" ]; then
         -H "Content-Type: application/json" \
         "$ROX_ENDPOINT/v2/compliance/scan/configurations/$EXISTING_SCAN" 2>&1)
     DELETE_EXIT_CODE=$?
+    DELETE_HTTP_CODE=$(echo "$DELETE_RESPONSE" | grep -oE '[0-9]{3}' | tail -1 || echo "")
     set -e
     
     if [ $DELETE_EXIT_CODE -ne 0 ]; then
         warning "Failed to delete existing scan configuration (exit code: $DELETE_EXIT_CODE). Response: ${DELETE_RESPONSE:0:500}"
-        warning "Attempting to create new configuration anyway..."
-    else
+        warning "Will attempt to create new configuration anyway..."
+    elif [ -n "$DELETE_HTTP_CODE" ] && [ "$DELETE_HTTP_CODE" -ge 200 ] && [ "$DELETE_HTTP_CODE" -lt 300 ]; then
         log "✓ Successfully deleted existing scan configuration"
         # Wait a moment for deletion to complete
         sleep 2
+    elif [ -n "$DELETE_HTTP_CODE" ] && [ "$DELETE_HTTP_CODE" -eq 404 ]; then
+        log "Scan configuration already deleted or not found (HTTP 404)"
+    else
+        warning "Unexpected response when deleting scan configuration (HTTP ${DELETE_HTTP_CODE:-unknown}). Response: ${DELETE_RESPONSE:0:500}"
+        warning "Will attempt to create new configuration anyway..."
     fi
 else
-    log "Scan configuration 'acs-catch-all' not found, will create new configuration..."
+    log "No existing 'acs-catch-all' scan configuration found"
 fi
 
 # Create compliance scan configuration (always recreate)
