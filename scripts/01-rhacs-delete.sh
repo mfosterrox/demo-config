@@ -103,32 +103,82 @@ delete_all_resources() {
     fi
 }
 
-# Step 1: Find namespaces with RHACS/ACS operator subscriptions (excluding rhacs-operator)
+# Step 1: Find namespaces with RHACS/ACS resources (excluding rhacs-operator)
 log "========================================================="
-log "Step 1: Finding namespaces with RHACS/ACS operator subscriptions"
+log "Step 1: Finding namespaces with RHACS/ACS resources"
 log "========================================================="
 log ""
 
 CORRECT_NAMESPACE="rhacs-operator"
 
-# Find all namespaces that contain RHACS/ACS operator subscriptions
-RHACS_NAMESPACES=$(oc get subscriptions.operators.coreos.com --all-namespaces -o json 2>/dev/null | \
-    python3 -c "
-import sys, json
-data = json.load(sys.stdin)
+# Find all namespaces that contain RHACS/ACS resources
+# Check for: operator subscriptions, Central resources, and SecuredCluster resources
+RHACS_NAMESPACES=$(python3 << 'PYTHON_SCRIPT'
+import sys
+import json
+import subprocess
+
+correct_namespace = "rhacs-operator"
 rhacs_namespaces = set()
-for item in data.get('items', []):
-    namespace = item.get('metadata', {}).get('namespace', '')
-    package = item.get('spec', {}).get('name', '')
-    # Look for rhacs-operator or acs-operator subscriptions
-    if package in ['rhacs-operator', 'acs-operator'] and namespace:
-        rhacs_namespaces.add(namespace)
+
+# Check for operator subscriptions
+try:
+    result = subprocess.run(
+        ["oc", "get", "subscriptions.operators.coreos.com", "--all-namespaces", "-o", "json"],
+        capture_output=True,
+        text=True,
+        timeout=30
+    )
+    if result.returncode == 0:
+        data = json.loads(result.stdout)
+        for item in data.get('items', []):
+            namespace = item.get('metadata', {}).get('namespace', '')
+            package = item.get('spec', {}).get('name', '')
+            if package in ['rhacs-operator', 'acs-operator'] and namespace:
+                rhacs_namespaces.add(namespace)
+except Exception:
+    pass
+
+# Check for Central resources
+try:
+    result = subprocess.run(
+        ["oc", "get", "central.platform.stackrox.io", "--all-namespaces", "-o", "json"],
+        capture_output=True,
+        text=True,
+        timeout=30
+    )
+    if result.returncode == 0:
+        data = json.loads(result.stdout)
+        for item in data.get('items', []):
+            namespace = item.get('metadata', {}).get('namespace', '')
+            if namespace:
+                rhacs_namespaces.add(namespace)
+except Exception:
+    pass
+
+# Check for SecuredCluster resources
+try:
+    result = subprocess.run(
+        ["oc", "get", "securedcluster.platform.stackrox.io", "--all-namespaces", "-o", "json"],
+        capture_output=True,
+        text=True,
+        timeout=30
+    )
+    if result.returncode == 0:
+        data = json.loads(result.stdout)
+        for item in data.get('items', []):
+            namespace = item.get('metadata', {}).get('namespace', '')
+            if namespace:
+                rhacs_namespaces.add(namespace)
+except Exception:
+    pass
 
 # Exclude the correct namespace
 for ns in sorted(rhacs_namespaces):
-    if ns.lower() != 'rhacs-operator':
+    if ns.lower() != correct_namespace.lower():
         print(ns)
-" 2>/dev/null)
+PYTHON_SCRIPT
+)
 
 # Handle empty result
 if [ -z "$RHACS_NAMESPACES" ]; then
@@ -136,17 +186,52 @@ if [ -z "$RHACS_NAMESPACES" ]; then
 fi
 
 if [ -n "$RHACS_NAMESPACES" ]; then
-    log "Found namespaces with RHACS operator resources (excluding $CORRECT_NAMESPACE):"
+    log "Found namespaces with RHACS resources (excluding $CORRECT_NAMESPACE):"
     echo "$RHACS_NAMESPACES" | while read -r namespace; do
         if [ -n "$namespace" ]; then
             log "  - $namespace"
+            # Show what resources are in this namespace
+            CENTRAL_COUNT=$(oc get central.platform.stackrox.io -n "$namespace" --no-headers 2>/dev/null | wc -l | tr -d '[:space:]' || echo "0")
+            SECURED_COUNT=$(oc get securedcluster.platform.stackrox.io -n "$namespace" --no-headers 2>/dev/null | wc -l | tr -d '[:space:]' || echo "0")
+            SUB_COUNT=$(oc get subscriptions.operators.coreos.com -n "$namespace" --no-headers 2>/dev/null | grep -E "(rhacs-operator|acs-operator)" | wc -l | tr -d '[:space:]' || echo "0")
+            if [ "$CENTRAL_COUNT" != "0" ] || [ "$SECURED_COUNT" != "0" ] || [ "$SUB_COUNT" != "0" ]; then
+                log "    Resources: Central=$CENTRAL_COUNT, SecuredCluster=$SECURED_COUNT, Subscriptions=$SUB_COUNT"
+            fi
         fi
     done
     log ""
     
-    # Step 2: Delete the incorrect namespaces
+    # Step 2: Delete RHACS resources in incorrect namespaces before deleting namespaces
     log "========================================================="
-    log "Step 2: Deleting namespaces with RHACS operator resources"
+    log "Step 2: Deleting RHACS resources in incorrect namespaces"
+    log "========================================================="
+    log ""
+    
+    echo "$RHACS_NAMESPACES" | while read -r namespace; do
+        if [ -n "$namespace" ] && [ "$namespace" != "$CORRECT_NAMESPACE" ]; then
+            log "Deleting RHACS resources in namespace: $namespace"
+            
+            # Delete Central resources
+            delete_all_resources "central.platform.stackrox.io" "$namespace"
+            
+            # Delete SecuredCluster resources
+            delete_all_resources "securedcluster.platform.stackrox.io" "$namespace"
+            
+            # Delete operator subscriptions
+            SUBSCRIPTIONS=$(oc get subscriptions.operators.coreos.com -n "$namespace" -o jsonpath='{.items[?(@.spec.name=="rhacs-operator" || @.spec.name=="acs-operator")].metadata.name}' 2>/dev/null || echo "")
+            if [ -n "$SUBSCRIPTIONS" ]; then
+                for sub in $SUBSCRIPTIONS; do
+                    delete_resource "subscription.operators.coreos.com" "$sub" "$namespace"
+                done
+            fi
+            
+            log ""
+        fi
+    done
+    
+    # Step 3: Delete the incorrect namespaces
+    log "========================================================="
+    log "Step 3: Deleting namespaces with RHACS resources"
     log "========================================================="
     log ""
     
@@ -168,9 +253,9 @@ if [ -n "$RHACS_NAMESPACES" ]; then
     log "Waiting for namespace deletion(s) to complete..."
     sleep 15
     
-    # Step 3: Verify deletion
+    # Step 4: Verify deletion
     log "========================================================="
-    log "Step 3: Verifying namespace deletion"
+    log "Step 4: Verifying namespace deletion"
     log "========================================================="
     log ""
     
@@ -189,7 +274,7 @@ if [ -n "$RHACS_NAMESPACES" ]; then
         fi
     done
 else
-    log "No namespaces with RHACS operator resources found (excluding $CORRECT_NAMESPACE)"
+    log "No namespaces with RHACS resources found (excluding $CORRECT_NAMESPACE)"
     log "  (No cleanup needed)"
 fi
 
@@ -199,7 +284,8 @@ log "✓ RHACS Operator cleanup completed!"
 log "========================================================="
 log ""
 log "Summary:"
-log "  - Namespaces with RHACS operator resources (excluding $CORRECT_NAMESPACE) deleted"
+log "  - RHACS resources (Central, SecuredCluster, Subscriptions) deleted from incorrect namespaces"
+log "  - Namespaces with RHACS resources (excluding $CORRECT_NAMESPACE) deleted"
 log ""
 log "Note: Namespace deletion may take a few minutes to complete"
 log "      if there are finalizers. Resources will be removed"
