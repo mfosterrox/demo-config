@@ -180,14 +180,21 @@ for ns in sorted(rhacs_namespaces):
 PYTHON_SCRIPT
 )
 
-# Handle empty result
-if [ -z "$RHACS_NAMESPACES" ]; then
-    RHACS_NAMESPACES=""
+# Handle empty result and convert to array
+NAMESPACE_ARRAY=()
+if [ -n "$RHACS_NAMESPACES" ]; then
+    # Convert newline-separated string to array
+    while IFS= read -r namespace; do
+        if [ -n "$namespace" ]; then
+            NAMESPACE_ARRAY+=("$namespace")
+        fi
+    done <<< "$RHACS_NAMESPACES"
 fi
 
-if [ -n "$RHACS_NAMESPACES" ]; then
+if [ ${#NAMESPACE_ARRAY[@]} -gt 0 ]; then
     log "Found namespaces with RHACS resources (excluding $CORRECT_NAMESPACE):"
-    echo "$RHACS_NAMESPACES" | while read -r namespace; do
+    
+    for namespace in "${NAMESPACE_ARRAY[@]}"; do
         if [ -n "$namespace" ]; then
             log "  - $namespace"
             # Show what resources are in this namespace
@@ -207,7 +214,7 @@ if [ -n "$RHACS_NAMESPACES" ]; then
     log "========================================================="
     log ""
     
-    echo "$RHACS_NAMESPACES" | while read -r namespace; do
+    for namespace in "${NAMESPACE_ARRAY[@]}"; do
         if [ -n "$namespace" ] && [ "$namespace" != "$CORRECT_NAMESPACE" ]; then
             log "Deleting RHACS resources in namespace: $namespace"
             
@@ -238,7 +245,7 @@ if [ -n "$RHACS_NAMESPACES" ]; then
     log "Note: '$CORRECT_NAMESPACE' is the correct namespace and will NOT be deleted"
     log ""
     
-    echo "$RHACS_NAMESPACES" | while read -r namespace; do
+    for namespace in "${NAMESPACE_ARRAY[@]}"; do
         if [ -n "$namespace" ] && [ "$namespace" != "$CORRECT_NAMESPACE" ]; then
             log "Deleting namespace: $namespace"
             if oc delete namespace "$namespace" --timeout=120s &>/dev/null; then
@@ -259,7 +266,7 @@ if [ -n "$RHACS_NAMESPACES" ]; then
     log "========================================================="
     log ""
     
-    echo "$RHACS_NAMESPACES" | while read -r namespace; do
+    for namespace in "${NAMESPACE_ARRAY[@]}"; do
         if [ -n "$namespace" ] && [ "$namespace" != "$CORRECT_NAMESPACE" ]; then
             if oc get namespace "$namespace" &>/dev/null 2>&1; then
                 NS_PHASE=$(oc get namespace "$namespace" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
