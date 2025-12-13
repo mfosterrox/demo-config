@@ -91,57 +91,6 @@ save_to_bashrc "PROJECT_ROOT" "$PROJECT_ROOT"
 log "✓ SCRIPT_DIR=$SCRIPT_DIR"
 log "✓ PROJECT_ROOT=$PROJECT_ROOT"
 
-# Set up NAMESPACE (default to tssc-acs for RHACS, but can be overridden)
-if [ -z "${NAMESPACE:-}" ]; then
-    EXISTING_NAMESPACE=$(load_from_bashrc "NAMESPACE")
-    if [ -n "$EXISTING_NAMESPACE" ]; then
-        NAMESPACE="$EXISTING_NAMESPACE"
-        log "✓ Loaded NAMESPACE from ~/.bashrc: $NAMESPACE"
-    else
-        NAMESPACE="tssc-acs"
-        save_to_bashrc "NAMESPACE" "$NAMESPACE"
-        log "✓ Set NAMESPACE default: $NAMESPACE"
-    fi
-else
-    save_to_bashrc "NAMESPACE" "$NAMESPACE"
-    log "✓ NAMESPACE already set: $NAMESPACE"
-fi
-
-# Load existing variables from ~/.bashrc if they exist (set by script 01 which runs first)
-log "Loading existing variables from ~/.bashrc..."
-
-# Load ROX_ENDPOINT if it exists (set by script 01)
-EXISTING_ROX_ENDPOINT=$(load_from_bashrc "ROX_ENDPOINT")
-if [ -n "$EXISTING_ROX_ENDPOINT" ]; then
-    log "✓ Loaded ROX_ENDPOINT from ~/.bashrc"
-else
-    log "  ROX_ENDPOINT not found (should be set by script 01-rhacs-setup.sh)"
-fi
-
-# Load ROX_API_TOKEN if it exists (set by script 01)
-EXISTING_ROX_API_TOKEN=$(load_from_bashrc "ROX_API_TOKEN")
-if [ -n "$EXISTING_ROX_API_TOKEN" ]; then
-    log "✓ Loaded ROX_API_TOKEN from ~/.bashrc"
-else
-    log "  ROX_API_TOKEN not found (should be set by script 01-rhacs-setup.sh)"
-fi
-
-# Load TUTORIAL_HOME if it exists (set by script 03)
-EXISTING_TUTORIAL_HOME=$(load_from_bashrc "TUTORIAL_HOME")
-if [ -n "$EXISTING_TUTORIAL_HOME" ]; then
-    log "✓ Loaded TUTORIAL_HOME from ~/.bashrc"
-else
-    log "  TUTORIAL_HOME not found (will be set by script 06-deploy-applications.sh)"
-fi
-
-# Load ADMIN_PASSWORD if it exists (set by script 01)
-EXISTING_ADMIN_PASSWORD=$(load_from_bashrc "ADMIN_PASSWORD")
-if [ -n "$EXISTING_ADMIN_PASSWORD" ]; then
-    log "✓ Loaded ADMIN_PASSWORD from ~/.bashrc"
-else
-    log "  ADMIN_PASSWORD not found (should be set by script 01-rhacs-setup.sh)"
-fi
-
 log "========================================================="
 log "Environment variables initialized"
 log "========================================================="
@@ -481,10 +430,7 @@ log "========================================================="
 # so the sensor needs to restart to sync any existing compliance results
 log ""
 log "Restarting RHACS sensor to sync Compliance Operator results..."
-RHACS_NAMESPACE=$(load_from_bashrc "NAMESPACE")
-if [ -z "$RHACS_NAMESPACE" ]; then
-    RHACS_NAMESPACE="tssc-acs"
-fi
+RHACS_NAMESPACE="rhacs-operator"
 
 if command -v oc &>/dev/null && oc whoami &>/dev/null 2>&1; then
     # Check if sensor exists (RHACS should be installed by now)

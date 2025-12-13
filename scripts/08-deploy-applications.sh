@@ -28,57 +28,9 @@ error() {
 # Trap to show error details on exit
 trap 'error "Command failed: $(cat <<< "$BASH_COMMAND")"' ERR
 
-# Function to load variable from ~/.bashrc if it exists
-load_from_bashrc() {
-    local var_name="$1"
-    
-    # First check if variable is already set in environment
-    local env_value=$(eval "echo \${${var_name}:-}")
-    if [ -n "$env_value" ]; then
-        export "${var_name}=${env_value}"
-        echo "$env_value"
-        return 0
-    fi
-    
-    # Otherwise, try to load from ~/.bashrc
-    if [ -f ~/.bashrc ] && grep -q "^export ${var_name}=" ~/.bashrc; then
-        local var_line=$(grep "^export ${var_name}=" ~/.bashrc | head -1)
-        local var_value=$(echo "$var_line" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
-        export "${var_name}=${var_value}"
-        echo "$var_value"
-    fi
-}
-
-# Load environment variables from ~/.bashrc (set by script 01)
-log "Loading environment variables from ~/.bashrc..."
-
-# Ensure ~/.bashrc exists
-if [ ! -f ~/.bashrc ]; then
-    error "~/.bashrc not found. Please run script 01-rhacs-setup.sh first to initialize environment variables."
-fi
-
-# Clean up any malformed source commands in bashrc
-if grep -q "^source $" ~/.bashrc; then
-    log "Cleaning up malformed source commands in ~/.bashrc..."
-    sed -i '/^source $/d' ~/.bashrc
-fi
-
-# Load SCRIPT_DIR and PROJECT_ROOT (set by script 01)
-SCRIPT_DIR=$(load_from_bashrc "SCRIPT_DIR")
-PROJECT_ROOT=$(load_from_bashrc "PROJECT_ROOT")
-
-# Load required variables (set by script 01)
-ROX_ENDPOINT=$(load_from_bashrc "ROX_ENDPOINT")
-ROX_API_TOKEN=$(load_from_bashrc "ROX_API_TOKEN")
-
-# Validate required environment variables
-if [ -z "$ROX_ENDPOINT" ]; then
-    error "ROX_ENDPOINT not set. Please run script 01-rhacs-setup.sh first to generate required variables."
-fi
-if [ -z "$ROX_API_TOKEN" ]; then
-    error "ROX_API_TOKEN not set. Please run script 01-rhacs-setup.sh first to generate required variables."
-fi
-log "✓ Required environment variables validated: ROX_ENDPOINT=$ROX_ENDPOINT"
+# Set up script directory and project root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # Configuration
 DEMO_LABEL="demo=roadshow"
@@ -115,8 +67,6 @@ sed -i '/^export TUTORIAL_HOME=/d' ~/.bashrc
 echo "export TUTORIAL_HOME=\"$TUTORIAL_HOME\"" >> ~/.bashrc
 export TUTORIAL_HOME="$TUTORIAL_HOME"
 log "✓ TUTORIAL_HOME set to: $TUTORIAL_HOME"
-
-ACS_CENTRAL_ADDRESS="$ROX_ENDPOINT"
 
 # Deploy applications
 log "Deploying applications from $TUTORIAL_HOME..."

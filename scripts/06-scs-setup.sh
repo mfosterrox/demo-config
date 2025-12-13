@@ -31,30 +31,6 @@ error() {
 # Trap to show error details on exit
 trap 'error "Command failed: $(cat <<< "$BASH_COMMAND")"' ERR
 
-# Function to load variable from ~/.bashrc if it exists
-load_from_bashrc() {
-    local var_name="$1"
-    
-    # First check if variable is already set in environment
-    local env_value=$(eval "echo \${${var_name}:-}")
-    if [ -n "$env_value" ]; then
-        export "${var_name}=${env_value}"
-        echo "$env_value"
-        return 0
-    fi
-    
-    # Otherwise, try to load from ~/.bashrc
-    if [ -f ~/.bashrc ] && grep -q "^export ${var_name}=" ~/.bashrc; then
-        local var_line=$(grep "^export ${var_name}=" ~/.bashrc | head -1)
-        local var_value=$(echo "$var_line" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
-        export "${var_name}=${var_value}"
-        echo "$var_value"
-    fi
-}
-
-# Load environment variables from ~/.bashrc
-log "Loading environment variables from ~/.bashrc..."
-
 # RHACS operator namespace
 RHACS_OPERATOR_NAMESPACE="rhacs-operator"
 
@@ -75,7 +51,7 @@ if ! oc get namespace "$RHACS_OPERATOR_NAMESPACE" &>/dev/null; then
 fi
 log "✓ Namespace '$RHACS_OPERATOR_NAMESPACE' exists"
 
-# Get ROX_ENDPOINT from Central route
+# Generate ROX_ENDPOINT from Central route
 log ""
 log "Retrieving ROX_ENDPOINT from Central route..."
 CENTRAL_ROUTE=$(oc get route central -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
@@ -83,28 +59,14 @@ if [ -z "$CENTRAL_ROUTE" ]; then
     error "Central route not found. Please ensure Central is installed and ready."
 fi
 ROX_ENDPOINT="$CENTRAL_ROUTE"
-log "✓ Extracted ROX_ENDPOINT from route: $ROX_ENDPOINT"
-
-# Save to ~/.bashrc
-sed -i '/^export ROX_ENDPOINT=/d' ~/.bashrc 2>/dev/null || true
-echo "export ROX_ENDPOINT=\"$ROX_ENDPOINT\"" >> ~/.bashrc
-export ROX_ENDPOINT="$ROX_ENDPOINT"
-
-# Load ROX_API_TOKEN from ~/.bashrc
-ROX_API_TOKEN=$(load_from_bashrc "ROX_API_TOKEN")
-
-# Verify ROX_API_TOKEN is set
-if [ -z "${ROX_API_TOKEN:-}" ]; then
-    error "ROX_API_TOKEN not found in ~/.bashrc. Please ensure it is set from previous scripts."
-fi
-log "✓ ROX_API_TOKEN loaded"
+log "✓ Extracted ROX_ENDPOINT: $ROX_ENDPOINT"
 
 # Get ADMIN_PASSWORD from secret
 log ""
 log "Retrieving ADMIN_PASSWORD from secret..."
 ADMIN_PASSWORD_B64=$(oc get secret central-htpasswd -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.data.password}' 2>/dev/null || echo "")
 if [ -z "$ADMIN_PASSWORD_B64" ]; then
-    error "Admin password secret 'central-htpasswd' not found in namespace $RHACS_OPERATOR_NAMESPACE"
+    error "Admin password secret 'central-htpasswd' not found in namespace '$RHACS_OPERATOR_NAMESPACE'"
 fi
 ADMIN_PASSWORD=$(echo "$ADMIN_PASSWORD_B64" | base64 -d)
 if [ -z "$ADMIN_PASSWORD" ]; then
@@ -127,24 +89,21 @@ normalize_rox_endpoint() {
 ROX_ENDPOINT_NORMALIZED="$(normalize_rox_endpoint "$ROX_ENDPOINT")"
 log "Central endpoint: $ROX_ENDPOINT (normalized for API calls: $ROX_ENDPOINT_NORMALIZED)"
 
-# Download roxctl if not available (Linux bastion host)
+# Use roxctl if available, otherwise download it
 ROXCTL_CMD=""
 if ! command -v roxctl &>/dev/null; then
     log "roxctl not found, downloading..."
     
-    # Get RHACS version from CSV
     RHACS_VERSION=$(oc get csv -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.items[?(@.spec.displayName=="Advanced Cluster Security for Kubernetes")].spec.version}' 2>/dev/null || echo "")
     if [ -z "$RHACS_VERSION" ]; then
         RHACS_VERSION=$(oc get csv -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.items[0].spec.version}' 2>/dev/null | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+' || echo "latest")
     fi
     
-    # Download roxctl for Linux
     ROXCTL_URL="https://mirror.openshift.com/pub/rhacs/assets/${RHACS_VERSION}/bin/Linux/roxctl"
     ROXCTL_TMP="/tmp/roxctl"
     
     log "Downloading roxctl from: $ROXCTL_URL"
     if ! curl -L -f -o "$ROXCTL_TMP" "$ROXCTL_URL" 2>/dev/null; then
-        # Try latest if version-specific download fails
         ROXCTL_URL="https://mirror.openshift.com/pub/rhacs/assets/latest/bin/Linux/roxctl"
         log "Retrying with latest version: $ROXCTL_URL"
         if ! curl -L -f -o "$ROXCTL_TMP" "$ROXCTL_URL" 2>/dev/null; then
