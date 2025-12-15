@@ -653,6 +653,18 @@ if oc get subscription.operators.coreos.com cluster-observability-operator -n $O
         log "✓ Subscription channel updated to $CHANNEL"
     elif [ "$EXISTING_SUB_CHANNEL" = "$CHANNEL" ]; then
         log "✓ Subscription channel is already set to $CHANNEL"
+        
+        # Check if operator is already installed and running
+        EXISTING_CSV=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.installedCSV}' 2>/dev/null || echo "")
+        if [ -n "$EXISTING_CSV" ] && [ "$EXISTING_CSV" != "null" ]; then
+            if oc get csv "$EXISTING_CSV" -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
+                CSV_PHASE=$(oc get csv "$EXISTING_CSV" -n $OPERATOR_NAMESPACE -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$CSV_PHASE" = "Succeeded" ]; then
+                    log "✓ Operator is already installed and running (CSV: $EXISTING_CSV)"
+                    SKIP_SUBSCRIPTION_WAIT=true
+                fi
+            fi
+        fi
     fi
     SUBSCRIPTION_CREATED=true
 else
@@ -663,6 +675,7 @@ else
     log "  Source: redhat-operators"
     log "  SourceNamespace: openshift-marketplace"
     SUBSCRIPTION_CREATED=false
+    SKIP_SUBSCRIPTION_WAIT=false
     SUBSCRIPTION_OUTPUT=$(cat <<EOF | oc apply -f - 2>&1
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
@@ -689,27 +702,45 @@ EOF
         error "Failed to create Subscription. Check output above for details."
     fi
 fi
-# Wait for OLM to process the subscription and create InstallPlan
-log "Waiting for OLM to process subscription (this may take 10-30 seconds)..."
-SUBSCRIPTION_PROCESSED=false
-for i in {1..12}; do
-    sleep 5
-    if oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
-        # Check if InstallPlan has been created
-        INSTALL_PLAN_CHECK=$(oc get installplan -n $OPERATOR_NAMESPACE -l operators.coreos.com/cluster-observability-operator.openshift-cluster-observability-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-        if [ -n "$INSTALL_PLAN_CHECK" ]; then
-            SUBSCRIPTION_PROCESSED=true
-            log "✓ Subscription processed and InstallPlan created: $INSTALL_PLAN_CHECK"
-            break
-        fi
-    fi
-    if [ $((i % 3)) -eq 0 ]; then
-        log "  Still waiting for subscription to be processed... ($((i * 5))s elapsed)"
-    fi
-done
 
-if [ "$SUBSCRIPTION_PROCESSED" = false ]; then
-    log "Subscription processing is taking longer than expected, continuing anyway..."
+# Wait for OLM to process the subscription and create InstallPlan (only if needed)
+if [ "${SKIP_SUBSCRIPTION_WAIT:-false}" != true ]; then
+    log "Waiting for OLM to process subscription (this may take 10-30 seconds)..."
+    SUBSCRIPTION_PROCESSED=false
+    for i in {1..12}; do
+        sleep 5
+        if oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
+            # Check if InstallPlan has been created
+            INSTALL_PLAN_CHECK=$(oc get installplan -n $OPERATOR_NAMESPACE -l operators.coreos.com/cluster-observability-operator.openshift-cluster-observability-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+            if [ -n "$INSTALL_PLAN_CHECK" ]; then
+                SUBSCRIPTION_PROCESSED=true
+                log "✓ Subscription processed and InstallPlan created: $INSTALL_PLAN_CHECK"
+                break
+            fi
+            
+            # Also check if CSV already exists (operator may already be installed)
+            EXISTING_CSV=$(oc get subscription.operators.coreos.com cluster-observability-operator -n $OPERATOR_NAMESPACE -o jsonpath='{.status.installedCSV}' 2>/dev/null || echo "")
+            if [ -n "$EXISTING_CSV" ] && [ "$EXISTING_CSV" != "null" ]; then
+                if oc get csv "$EXISTING_CSV" -n $OPERATOR_NAMESPACE >/dev/null 2>&1; then
+                    CSV_PHASE=$(oc get csv "$EXISTING_CSV" -n $OPERATOR_NAMESPACE -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                    if [ "$CSV_PHASE" = "Succeeded" ]; then
+                        SUBSCRIPTION_PROCESSED=true
+                        log "✓ Operator is already installed (CSV: $EXISTING_CSV), skipping InstallPlan wait"
+                        break
+                    fi
+                fi
+            fi
+        fi
+        if [ $((i % 3)) -eq 0 ]; then
+            log "  Still waiting for subscription to be processed... ($((i * 5))s elapsed)"
+        fi
+    done
+
+    if [ "$SUBSCRIPTION_PROCESSED" = false ]; then
+        log "Subscription processing is taking longer than expected, continuing anyway..."
+    fi
+else
+    log "✓ Subscription already exists with correct channel and operator is installed, skipping wait"
 fi
 
 # Verify subscription was actually created
