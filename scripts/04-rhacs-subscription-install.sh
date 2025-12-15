@@ -110,8 +110,8 @@ if [ "${NEEDS_INSTALL:-true}" = true ] || [ "$EXISTING_SUBSCRIPTION" = true ]; t
         if [ -n "$AVAILABLE_CHANNELS" ]; then
             log "Available channels: $AVAILABLE_CHANNELS"
             
-            # Prefer rhacs-4.9 channel, fall back to stable if unavailable
-            PREFERRED_CHANNELS=("rhacs-4.9" "stable")
+            # Prefer stable channel, fall back to rhacs-4.9 if unavailable
+            PREFERRED_CHANNELS=("stable" "rhacs-4.9")
             
             for pref_channel in "${PREFERRED_CHANNELS[@]}"; do
                 if echo "$AVAILABLE_CHANNELS" | grep -q "\b$pref_channel\b"; then
@@ -135,8 +135,8 @@ if [ "${NEEDS_INSTALL:-true}" = true ] || [ "$EXISTING_SUBSCRIPTION" = true ]; t
     
     # Fallback to default channel if we couldn't determine it
     if [ -z "$CHANNEL" ]; then
-        CHANNEL="rhacs-4.9"
-        log "Using default channel: $CHANNEL (will fall back to stable if unavailable)"
+        CHANNEL="stable"
+        log "Using default channel: $CHANNEL (will fall back to rhacs-4.9 if unavailable)"
     fi
     
     # Create OperatorGroup if it doesn't exist
