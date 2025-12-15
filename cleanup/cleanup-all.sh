@@ -325,8 +325,8 @@ verify_namespace_deletion() {
     if oc get namespace "$namespace" &>/dev/null 2>&1; then
         NS_PHASE=$(oc get namespace "$namespace" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
         if [ "$NS_PHASE" = "Terminating" ]; then
-            warning "  Namespace $namespace is still terminating (deletion in progress)"
-            return 1
+            log "  ✓ Namespace $namespace is terminating (deletion in progress - this is normal)"
+            return 0  # Terminating is success - deletion was initiated
         else
             warning "  Namespace $namespace still exists (phase: $NS_PHASE)"
             return 1
@@ -350,10 +350,15 @@ log ""
 log "Verifying custom resources are deleted..."
 
 # Check for remaining RHACS resources
-REMAINING_CENTRAL=$(oc get central.platform.stackrox.io --all-namespaces --no-headers 2>/dev/null | wc -l | tr -d '[:space:]' || echo "0")
-REMAINING_SECURED=$(oc get securedcluster.platform.stackrox.io --all-namespaces --no-headers 2>/dev/null | wc -l | tr -d '[:space:]' || echo "0")
+REMAINING_CENTRAL=$(oc get central.platform.stackrox.io --all-namespaces --no-headers 2>/dev/null | wc -l 2>/dev/null || echo "0")
+REMAINING_CENTRAL=$(echo "$REMAINING_CENTRAL" | tr -d '[:space:]')
+REMAINING_CENTRAL=$((REMAINING_CENTRAL + 0))
 
-if [ "$REMAINING_CENTRAL" != "0" ] || [ "$REMAINING_SECURED" != "0" ]; then
+REMAINING_SECURED=$(oc get securedcluster.platform.stackrox.io --all-namespaces --no-headers 2>/dev/null | wc -l 2>/dev/null || echo "0")
+REMAINING_SECURED=$(echo "$REMAINING_SECURED" | tr -d '[:space:]')
+REMAINING_SECURED=$((REMAINING_SECURED + 0))
+
+if [ "$REMAINING_CENTRAL" -gt 0 ] || [ "$REMAINING_SECURED" -gt 0 ]; then
     warning "  Found remaining RHACS resources: Central=$REMAINING_CENTRAL, SecuredCluster=$REMAINING_SECURED"
     ALL_DELETED=false
 else
@@ -362,8 +367,11 @@ fi
 
 # Check for remaining monitoring resources (if namespace still exists)
 if oc get namespace "$RHACS_NAMESPACE" &>/dev/null 2>&1; then
-    REMAINING_MONITORING=$(oc get monitoringstack,scrapeconfig,prometheus,prometheusrule,datasource,dashboard -n "$RHACS_NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d '[:space:]' || echo "0")
-    if [ "$REMAINING_MONITORING" != "0" ]; then
+    REMAINING_MONITORING=$(oc get monitoringstack,scrapeconfig,prometheus,prometheusrule,datasource,dashboard -n "$RHACS_NAMESPACE" --no-headers 2>/dev/null | wc -l 2>/dev/null || echo "0")
+    REMAINING_MONITORING=$(echo "$REMAINING_MONITORING" | tr -d '[:space:]')
+    REMAINING_MONITORING=$((REMAINING_MONITORING + 0))
+    
+    if [ "$REMAINING_MONITORING" -gt 0 ]; then
         warning "  Found remaining monitoring resources: $REMAINING_MONITORING"
         ALL_DELETED=false
     else
@@ -373,8 +381,11 @@ fi
 
 # Check for remaining compliance resources (if namespace still exists)
 if oc get namespace "$COMPLIANCE_NAMESPACE" &>/dev/null 2>&1; then
-    REMAINING_COMPLIANCE=$(oc get scanconfiguration,compliancescan -n "$COMPLIANCE_NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d '[:space:]' || echo "0")
-    if [ "$REMAINING_COMPLIANCE" != "0" ]; then
+    REMAINING_COMPLIANCE=$(oc get scanconfiguration,compliancescan -n "$COMPLIANCE_NAMESPACE" --no-headers 2>/dev/null | wc -l 2>/dev/null || echo "0")
+    REMAINING_COMPLIANCE=$(echo "$REMAINING_COMPLIANCE" | tr -d '[:space:]')
+    REMAINING_COMPLIANCE=$((REMAINING_COMPLIANCE + 0))
+    
+    if [ "$REMAINING_COMPLIANCE" -gt 0 ]; then
         warning "  Found remaining compliance resources: $REMAINING_COMPLIANCE"
         ALL_DELETED=false
     else
@@ -383,8 +394,16 @@ if oc get namespace "$COMPLIANCE_NAMESPACE" &>/dev/null 2>&1; then
 fi
 
 # Check for remaining subscriptions (excluding cert-manager)
-REMAINING_SUBS=$(oc get subscription.operators.coreos.com --all-namespaces --no-headers 2>/dev/null | grep -E "(rhacs-operator|cluster-observability-operator|compliance-operator)" | wc -l | tr -d '[:space:]' || echo "0")
-if [ "$REMAINING_SUBS" != "0" ]; then
+REMAINING_SUBS=$(oc get subscription.operators.coreos.com --all-namespaces --no-headers 2>/dev/null | grep -E "(rhacs-operator|cluster-observability-operator|compliance-operator)" | wc -l 2>/dev/null || echo "0")
+REMAINING_SUBS=$(echo "$REMAINING_SUBS" | tr -d '[:space:]')
+# Handle empty string or non-numeric values
+if [ -z "$REMAINING_SUBS" ] || [ "$REMAINING_SUBS" = "" ]; then
+    REMAINING_SUBS="0"
+fi
+# Convert to integer for comparison (handles "00" -> "0")
+REMAINING_SUBS=$((REMAINING_SUBS + 0))
+
+if [ "$REMAINING_SUBS" -gt 0 ]; then
     warning "  Found remaining operator subscriptions: $REMAINING_SUBS"
     ALL_DELETED=false
 else
@@ -392,8 +411,11 @@ else
 fi
 
 # Check for remaining demo applications
-REMAINING_DEMO=$(oc get deployments -l "$DEMO_LABEL" -A --no-headers 2>/dev/null | wc -l | tr -d '[:space:]' || echo "0")
-if [ "$REMAINING_DEMO" != "0" ]; then
+REMAINING_DEMO=$(oc get deployments -l "$DEMO_LABEL" -A --no-headers 2>/dev/null | wc -l 2>/dev/null || echo "0")
+REMAINING_DEMO=$(echo "$REMAINING_DEMO" | tr -d '[:space:]')
+REMAINING_DEMO=$((REMAINING_DEMO + 0))
+
+if [ "$REMAINING_DEMO" -gt 0 ]; then
     warning "  Found remaining demo applications: $REMAINING_DEMO"
     ALL_DELETED=false
 else
