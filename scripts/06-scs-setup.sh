@@ -89,10 +89,10 @@ normalize_rox_endpoint() {
 ROX_ENDPOINT_NORMALIZED="$(normalize_rox_endpoint "$ROX_ENDPOINT")"
 log "Central endpoint: $ROX_ENDPOINT (normalized for API calls: $ROX_ENDPOINT_NORMALIZED)"
 
-# Use roxctl if available, otherwise download it
+# Use roxctl if available, otherwise download and install it
 ROXCTL_CMD=""
 if ! command -v roxctl &>/dev/null; then
-    log "roxctl not found, downloading..."
+    log "roxctl not found, downloading and installing..."
     
     RHACS_VERSION=$(oc get csv -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.items[?(@.spec.displayName=="Advanced Cluster Security for Kubernetes")].spec.version}' 2>/dev/null || echo "")
     if [ -z "$RHACS_VERSION" ]; then
@@ -101,6 +101,7 @@ if ! command -v roxctl &>/dev/null; then
     
     ROXCTL_URL="https://mirror.openshift.com/pub/rhacs/assets/${RHACS_VERSION}/bin/Linux/roxctl"
     ROXCTL_TMP="/tmp/roxctl"
+    ROXCTL_INSTALL_PATH="/usr/local/bin/roxctl"
     
     log "Downloading roxctl from: $ROXCTL_URL"
     if ! curl -L -f -o "$ROXCTL_TMP" "$ROXCTL_URL" 2>/dev/null; then
@@ -112,8 +113,19 @@ if ! command -v roxctl &>/dev/null; then
     fi
     
     chmod +x "$ROXCTL_TMP"
-    ROXCTL_CMD="$ROXCTL_TMP"
-    log "✓ roxctl downloaded to $ROXCTL_TMP"
+    
+    # Install to system-wide location
+    log "Installing roxctl to $ROXCTL_INSTALL_PATH..."
+    if sudo mv "$ROXCTL_TMP" "$ROXCTL_INSTALL_PATH" 2>/dev/null; then
+        ROXCTL_CMD="roxctl"
+        log "✓ roxctl installed to $ROXCTL_INSTALL_PATH"
+    else
+        # Fallback: if sudo fails, use the temp location but warn
+        warning "Failed to install roxctl to system location (sudo may be required)"
+        warning "Using temporary location: $ROXCTL_TMP"
+        ROXCTL_CMD="$ROXCTL_TMP"
+        log "✓ roxctl downloaded to $ROXCTL_TMP (not installed system-wide)"
+    fi
 else
     ROXCTL_CMD="roxctl"
     log "✓ roxctl found in PATH"
