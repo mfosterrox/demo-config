@@ -366,64 +366,210 @@ sleep 15
 force_delete_namespace() {
     local namespace=$1
     
-    if oc get namespace "$namespace" &>/dev/null 2>&1; then
-        NS_PHASE=$(oc get namespace "$namespace" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-        if [ "$NS_PHASE" = "Terminating" ]; then
-            log "  Namespace $namespace is stuck in Terminating state - force deleting..."
-            
-            # Get current finalizers as JSON array (finalizers are in metadata, not spec)
-            FINALIZERS_JSON=$(oc get namespace "$namespace" -o jsonpath='{.metadata.finalizers}' 2>/dev/null || echo "[]")
-            
-            # Check if there are finalizers
-            if [ "$FINALIZERS_JSON" != "[]" ] && [ -n "$FINALIZERS_JSON" ]; then
-                FINALIZERS_LIST=$(oc get namespace "$namespace" -o jsonpath='{.metadata.finalizers[*]}' 2>/dev/null || echo "")
-                log "    Removing finalizers: $FINALIZERS_LIST"
-                
-                # Method 1: Try to replace finalizers with empty array using merge patch
-                if oc patch namespace "$namespace" --type merge -p '{"metadata":{"finalizers":[]}}' &>/dev/null 2>&1; then
-                    log "    ✓ Finalizers removed - namespace should complete deletion"
-                    return 0
-                else
-                    # Method 2: Try JSON patch to replace finalizers array
-                    if oc patch namespace "$namespace" --type json -p='[{"op": "replace", "path": "/metadata/finalizers", "value": []}]' &>/dev/null 2>&1; then
-                        log "    ✓ Finalizers removed - namespace should complete deletion"
-                        return 0
-                    else
-                        # Method 3: Try to edit namespace directly (last resort)
-                        log "    Attempting direct edit to remove finalizers..."
-                        oc get namespace "$namespace" -o json | jq 'del(.metadata.finalizers)' | oc replace -f - &>/dev/null 2>&1
-                        if [ $? -eq 0 ]; then
-                            log "    ✓ Finalizers removed via direct edit - namespace should complete deletion"
-                            return 0
-                        else
-                            warning "    Failed to remove finalizers from namespace $namespace (may require manual intervention)"
-                            return 1
-                        fi
-                    fi
-                fi
-            else
-                log "    No finalizers found - namespace should complete deletion soon"
-                return 0
-            fi
-        else
-            # Namespace is not in Terminating state, skip force delete
-            return 0
-        fi
-    else
+    if ! oc get namespace "$namespace" &>/dev/null 2>&1; then
         # Namespace doesn't exist, already deleted
         return 0
+    fi
+    
+    NS_PHASE=$(oc get namespace "$namespace" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+    
+    # Get current finalizers (check both spec and metadata)
+    FINALIZERS=$(oc get namespace "$namespace" -o jsonpath='{.spec.finalizers[*]}' 2>/dev/null || echo "")
+    if [ -z "$FINALIZERS" ]; then
+        FINALIZERS=$(oc get namespace "$namespace" -o jsonpath='{.metadata.finalizers[*]}' 2>/dev/null || echo "")
+    fi
+    
+    # If namespace is not Terminating and has no finalizers, try normal deletion first
+    if [ "$NS_PHASE" != "Terminating" ] && [ -z "$FINALIZERS" ]; then
+        log "  Namespace $namespace is not terminating and has no finalizers - attempting normal deletion..."
+        if oc delete namespace "$namespace" --timeout=60s &>/dev/null 2>&1; then
+            sleep 5
+            if ! oc get namespace "$namespace" &>/dev/null 2>&1; then
+                log "    ✓ Namespace deleted successfully"
+                return 0
+            fi
+        fi
+    fi
+    
+    # If namespace has finalizers or is stuck, proceed with force deletion
+    if [ -n "$FINALIZERS" ]; then
+        log "  Namespace $namespace has finalizers: $FINALIZERS - force deleting..."
+    elif [ "$NS_PHASE" = "Terminating" ]; then
+        log "  Namespace $namespace is stuck in Terminating state - force deleting..."
+    else
+        # Namespace exists but isn't terminating and has no finalizers - should delete normally
+        return 0
+    fi
+    
+    # Method 1: Try simple patch methods first (metadata.finalizers)
+    if oc patch namespace "$namespace" --type merge -p '{"metadata":{"finalizers":[]}}' &>/dev/null 2>&1; then
+        log "    ✓ Finalizers removed via merge patch (metadata) - namespace should complete deletion"
+        sleep 2
+        if ! oc get namespace "$namespace" &>/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+    
+    # Method 2: Try patching spec.finalizers
+    if oc patch namespace "$namespace" --type merge -p '{"spec":{"finalizers":[]}}' &>/dev/null 2>&1; then
+        log "    ✓ Finalizers removed via merge patch (spec) - namespace should complete deletion"
+        sleep 2
+        if ! oc get namespace "$namespace" &>/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+    
+    # Method 3: Try JSON patch
+    if oc patch namespace "$namespace" --type json -p='[{"op": "replace", "path": "/metadata/finalizers", "value": []}]' &>/dev/null 2>&1; then
+        log "    ✓ Finalizers removed via JSON patch - namespace should complete deletion"
+        sleep 2
+        if ! oc get namespace "$namespace" &>/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+    
+    # Method 4: Try direct edit with jq
+    if command -v jq &>/dev/null; then
+        if oc get namespace "$namespace" -o json | jq 'del(.metadata.finalizers) | del(.spec.finalizers)' | oc replace -f - &>/dev/null 2>&1; then
+            log "    ✓ Finalizers removed via direct edit - namespace should complete deletion"
+            sleep 2
+            if ! oc get namespace "$namespace" &>/dev/null 2>&1; then
+                return 0
+            fi
+        fi
+    fi
+    
+    # Method 5: Use oc proxy and direct API call (most robust)
+    warning "    Standard methods failed, using oc proxy method..."
+    
+    # Create temporary directory for JSON files
+    TMP_DIR=$(mktemp -d)
+    local PROXY_PID=""
+    
+    # Cleanup function
+    cleanup_proxy() {
+        if [ -n "$PROXY_PID" ] && kill -0 "$PROXY_PID" 2>/dev/null; then
+            kill "$PROXY_PID" 2>/dev/null || true
+            wait "$PROXY_PID" 2>/dev/null || true
+        fi
+        rm -rf "$TMP_DIR" 2>/dev/null || true
+    }
+    trap cleanup_proxy EXIT
+    
+    log "    Exporting namespace JSON..."
+    oc get namespace "$namespace" -o json > "$TMP_DIR/ns-${namespace}.json" 2>/dev/null || {
+        warning "    Failed to export namespace JSON"
+        cleanup_proxy
+        return 1
+    }
+    
+    log "    Removing finalizers from JSON..."
+    if command -v jq &>/dev/null; then
+        # Remove both metadata.finalizers and spec.finalizers
+        jq 'del(.metadata.finalizers) | del(.spec.finalizers)' "$TMP_DIR/ns-${namespace}.json" > "$TMP_DIR/ns-${namespace}-patched.json" 2>/dev/null || {
+            warning "    Failed to patch JSON with jq"
+            cleanup_proxy
+            return 1
+        }
+    else
+        # Fallback: use sed (less safe)
+        sed 's/"finalizers": \[[^]]*\]/"finalizers": []/g' "$TMP_DIR/ns-${namespace}.json" > "$TMP_DIR/ns-${namespace}-patched.json" 2>/dev/null || \
+        sed 's/"finalizers":\[[^]]*\]/"finalizers":[]/g' "$TMP_DIR/ns-${namespace}.json" > "$TMP_DIR/ns-${namespace}-patched.json" 2>/dev/null || {
+            warning "    Failed to patch JSON with sed"
+            cleanup_proxy
+            return 1
+        }
+    fi
+    
+    log "    Starting oc proxy..."
+    oc proxy > /dev/null 2>&1 &
+    PROXY_PID=$!
+    sleep 3  # Give proxy a moment to start
+    
+    # Verify proxy is running
+    if ! kill -0 "$PROXY_PID" 2>/dev/null; then
+        warning "    Failed to start oc proxy"
+        cleanup_proxy
+        return 1
+    fi
+    
+    log "    Applying patched finalizers via direct API call..."
+    PROXY_URL="http://127.0.0.1:8001/api/v1/namespaces/${namespace}/finalize"
+    
+    CURL_OUTPUT=$(curl -k -s -w "\n%{http_code}" \
+        -H "Content-Type: application/json" \
+        -X PUT \
+        --data-binary @"$TMP_DIR/ns-${namespace}-patched.json" \
+        "$PROXY_URL" 2>&1 || echo "")
+    
+    HTTP_CODE=$(echo "$CURL_OUTPUT" | tail -1)
+    RESPONSE_BODY=$(echo "$CURL_OUTPUT" | sed '$d')
+    
+    cleanup_proxy
+    trap - EXIT
+    
+    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "202" ]; then
+        log "    ✓ Finalizers removed successfully via API (HTTP $HTTP_CODE) - namespace should complete deletion"
+        # Wait a bit and check if namespace is gone
+        sleep 5
+        if ! oc get namespace "$namespace" &>/dev/null 2>&1; then
+            log "    ✓ Namespace successfully deleted!"
+            return 0
+        fi
+        return 0
+    else
+        warning "    Failed to remove finalizers via API (HTTP $HTTP_CODE)"
+        if [ -n "$RESPONSE_BODY" ]; then
+            warning "    Response: ${RESPONSE_BODY:0:200}"
+        fi
+        return 1
     fi
 }
 
 log ""
-log "Checking for namespaces stuck in Terminating state..."
-log "Force deleting namespaces if needed..."
+log "Checking for namespaces that need force deletion..."
+log "This includes namespaces stuck in Terminating state or with finalizers..."
 
-# Force delete namespaces that are stuck
+# Function to check if namespace needs force deletion
+namespace_needs_force_delete() {
+    local namespace=$1
+    
+    if ! oc get namespace "$namespace" &>/dev/null 2>&1; then
+        return 1  # Namespace doesn't exist, no force delete needed
+    fi
+    
+    NS_PHASE=$(oc get namespace "$namespace" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+    
+    # Check for finalizers in both metadata and spec
+    FINALIZERS_META=$(oc get namespace "$namespace" -o jsonpath='{.metadata.finalizers[*]}' 2>/dev/null || echo "")
+    FINALIZERS_SPEC=$(oc get namespace "$namespace" -o jsonpath='{.spec.finalizers[*]}' 2>/dev/null || echo "")
+    
+    # Need force delete if: Terminating state OR has finalizers
+    if [ "$NS_PHASE" = "Terminating" ] || [ -n "$FINALIZERS_META" ] || [ -n "$FINALIZERS_SPEC" ]; then
+        return 0  # Needs force delete
+    fi
+    
+    return 1  # Doesn't need force delete
+}
+
+# Force delete namespaces that are stuck or have finalizers
 set +e  # Temporarily disable exit on error
-force_delete_namespace "$RHACS_NAMESPACE" || true
-force_delete_namespace "$CLUSTER_OBSERVABILITY_NS" || true
-force_delete_namespace "$COMPLIANCE_NAMESPACE" || true
+
+if namespace_needs_force_delete "$RHACS_NAMESPACE"; then
+    log "  Force deleting namespace: $RHACS_NAMESPACE"
+    force_delete_namespace "$RHACS_NAMESPACE" || true
+fi
+
+if namespace_needs_force_delete "$CLUSTER_OBSERVABILITY_NS"; then
+    log "  Force deleting namespace: $CLUSTER_OBSERVABILITY_NS"
+    force_delete_namespace "$CLUSTER_OBSERVABILITY_NS" || true
+fi
+
+if namespace_needs_force_delete "$COMPLIANCE_NAMESPACE"; then
+    log "  Force deleting namespace: $COMPLIANCE_NAMESPACE"
+    force_delete_namespace "$COMPLIANCE_NAMESPACE" || true
+fi
+
 set -e  # Re-enable exit on error
 
 log ""
