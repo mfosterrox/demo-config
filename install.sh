@@ -33,6 +33,33 @@ error() {
     exit 1
 }
 
+# Function to save variable to ~/.bashrc for debugging
+save_to_bashrc() {
+    local var_name="$1"
+    local var_value="$2"
+    local comment="${3:-}"
+    
+    if [ -z "$var_value" ]; then
+        return 0  # Don't save empty values
+    fi
+    
+    # Remove existing export line for this variable
+    if [ -f ~/.bashrc ]; then
+        sed -i "/^export ${var_name}=/d" ~/.bashrc 2>/dev/null || true
+    else
+        touch ~/.bashrc
+    fi
+    
+    # Add comment if provided
+    if [ -n "$comment" ]; then
+        echo "# $comment" >> ~/.bashrc
+    fi
+    
+    # Escape special characters in the value for safe storage
+    local escaped_value=$(printf '%s\n' "$var_value" | sed "s/'/'\\\\''/g")
+    echo "export ${var_name}='${escaped_value}'" >> ~/.bashrc
+}
+
 # Delete RHACS operators (cleanup existing operators)
 delete_rhacs() {
     log "Deleting RHACS operators (cleaning up existing operators)..."
@@ -195,12 +222,112 @@ main() {
     log "========================================================="
     log ""
     
-    # Display RHACS access information
-    log "Retrieving RHACS access information..."
+    # Display access information for all services
+    log "Retrieving access information for all services..."
+    log ""
+    
+    # OpenShift Console Information
+    log "========================================================="
+    log "OpenShift Console Access Information"
+    log "========================================================="
+    CONSOLE_ROUTE=$(oc get route console -n openshift-console -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+    if [ -n "$CONSOLE_ROUTE" ]; then
+        log "Console URL:       https://$CONSOLE_ROUTE"
+        
+        # Get kubeadmin password
+        KUBEADMIN_PASSWORD_B64=$(oc get secret kubeadmin -n kube-system -o jsonpath='{.data.password}' 2>/dev/null || echo "")
+        if [ -n "$KUBEADMIN_PASSWORD_B64" ]; then
+            KUBEADMIN_PASSWORD=$(echo "$KUBEADMIN_PASSWORD_B64" | base64 -d 2>/dev/null || echo "")
+            log "Username:         kubeadmin"
+            log "Password:         $KUBEADMIN_PASSWORD"
+        else
+            log "Username:         kubeadmin"
+            log "Password:         (retrieve with: oc get secret kubeadmin -n kube-system -o jsonpath='{.data.password}' | base64 -d)"
+        fi
+    else
+        log "Console URL:       (not found)"
+        log "Username:         kubeadmin"
+        log "Password:         (retrieve with: oc get secret kubeadmin -n kube-system -o jsonpath='{.data.password}' | base64 -d)"
+    fi
+    log "========================================================="
+    log ""
+    
+    # Red Hat Developer Hub Information
+    log "========================================================="
+    log "Red Hat Developer Hub Access Information"
+    log "========================================================="
+    
+    # Check for Red Hat Developer Hub in common namespaces
+    RHDH_NAMESPACE=""
+    RHDH_ROUTE=""
+    
+    # Try rhdh-operator namespace first
+    if oc get namespace rhdh-operator >/dev/null 2>&1; then
+        RHDH_ROUTE=$(oc get route -n rhdh-operator -o jsonpath='{.items[0].spec.host}' 2>/dev/null | head -1 || echo "")
+        if [ -n "$RHDH_ROUTE" ]; then
+            RHDH_NAMESPACE="rhdh-operator"
+        fi
+    fi
+    
+    # Try openshift-devspaces namespace
+    if [ -z "$RHDH_ROUTE" ] && oc get namespace openshift-devspaces >/dev/null 2>&1; then
+        RHDH_ROUTE=$(oc get route -n openshift-devspaces -o jsonpath='{.items[0].spec.host}' 2>/dev/null | head -1 || echo "")
+        if [ -n "$RHDH_ROUTE" ]; then
+            RHDH_NAMESPACE="openshift-devspaces"
+        fi
+    fi
+    
+    # Try devspaces namespace
+    if [ -z "$RHDH_ROUTE" ] && oc get namespace devspaces >/dev/null 2>&1; then
+        RHDH_ROUTE=$(oc get route -n devspaces -o jsonpath='{.items[0].spec.host}' 2>/dev/null | head -1 || echo "")
+        if [ -n "$RHDH_ROUTE" ]; then
+            RHDH_NAMESPACE="devspaces"
+        fi
+    fi
+    
+    if [ -n "$RHDH_ROUTE" ]; then
+        log "Developer Hub URL: https://$RHDH_ROUTE"
+        
+        # Try to get credentials from secret (common secret names)
+        RHDH_PASSWORD=""
+        for secret_name in "devspaces-secret" "rhdh-secret" "admin-secret"; do
+            if oc get secret "$secret_name" -n "$RHDH_NAMESPACE" >/dev/null 2>&1; then
+                RHDH_PASSWORD_B64=$(oc get secret "$secret_name" -n "$RHDH_NAMESPACE" -o jsonpath='{.data.password}' 2>/dev/null || echo "")
+                if [ -z "$RHDH_PASSWORD_B64" ]; then
+                    RHDH_PASSWORD_B64=$(oc get secret "$secret_name" -n "$RHDH_NAMESPACE" -o jsonpath='{.data.admin-password}' 2>/dev/null || echo "")
+                fi
+                if [ -n "$RHDH_PASSWORD_B64" ]; then
+                    RHDH_PASSWORD=$(echo "$RHDH_PASSWORD_B64" | base64 -d 2>/dev/null || echo "")
+                    break
+                fi
+            fi
+        done
+        
+        if [ -n "$RHDH_PASSWORD" ]; then
+            log "Username:         admin"
+            log "Password:         $RHDH_PASSWORD"
+        else
+            log "Username:         admin"
+            log "Password:         (check secrets in namespace $RHDH_NAMESPACE)"
+        fi
+    else
+        log "Developer Hub URL: (not installed or route not found)"
+        log "Note: Red Hat Developer Hub may not be installed on this cluster"
+    fi
+    log "========================================================="
+    log ""
+    
+    # RHACS Information
+    log "========================================================="
+    log "RHACS Access Information"
+    log "========================================================="
     RHACS_NAMESPACE="rhacs-operator"
     
     # Get Central route
     CENTRAL_ROUTE=$(oc get route central -n "$RHACS_NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+    ROX_ENDPOINT="$CENTRAL_ROUTE"
+    ROX_API_TOKEN=""
+    
     if [ -n "$CENTRAL_ROUTE" ]; then
         # Get admin password
         ADMIN_PASSWORD_B64=$(oc get secret central-htpasswd -n "$RHACS_NAMESPACE" -o jsonpath='{.data.password}' 2>/dev/null || echo "")
@@ -208,22 +335,70 @@ main() {
             ADMIN_PASSWORD=$(echo "$ADMIN_PASSWORD_B64" | base64 -d 2>/dev/null || echo "")
         fi
         
-        log ""
-        log "========================================================="
-        log "RHACS Access Information"
-        log "========================================================="
         log "RHACS UI URL:     https://$CENTRAL_ROUTE"
         log "Username:         admin"
         if [ -n "$ADMIN_PASSWORD" ]; then
             log "Password:         $ADMIN_PASSWORD"
+            
+            # Generate API token for debugging purposes
+            if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+                log "Generating API token for debugging..."
+                ROX_ENDPOINT_FOR_API="${ROX_ENDPOINT#https://}"
+                ROX_ENDPOINT_FOR_API="${ROX_ENDPOINT_FOR_API#http://}"
+                
+                set +e
+                TOKEN_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 60 -X POST \
+                    -u "admin:${ADMIN_PASSWORD}" \
+                    -H "Content-Type: application/json" \
+                    "https://${ROX_ENDPOINT_FOR_API}/v1/apitokens/generate" \
+                    -d '{"name":"install-script-debug-token","roles":["Admin"]}' 2>&1)
+                TOKEN_CURL_EXIT_CODE=$?
+                set -e
+                
+                if [ $TOKEN_CURL_EXIT_CODE -eq 0 ]; then
+                    # Extract token from response
+                    if echo "$TOKEN_RESPONSE" | jq . >/dev/null 2>&1; then
+                        ROX_API_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.token // .data.token // empty' 2>/dev/null || echo "")
+                    fi
+                    
+                    if [ -z "$ROX_API_TOKEN" ] || [ "$ROX_API_TOKEN" = "null" ]; then
+                        ROX_API_TOKEN=$(echo "$TOKEN_RESPONSE" | grep -oE '[a-zA-Z0-9_-]{40,}' | head -1 || echo "")
+                    fi
+                    
+                    if [ -n "$ROX_API_TOKEN" ] && [ ${#ROX_API_TOKEN} -ge 20 ]; then
+                        log "✓ API token generated for debugging"
+                    fi
+                fi
+            fi
         else
             log "Password:         (retrieve with: oc get secret central-htpasswd -n $RHACS_NAMESPACE -o jsonpath='{.data.password}' | base64 -d)"
         fi
-        log "========================================================="
-        log ""
     else
-        warning "Central route not found. RHACS may still be deploying."
+        log "RHACS UI URL:     (not found - may still be deploying)"
+        log "Username:         admin"
+        log "Password:         (retrieve with: oc get secret central-htpasswd -n $RHACS_NAMESPACE -o jsonpath='{.data.password}' | base64 -d)"
     fi
+    log "========================================================="
+    log ""
+    
+    # Save meaningful variables to ~/.bashrc for debugging
+    log "Saving variables to ~/.bashrc for debugging..."
+    save_to_bashrc "RHACS_NAMESPACE" "$RHACS_NAMESPACE" "RHACS namespace"
+    save_to_bashrc "ROX_ENDPOINT" "$ROX_ENDPOINT" "RHACS Central endpoint (for API calls and roxctl)"
+    if [ -n "$ROX_API_TOKEN" ]; then
+        save_to_bashrc "ROX_API_TOKEN" "$ROX_API_TOKEN" "RHACS API token (may expire - regenerate if needed)"
+    fi
+    if [ -n "$ADMIN_PASSWORD" ]; then
+        save_to_bashrc "ADMIN_PASSWORD" "$ADMIN_PASSWORD" "RHACS admin password"
+    fi
+    if [ -n "$CONSOLE_ROUTE" ]; then
+        save_to_bashrc "CONSOLE_ROUTE" "$CONSOLE_ROUTE" "OpenShift Console route"
+    fi
+    if [ -n "$RHDH_ROUTE" ]; then
+        save_to_bashrc "RHDH_ROUTE" "$RHDH_ROUTE" "Red Hat Developer Hub route"
+    fi
+    log "✓ Variables saved to ~/.bashrc"
+    log ""
     
 }
 
