@@ -10,7 +10,7 @@ spec:
   scheme: HTTPS
   staticConfigs:
     - targets:
-        - "central.rhacs-operator.svc.cluster.local:443"
+        - "central.rhacs-operator.svc.cluster.local:443/metrics"
   tlsConfig:
     ca:
       secret:
