@@ -66,8 +66,14 @@ log ""
 log "Checking RHACS operator status"
 
 OPERATOR_PACKAGE="rhacs-operator"
+EXISTING_SUBSCRIPTION=false
+NEEDS_CHANNEL_UPDATE=false
+
 if oc get subscription.operators.coreos.com "$OPERATOR_PACKAGE" -n "$OPERATOR_NAMESPACE" >/dev/null 2>&1; then
+    EXISTING_SUBSCRIPTION=true
     CURRENT_CSV=$(oc get subscription.operators.coreos.com "$OPERATOR_PACKAGE" -n "$OPERATOR_NAMESPACE" -o jsonpath='{.status.currentCSV}' 2>/dev/null || echo "")
+    EXISTING_CHANNEL=$(oc get subscription.operators.coreos.com "$OPERATOR_PACKAGE" -n "$OPERATOR_NAMESPACE" -o jsonpath='{.spec.channel}' 2>/dev/null || echo "")
+    
     if [ -n "$CURRENT_CSV" ] && [ "$CURRENT_CSV" != "null" ]; then
         if oc get csv "$CURRENT_CSV" -n "$OPERATOR_NAMESPACE" >/dev/null 2>&1; then
             CSV_PHASE=$(oc get csv "$CURRENT_CSV" -n "$OPERATOR_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
@@ -75,27 +81,24 @@ if oc get subscription.operators.coreos.com "$OPERATOR_PACKAGE" -n "$OPERATOR_NA
             if [ "$CSV_PHASE" = "Succeeded" ]; then
                 log "✓ RHACS operator is already installed and running"
                 log "  Installed CSV: $CURRENT_CSV"
+                log "  Current channel: ${EXISTING_CHANNEL:-unknown}"
                 log "  Status: $CSV_PHASE"
                 CSV_NAME="$CURRENT_CSV"
-                NEEDS_INSTALL=false
             else
                 log "RHACS operator subscription exists but CSV is in phase: $CSV_PHASE"
-                NEEDS_INSTALL=true
             fi
         else
             log "RHACS operator subscription exists but CSV not found"
-            NEEDS_INSTALL=true
         fi
     else
         log "RHACS operator subscription exists but CSV not yet determined"
-        NEEDS_INSTALL=true
     fi
 else
     log "RHACS operator not found, proceeding with installation..."
-    NEEDS_INSTALL=true
 fi
 
-if [ "${NEEDS_INSTALL:-true}" = true ]; then
+# Determine preferred channel (rhacs-4.9, fallback to stable)
+if [ "${NEEDS_INSTALL:-true}" = true ] || [ "$EXISTING_SUBSCRIPTION" = true ]; then
     # Determine channel
     log ""
     log "Determining available channel for RHACS operator..."
@@ -107,8 +110,8 @@ if [ "${NEEDS_INSTALL:-true}" = true ]; then
         if [ -n "$AVAILABLE_CHANNELS" ]; then
             log "Available channels: $AVAILABLE_CHANNELS"
             
-            # RHACS typically uses "stable" channel
-            PREFERRED_CHANNELS=("stable")
+            # Prefer rhacs-4.9 channel, fall back to stable if unavailable
+            PREFERRED_CHANNELS=("rhacs-4.9" "stable")
             
             for pref_channel in "${PREFERRED_CHANNELS[@]}"; do
                 if echo "$AVAILABLE_CHANNELS" | grep -q "\b$pref_channel\b"; then
@@ -132,8 +135,8 @@ if [ "${NEEDS_INSTALL:-true}" = true ]; then
     
     # Fallback to default channel if we couldn't determine it
     if [ -z "$CHANNEL" ]; then
-        CHANNEL="stable"
-        log "Using default channel: $CHANNEL"
+        CHANNEL="rhacs-4.9"
+        log "Using default channel: $CHANNEL (will fall back to stable if unavailable)"
     fi
     
     # Create OperatorGroup if it doesn't exist
@@ -163,14 +166,14 @@ EOF
     log "  Source: redhat-operators"
     log "  SourceNamespace: openshift-marketplace"
     
-    if oc get subscription.operators.coreos.com "$OPERATOR_PACKAGE" -n "$OPERATOR_NAMESPACE" >/dev/null 2>&1; then
-        EXISTING_CHANNEL=$(oc get subscription.operators.coreos.com "$OPERATOR_PACKAGE" -n "$OPERATOR_NAMESPACE" -o jsonpath='{.spec.channel}' 2>/dev/null || echo "")
-        
+    if [ "$EXISTING_SUBSCRIPTION" = true ]; then
         if [ "$EXISTING_CHANNEL" != "$CHANNEL" ]; then
             log "  Updating subscription channel from '$EXISTING_CHANNEL' to '$CHANNEL'..."
             oc patch subscription.operators.coreos.com "$OPERATOR_PACKAGE" -n "$OPERATOR_NAMESPACE" --type merge -p "{\"spec\":{\"channel\":\"$CHANNEL\"}}" || error "Failed to update subscription channel"
             log "✓ Subscription channel updated to $CHANNEL"
-            sleep 3
+            log "  Waiting for operator upgrade to begin..."
+            sleep 5
+            NEEDS_CHANNEL_UPDATE=true
         else
             log "✓ Subscription already exists with channel: $CHANNEL"
         fi
@@ -239,15 +242,42 @@ EOF
     
     # Wait for CSV to be in Succeeded phase
     log ""
-    log "Waiting for ClusterServiceVersion to be installed..."
-    if ! oc wait --for=jsonpath='{.status.phase}'=Succeeded "csv/$CSV_NAME" -n "$OPERATOR_NAMESPACE" --timeout=300s 2>/dev/null; then
+    if [ "$NEEDS_CHANNEL_UPDATE" = true ]; then
+        log "Waiting for operator upgrade to complete (channel change: $EXISTING_CHANNEL -> $CHANNEL)..."
+        # Wait a bit longer for upgrades
+        CSV_UPGRADE_TIMEOUT=600
+    else
+        log "Waiting for ClusterServiceVersion to be installed..."
+        CSV_UPGRADE_TIMEOUT=300
+    fi
+    
+    if ! oc wait --for=jsonpath='{.status.phase}'=Succeeded "csv/$CSV_NAME" -n "$OPERATOR_NAMESPACE" --timeout=${CSV_UPGRADE_TIMEOUT}s 2>/dev/null; then
         CSV_STATUS=$(oc get csv "$CSV_NAME" -n "$OPERATOR_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "unknown")
         warning "CSV did not reach Succeeded phase within timeout. Current status: $CSV_STATUS"
         log "Checking CSV details..."
         oc get csv "$CSV_NAME" -n "$OPERATOR_NAMESPACE"
         log "Check CSV details: oc describe csv $CSV_NAME -n $OPERATOR_NAMESPACE"
+        
+        # If channel was updated, check if a new CSV is being installed
+        if [ "$NEEDS_CHANNEL_UPDATE" = true ]; then
+            NEW_CSV=$(oc get subscription.operators.coreos.com "$OPERATOR_PACKAGE" -n "$OPERATOR_NAMESPACE" -o jsonpath='{.status.currentCSV}' 2>/dev/null || echo "")
+            if [ -n "$NEW_CSV" ] && [ "$NEW_CSV" != "$CSV_NAME" ]; then
+                log "New CSV detected: $NEW_CSV (upgrade in progress)"
+                log "Waiting for new CSV to be ready..."
+                if oc wait --for=jsonpath='{.status.phase}'=Succeeded "csv/$NEW_CSV" -n "$OPERATOR_NAMESPACE" --timeout=300s 2>/dev/null; then
+                    CSV_NAME="$NEW_CSV"
+                    log "✓ Operator upgraded successfully to $NEW_CSV"
+                else
+                    warning "New CSV $NEW_CSV did not reach Succeeded phase within timeout"
+                fi
+            fi
+        fi
     else
-        log "✓ CSV is in Succeeded phase"
+        if [ "$NEEDS_CHANNEL_UPDATE" = true ]; then
+            log "✓ Operator upgraded successfully (channel: $CHANNEL)"
+        else
+            log "✓ CSV is in Succeeded phase"
+        fi
     fi
 fi
 
