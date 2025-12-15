@@ -1053,11 +1053,37 @@ log "========================================================="
 log "Step 2: Installing Cluster Observability Operator resources"
 log "========================================================="
 
-# Verify monitoring-setup directory exists
+# Verify monitoring-setup directory exists (always check, even if operator is installed)
+log "Verifying monitoring-setup directory and YAML files..."
 if [ ! -d "$MONITORING_SETUP_DIR" ]; then
     error "Monitoring setup directory not found: $MONITORING_SETUP_DIR"
 fi
 log "✓ Monitoring setup directory found: $MONITORING_SETUP_DIR"
+
+# Verify all required YAML files exist
+REQUIRED_FILES=(
+    "$MONITORING_SETUP_DIR/cluster-observability-operator/monitoring-stack.yaml"
+    "$MONITORING_SETUP_DIR/cluster-observability-operator/scrape-config.yaml"
+    "$MONITORING_SETUP_DIR/prometheus-operator/additional-scrape-config.yaml"
+    "$MONITORING_SETUP_DIR/prometheus-operator/prometheus.yaml"
+    "$MONITORING_SETUP_DIR/prometheus-operator/prometheus-rule.yaml"
+    "$MONITORING_SETUP_DIR/rhacs/declarative-configuration-configmap.yaml"
+    "$MONITORING_SETUP_DIR/perses/datasource.yaml"
+    "$MONITORING_SETUP_DIR/perses/dashboard.yaml"
+    "$MONITORING_SETUP_DIR/perses/ui-plugin.yaml"
+)
+
+MISSING_FILES=()
+for file in "${REQUIRED_FILES[@]}"; do
+    if [ ! -f "$file" ]; then
+        MISSING_FILES+=("$file")
+    fi
+done
+
+if [ ${#MISSING_FILES[@]} -gt 0 ]; then
+    error "Required YAML files not found: ${MISSING_FILES[*]}"
+fi
+log "✓ All required YAML files found"
 
 # Function to apply YAML with namespace substitution
 apply_yaml_with_namespace() {
@@ -1170,7 +1196,130 @@ fi
 log ""
 log "Perses monitoring resources installed successfully!"
 log ""
-fi  # End of SKIP_INSTALLATION check for all installation steps
+fi  # End of SKIP_INSTALLATION check for operator installation
+
+# Always ensure monitoring resources are installed (even if operator was already installed)
+# This ensures YAML files are always applied, which is idempotent
+log ""
+log "========================================================="
+log "Ensuring all monitoring-setup YAML files are installed"
+log "========================================================="
+
+# Verify monitoring-setup directory exists
+if [ ! -d "$MONITORING_SETUP_DIR" ]; then
+    error "Monitoring setup directory not found: $MONITORING_SETUP_DIR"
+fi
+log "✓ Monitoring setup directory found: $MONITORING_SETUP_DIR"
+
+# Verify all required YAML files exist before attempting installation
+REQUIRED_FILES=(
+    "$MONITORING_SETUP_DIR/cluster-observability-operator/monitoring-stack.yaml"
+    "$MONITORING_SETUP_DIR/cluster-observability-operator/scrape-config.yaml"
+    "$MONITORING_SETUP_DIR/prometheus-operator/additional-scrape-config.yaml"
+    "$MONITORING_SETUP_DIR/prometheus-operator/prometheus.yaml"
+    "$MONITORING_SETUP_DIR/prometheus-operator/prometheus-rule.yaml"
+    "$MONITORING_SETUP_DIR/rhacs/declarative-configuration-configmap.yaml"
+    "$MONITORING_SETUP_DIR/perses/datasource.yaml"
+    "$MONITORING_SETUP_DIR/perses/dashboard.yaml"
+    "$MONITORING_SETUP_DIR/perses/ui-plugin.yaml"
+)
+
+log "Verifying all required YAML files exist..."
+MISSING_FILES=()
+for file in "${REQUIRED_FILES[@]}"; do
+    if [ ! -f "$file" ]; then
+        MISSING_FILES+=("$file")
+    else
+        log "  ✓ Found: $(basename "$file")"
+    fi
+done
+
+if [ ${#MISSING_FILES[@]} -gt 0 ]; then
+    error "Required YAML files not found: ${MISSING_FILES[*]}"
+fi
+log "✓ All required YAML files verified"
+
+# Function to apply YAML with namespace substitution (reuse if already defined, otherwise define it)
+if ! type apply_yaml_with_namespace &>/dev/null; then
+    apply_yaml_with_namespace() {
+        local yaml_file="$1"
+        local description="$2"
+        
+        if [ ! -f "$yaml_file" ]; then
+            error "YAML file not found: $yaml_file"
+        fi
+        
+        log "Installing $description..."
+        # Replace namespace in YAML file:
+        # - namespace: tssc-acs -> namespace: $NAMESPACE
+        # - namespace: "tssc-acs" -> namespace: "$NAMESPACE"
+        # - .tssc-acs.svc -> .$NAMESPACE.svc (for service references)
+        # - .tssc-acs.svc.cluster.local -> .$NAMESPACE.svc.cluster.local
+        sed "s/namespace: tssc-acs/namespace: $NAMESPACE/g; \
+             s/namespace: \"tssc-acs\"/namespace: \"$NAMESPACE\"/g; \
+             s/\\.tssc-acs\\.svc\\.cluster\\.local/\\.$NAMESPACE\\.svc\\.cluster\\.local/g; \
+             s/\\.tssc-acs\\.svc/\\.$NAMESPACE\\.svc/g" "$yaml_file" | \
+            oc apply -f - || error "Failed to apply $yaml_file"
+        log "✓ $description installed successfully"
+    }
+fi
+
+# Install all monitoring resources (idempotent - safe to run multiple times)
+log "Installing Cluster Observability Operator resources..."
+apply_yaml_with_namespace \
+    "$MONITORING_SETUP_DIR/cluster-observability-operator/monitoring-stack.yaml" \
+    "MonitoringStack (rhacs-monitoring-stack)"
+
+sleep 2
+
+apply_yaml_with_namespace \
+    "$MONITORING_SETUP_DIR/cluster-observability-operator/scrape-config.yaml" \
+    "ScrapeConfig (rhacs-scrape-config)"
+
+log ""
+log "Installing Prometheus Operator resources..."
+apply_yaml_with_namespace \
+    "$MONITORING_SETUP_DIR/prometheus-operator/additional-scrape-config.yaml" \
+    "Prometheus additional scrape config secret"
+
+apply_yaml_with_namespace \
+    "$MONITORING_SETUP_DIR/prometheus-operator/prometheus.yaml" \
+    "Prometheus (rhacs-prometheus-server)"
+
+apply_yaml_with_namespace \
+    "$MONITORING_SETUP_DIR/prometheus-operator/prometheus-rule.yaml" \
+    "PrometheusRule (rhacs-health-alerts)"
+
+log ""
+log "Installing RHACS declarative configuration..."
+apply_yaml_with_namespace \
+    "$MONITORING_SETUP_DIR/rhacs/declarative-configuration-configmap.yaml" \
+    "RHACS declarative configuration ConfigMap"
+
+log ""
+log "Installing Perses monitoring resources..."
+apply_yaml_with_namespace \
+    "$MONITORING_SETUP_DIR/perses/datasource.yaml" \
+    "Perses Datasource (rhacs-datasource)"
+
+apply_yaml_with_namespace \
+    "$MONITORING_SETUP_DIR/perses/dashboard.yaml" \
+    "Perses Dashboard (rhacs-dashboard)"
+
+# Install Perses UI plugin (may be cluster-scoped)
+log "Installing Perses UI Plugin..."
+if grep -q "namespace:" "$MONITORING_SETUP_DIR/perses/ui-plugin.yaml"; then
+    apply_yaml_with_namespace \
+        "$MONITORING_SETUP_DIR/perses/ui-plugin.yaml" \
+        "Perses UI Plugin"
+else
+    log "Installing Perses UI Plugin (cluster-scoped)..."
+    oc apply -f "$MONITORING_SETUP_DIR/perses/ui-plugin.yaml" || error "Failed to apply UI plugin"
+    log "✓ Perses UI Plugin installed successfully"
+fi
+
+log ""
+log "✓ All monitoring-setup YAML files have been installed/updated"
 
 # Final summary
 log ""
