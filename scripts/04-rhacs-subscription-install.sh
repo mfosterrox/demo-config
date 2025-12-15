@@ -196,27 +196,80 @@ EOF
             error "Failed to create Subscription"
         fi
         log "✓ Subscription created successfully"
+        sleep 5  # Increased wait time for subscription to be processed
+        
+        # Check if InstallPlan needs approval (should be automatic, but check anyway)
+        log "Checking InstallPlan status..."
+        # Wait a moment for InstallPlan to be created
         sleep 3
+        
+        # Find InstallPlan related to this subscription
+        INSTALL_PLAN=$(oc get installplan -n "$OPERATOR_NAMESPACE" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' | head -1 || echo "")
+        
+        if [ -n "$INSTALL_PLAN" ]; then
+            IP_APPROVAL=$(oc get installplan "$INSTALL_PLAN" -n "$OPERATOR_NAMESPACE" -o jsonpath='{.spec.approval}' 2>/dev/null || echo "")
+            IP_PHASE=$(oc get installplan "$INSTALL_PLAN" -n "$OPERATOR_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+            IP_APPROVED=$(oc get installplan "$INSTALL_PLAN" -n "$OPERATOR_NAMESPACE" -o jsonpath='{.spec.approved}' 2>/dev/null || echo "")
+            log "  Found InstallPlan: $INSTALL_PLAN (approval: ${IP_APPROVAL:-unknown}, phase: ${IP_PHASE:-unknown}, approved: ${IP_APPROVED:-unknown})"
+            
+            # If InstallPlan is Manual and not approved, approve it
+            if [ "$IP_APPROVAL" = "Manual" ] && [ "$IP_APPROVED" != "true" ] && [ "$IP_PHASE" != "Complete" ]; then
+                log "  Approving Manual InstallPlan..."
+                oc patch installplan "$INSTALL_PLAN" -n "$OPERATOR_NAMESPACE" --type merge -p '{"spec":{"approved":true}}' || warning "Failed to approve InstallPlan"
+                log "  ✓ InstallPlan approved"
+            fi
+        else
+            log "  InstallPlan not found yet (will check during CSV wait)"
+        fi
     fi
     
     # Wait for CSV to be created
     log ""
     log "Waiting for ClusterServiceVersion to be created..."
-    MAX_WAIT=90
+    MAX_WAIT=180  # Increased timeout to 180 seconds
     WAIT_COUNT=0
     CSV_CREATED=false
     
     while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
+        # Check if CSV exists
         if oc get csv -n "$OPERATOR_NAMESPACE" 2>/dev/null | grep -q "$OPERATOR_PACKAGE"; then
             CSV_CREATED=true
             log "✓ CSV created"
             break
         fi
         
-        # Show progress every 10 seconds
-        if [ $((WAIT_COUNT % 10)) -eq 0 ] && [ $WAIT_COUNT -gt 0 ]; then
+        # Show progress every 15 seconds with detailed status
+        if [ $((WAIT_COUNT % 15)) -eq 0 ] && [ $WAIT_COUNT -gt 0 ]; then
             log "  Progress check (${WAIT_COUNT}s/${MAX_WAIT}s):"
-            oc get csv,subscription,installplan -n "$OPERATOR_NAMESPACE" 2>/dev/null | grep -i "$OPERATOR_PACKAGE" | head -5 || true
+            
+            # Check subscription status
+            SUB_STATUS=$(oc get subscription.operators.coreos.com "$OPERATOR_PACKAGE" -n "$OPERATOR_NAMESPACE" -o jsonpath='{.status.state}' 2>/dev/null || echo "unknown")
+            SUB_CONDITION=$(oc get subscription.operators.coreos.com "$OPERATOR_PACKAGE" -n "$OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[0].message}' 2>/dev/null || echo "")
+            log "    Subscription state: ${SUB_STATUS}"
+            if [ -n "$SUB_CONDITION" ] && [ "$SUB_CONDITION" != "null" ]; then
+                log "    Subscription condition: ${SUB_CONDITION}"
+            fi
+            
+            # Check InstallPlan status
+            INSTALL_PLAN=$(oc get installplan -n "$OPERATOR_NAMESPACE" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' | head -1 || echo "")
+            if [ -n "$INSTALL_PLAN" ]; then
+                IP_PHASE=$(oc get installplan "$INSTALL_PLAN" -n "$OPERATOR_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "unknown")
+                IP_APPROVAL=$(oc get installplan "$INSTALL_PLAN" -n "$OPERATOR_NAMESPACE" -o jsonpath='{.spec.approval}' 2>/dev/null || echo "unknown")
+                IP_APPROVED=$(oc get installplan "$INSTALL_PLAN" -n "$OPERATOR_NAMESPACE" -o jsonpath='{.spec.approved}' 2>/dev/null || echo "unknown")
+                log "    InstallPlan: $INSTALL_PLAN (phase: $IP_PHASE, approval: $IP_APPROVAL, approved: $IP_APPROVED)"
+                
+                # If InstallPlan is Manual and not approved, try to approve it
+                if [ "$IP_APPROVAL" = "Manual" ] && [ "$IP_APPROVED" != "true" ] && [ "$IP_PHASE" != "Complete" ]; then
+                    log "    Attempting to approve Manual InstallPlan..."
+                    oc patch installplan "$INSTALL_PLAN" -n "$OPERATOR_NAMESPACE" --type merge -p '{"spec":{"approved":true}}' 2>/dev/null && log "      ✓ InstallPlan approved" || warning "      Failed to approve InstallPlan"
+                fi
+            else
+                log "    InstallPlan: Not found yet"
+            fi
+            
+            # Check for any CSV
+            CSV_COUNT=$(oc get csv -n "$OPERATOR_NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d '[:space:]' || echo "0")
+            log "    CSV count in namespace: $CSV_COUNT"
             log ""
         fi
         
@@ -225,9 +278,19 @@ EOF
     done
     
     if [ "$CSV_CREATED" = false ]; then
-        warning "CSV not created after ${MAX_WAIT} seconds. Current status:"
-        oc get subscription,installplan -n "$OPERATOR_NAMESPACE" 2>/dev/null | grep -i "$OPERATOR_PACKAGE" || true
-        error "CSV not created. Check subscription status: oc get subscription $OPERATOR_PACKAGE -n $OPERATOR_NAMESPACE"
+        warning "CSV not created after ${MAX_WAIT} seconds."
+        log ""
+        log "Current subscription status:"
+        oc get subscription.operators.coreos.com "$OPERATOR_PACKAGE" -n "$OPERATOR_NAMESPACE" -o yaml 2>/dev/null | grep -A 20 "status:" || true
+        log ""
+        log "InstallPlan status:"
+        oc get installplan -n "$OPERATOR_NAMESPACE" -o yaml 2>/dev/null | grep -A 10 "metadata:\|spec:\|status:" || true
+        log ""
+        log "For more details, run:"
+        log "  oc describe subscription $OPERATOR_PACKAGE -n $OPERATOR_NAMESPACE"
+        log "  oc get installplan -n $OPERATOR_NAMESPACE"
+        log "  oc get csv -n $OPERATOR_NAMESPACE"
+        error "CSV not created. Check the status above for details."
     fi
     
     # Get the CSV name

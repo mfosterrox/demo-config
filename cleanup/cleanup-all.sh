@@ -227,15 +227,7 @@ else
     log "  Subscription compliance-operator not found in $COMPLIANCE_NAMESPACE"
 fi
 
-# Delete Cert-Manager operator subscription (if installed by our scripts)
-CERT_MANAGER_NS="cert-manager-operator"
-log "Deleting Cert-Manager operator subscription..."
-if oc get subscription.operators.coreos.com cert-manager -n "$CERT_MANAGER_NS" &>/dev/null 2>&1; then
-    log "  Deleting subscription cert-manager in namespace $CERT_MANAGER_NS..."
-    oc delete subscription.operators.coreos.com cert-manager -n "$CERT_MANAGER_NS" --timeout=60s &>/dev/null 2>&1 && log "    ✓ Deleted" || warning "    Failed to delete"
-else
-    log "  Subscription cert-manager not found in $CERT_MANAGER_NS (may not have been installed by our scripts)"
-fi
+# Note: Cert-Manager is NOT deleted as it may be used by other components
 
 log ""
 log "Waiting for subscriptions to be deleted..."
@@ -243,7 +235,49 @@ sleep 10
 
 log ""
 log "========================================================="
-log "Step 3: Deleting namespaces"
+log "Step 3: Deleting demo applications"
+log "========================================================="
+log ""
+
+# Delete all demo applications with label demo=roadshow
+DEMO_LABEL="demo=roadshow"
+log "Deleting demo applications with label $DEMO_LABEL..."
+
+# Get all namespaces with demo applications
+DEMO_NAMESPACES=$(oc get deployments -l "$DEMO_LABEL" -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' 2>/dev/null | sort -u || echo "")
+
+if [ -n "$DEMO_NAMESPACES" ]; then
+    log "  Found demo applications in namespaces:"
+    for ns in $DEMO_NAMESPACES; do
+        log "    - $ns"
+    done
+    
+    # Delete all resources with demo label in each namespace
+    for namespace in $DEMO_NAMESPACES; do
+        log "  Deleting demo resources in namespace: $namespace"
+        
+        # Delete all resources with the demo label using oc delete all
+        log "    Deleting all resources with label $DEMO_LABEL..."
+        set +e  # Temporarily disable exit on error
+        oc delete all -l "$DEMO_LABEL" -n "$namespace" --timeout=60s &>/dev/null 2>&1 && log "      ✓ Deleted all resources" || warning "      Some resources may not have been deleted"
+        
+        # Also delete configmaps and secrets with the label (not included in 'oc delete all')
+        oc delete configmap -l "$DEMO_LABEL" -n "$namespace" --timeout=60s &>/dev/null 2>&1 || true
+        oc delete secret -l "$DEMO_LABEL" -n "$namespace" --timeout=60s &>/dev/null 2>&1 || true
+        set -e  # Re-enable exit on error
+    done
+    
+    log ""
+    log "Waiting for demo application deletions to complete..."
+    sleep 10
+else
+    log "  No demo applications found with label $DEMO_LABEL"
+    log ""
+fi
+
+log ""
+log "========================================================="
+log "Step 4: Deleting namespaces"
 log "========================================================="
 log ""
 
@@ -271,7 +305,7 @@ set +e  # Temporarily disable exit on error for namespace deletion
 delete_namespace "$RHACS_NAMESPACE" || true
 delete_namespace "$CLUSTER_OBSERVABILITY_NS" || true
 delete_namespace "$COMPLIANCE_NAMESPACE" || true
-delete_namespace "$CERT_MANAGER_NS" || true
+# Note: cert-manager-operator namespace is NOT deleted as cert-manager may be used by other components
 set -e  # Re-enable exit on error
 
 log ""
@@ -280,7 +314,7 @@ sleep 15
 
 log ""
 log "========================================================="
-log "Step 4: Verifying cleanup"
+log "Step 5: Verifying cleanup"
 log "========================================================="
 log ""
 
@@ -310,7 +344,7 @@ ALL_DELETED=true
 verify_namespace_deletion "$RHACS_NAMESPACE" || ALL_DELETED=false
 verify_namespace_deletion "$CLUSTER_OBSERVABILITY_NS" || ALL_DELETED=false
 verify_namespace_deletion "$COMPLIANCE_NAMESPACE" || ALL_DELETED=false
-verify_namespace_deletion "$CERT_MANAGER_NS" || ALL_DELETED=false
+# Note: cert-manager-operator namespace is NOT verified as it's not being deleted
 
 log ""
 log "Verifying custom resources are deleted..."
@@ -348,13 +382,22 @@ if oc get namespace "$COMPLIANCE_NAMESPACE" &>/dev/null 2>&1; then
     fi
 fi
 
-# Check for remaining subscriptions
-REMAINING_SUBS=$(oc get subscription.operators.coreos.com --all-namespaces --no-headers 2>/dev/null | grep -E "(rhacs-operator|cluster-observability-operator|compliance-operator|cert-manager)" | wc -l | tr -d '[:space:]' || echo "0")
+# Check for remaining subscriptions (excluding cert-manager)
+REMAINING_SUBS=$(oc get subscription.operators.coreos.com --all-namespaces --no-headers 2>/dev/null | grep -E "(rhacs-operator|cluster-observability-operator|compliance-operator)" | wc -l | tr -d '[:space:]' || echo "0")
 if [ "$REMAINING_SUBS" != "0" ]; then
     warning "  Found remaining operator subscriptions: $REMAINING_SUBS"
     ALL_DELETED=false
 else
-    log "  ✓ No remaining operator subscriptions"
+    log "  ✓ No remaining operator subscriptions (cert-manager excluded)"
+fi
+
+# Check for remaining demo applications
+REMAINING_DEMO=$(oc get deployments -l "$DEMO_LABEL" -A --no-headers 2>/dev/null | wc -l | tr -d '[:space:]' || echo "0")
+if [ "$REMAINING_DEMO" != "0" ]; then
+    warning "  Found remaining demo applications: $REMAINING_DEMO"
+    ALL_DELETED=false
+else
+    log "  ✓ No remaining demo applications"
 fi
 
 log ""
@@ -367,8 +410,8 @@ if [ "$ALL_DELETED" = true ]; then
     log "  ✓ RHACS operator and custom resources"
     log "  ✓ Cluster Observability Operator and monitoring resources"
     log "  ✓ Compliance Operator and resources"
-    log "  ✓ Cert-Manager operator (if installed)"
-    log "  ✓ All namespaces"
+    log "  ✓ Demo applications (demo=roadshow)"
+    log "  ✓ All namespaces (except cert-manager-operator)"
     log ""
 else
     log "⚠ Cleanup completed with warnings"
@@ -379,9 +422,10 @@ else
     log "  - Finalizers may delay resource deletion"
     log ""
     log "To check remaining resources:"
-    log "  oc get namespaces | grep -E '(rhacs-operator|openshift-cluster-observability|openshift-compliance|cert-manager)'"
+    log "  oc get namespaces | grep -E '(rhacs-operator|openshift-cluster-observability|openshift-compliance)'"
     log "  oc get central,securedcluster --all-namespaces"
-    log "  oc get subscription --all-namespaces | grep -E '(rhacs|observability|compliance|cert-manager)'"
+    log "  oc get subscription --all-namespaces | grep -E '(rhacs|observability|compliance)'"
+    log "  oc get deployments -l demo=roadshow -A"
     log ""
 fi
 
