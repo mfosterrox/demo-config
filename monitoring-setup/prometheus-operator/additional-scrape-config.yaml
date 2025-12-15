@@ -12,4 +12,4 @@ stringData:
       tls_config:
         insecure_skip_verify: true
       static_configs:
-      - targets: ['central.rhacs-operator.svc.cluster.local:443']
+      - targets: ['central.rhacs-operator.svc:443']
