@@ -266,11 +266,13 @@ delete_namespace() {
     fi
 }
 
-# Delete namespaces
-delete_namespace "$RHACS_NAMESPACE"
-delete_namespace "$CLUSTER_OBSERVABILITY_NS"
-delete_namespace "$COMPLIANCE_NAMESPACE"
-delete_namespace "$CERT_MANAGER_NS"
+# Delete namespaces (non-fatal - continue even if some fail)
+set +e  # Temporarily disable exit on error for namespace deletion
+delete_namespace "$RHACS_NAMESPACE" || true
+delete_namespace "$CLUSTER_OBSERVABILITY_NS" || true
+delete_namespace "$COMPLIANCE_NAMESPACE" || true
+delete_namespace "$CERT_MANAGER_NS" || true
+set -e  # Re-enable exit on error
 
 log ""
 log "Waiting for namespace deletions to begin..."
