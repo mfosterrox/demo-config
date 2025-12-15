@@ -123,6 +123,24 @@ trigger_compliance_scan() {
     success "Compliance scan triggered successfully"
 }
 
+# Configure RHACS settings (enable monitoring and set policy guidelines)
+configure_rhacs_settings() {
+    log "Configuring RHACS settings (monitoring and policies)..."
+    if ! bash "${SCRIPT_DIR}/scripts/11-configure-rhacs-settings.sh"; then
+        error "RHACS configuration script failed. Installation stopped."
+    fi
+    success "RHACS configuration completed successfully"
+}
+
+# Setup Perses monitoring (install Cluster Observability Operator and Perses)
+setup_perses_monitoring() {
+    log "Setting up Perses monitoring (Cluster Observability Operator)..."
+    if ! bash "${SCRIPT_DIR}/scripts/12-setup-perses-monitoring.sh"; then
+        error "Perses monitoring setup script failed. Installation stopped."
+    fi
+    success "Perses monitoring setup completed successfully"
+}
+
 
 # Main function
 main() {
@@ -151,7 +169,7 @@ main() {
     log "Using script directory: $SCRIPT_DIR"
     
     # Verify scripts exist - fail fast if any script is missing
-    for script in "01-rhacs-delete.sh" "02-install-cert-manager.sh" "03-setup-rhacs-route-tls.sh" "04-rhacs-subscription-install.sh" "05-central-install.sh" "06-scs-setup.sh" "07-compliance-operator-install.sh" "08-deploy-applications.sh" "09-setup-co-scan-schedule.sh" "10-trigger-compliance-scan.sh"; do
+    for script in "01-rhacs-delete.sh" "02-install-cert-manager.sh" "03-setup-rhacs-route-tls.sh" "04-rhacs-subscription-install.sh" "05-central-install.sh" "06-scs-setup.sh" "07-compliance-operator-install.sh" "08-deploy-applications.sh" "09-setup-co-scan-schedule.sh" "10-trigger-compliance-scan.sh" "11-configure-rhacs-settings.sh" "12-setup-perses-monitoring.sh"; do
         if [ ! -f "$SCRIPT_DIR/scripts/$script" ]; then
             error "Required script not found: $SCRIPT_DIR/scripts/$script"
         fi
@@ -169,6 +187,8 @@ main() {
     deploy_applications
     setup_co_scan_schedule
     trigger_compliance_scan
+    configure_rhacs_settings
+    setup_perses_monitoring
     
     log "========================================================="
     success "Demo Config setup completed successfully!"
@@ -205,7 +225,6 @@ main() {
         warning "Central route not found. RHACS may still be deploying."
     fi
     
-    log "Additional scripts will be added one-by-one as needed."
 }
 
 

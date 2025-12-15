@@ -1,6 +1,7 @@
 #!/bin/bash
 # RHACS Configuration Script
 # Makes API calls to RHACS to change configuration details
+# Enables monitoring/metrics and configures policy guidelines
 
 # Exit immediately on error, show exact error message
 set -euo pipefail
@@ -28,58 +29,72 @@ error() {
 # Trap to show error details on exit
 trap 'error "Command failed: $(cat <<< "$BASH_COMMAND")"' ERR
 
-# Function to load variable from ~/.bashrc if it exists
-load_from_bashrc() {
-    local var_name="$1"
-    
-    # First check if variable is already set in environment
-    local env_value=$(eval "echo \${${var_name}:-}")
-    if [ -n "$env_value" ]; then
-        export "${var_name}=${env_value}"
-        echo "$env_value"
-        return 0
-    fi
-    
-    # Otherwise, try to load from ~/.bashrc
-    if [ -f ~/.bashrc ] && grep -q "^export ${var_name}=" ~/.bashrc; then
-        local var_line=$(grep "^export ${var_name}=" ~/.bashrc | head -1)
-        local var_value=$(echo "$var_line" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
-        export "${var_name}=${var_value}"
-        echo "$var_value"
-    fi
-}
+# Set script directory and project root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-# Load environment variables from ~/.bashrc (set by script 01)
-log "Loading environment variables from ~/.bashrc..."
+# RHACS operator namespace
+RHACS_OPERATOR_NAMESPACE="rhacs-operator"
 
-# Ensure ~/.bashrc exists
-if [ ! -f ~/.bashrc ]; then
-    error "~/.bashrc not found. Please run script 01-rhacs-setup.sh first to initialize environment variables."
+# Generate ROX_ENDPOINT from Central route
+log "Extracting ROX_ENDPOINT from Central route..."
+CENTRAL_ROUTE=$(oc get route central -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+if [ -z "$CENTRAL_ROUTE" ]; then
+    error "Central route not found in namespace '$RHACS_OPERATOR_NAMESPACE'. Please ensure RHACS Central is installed."
+fi
+ROX_ENDPOINT="$CENTRAL_ROUTE"
+log "✓ Extracted ROX_ENDPOINT: $ROX_ENDPOINT"
+
+# Get ADMIN_PASSWORD from secret (needed for token generation)
+log "Extracting admin password from secret..."
+ADMIN_PASSWORD_B64=$(oc get secret central-htpasswd -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.data.password}' 2>/dev/null || echo "")
+if [ -z "$ADMIN_PASSWORD_B64" ]; then
+    error "Admin password secret 'central-htpasswd' not found in namespace '$RHACS_OPERATOR_NAMESPACE'"
+fi
+ADMIN_PASSWORD=$(echo "$ADMIN_PASSWORD_B64" | base64 -d)
+if [ -z "$ADMIN_PASSWORD" ]; then
+    error "Failed to decode admin password from secret"
+fi
+log "✓ Admin password extracted"
+
+# Generate ROX_API_TOKEN
+log "Generating API token..."
+ROX_ENDPOINT_FOR_API="${ROX_ENDPOINT#https://}"
+ROX_ENDPOINT_FOR_API="${ROX_ENDPOINT_FOR_API#http://}"
+
+set +e
+TOKEN_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 60 -X POST \
+    -u "admin:${ADMIN_PASSWORD}" \
+    -H "Content-Type: application/json" \
+    "https://${ROX_ENDPOINT_FOR_API}/v1/apitokens/generate" \
+    -d '{"name":"rhacs-config-script-token","roles":["Admin"]}' 2>&1)
+TOKEN_CURL_EXIT_CODE=$?
+set -e
+
+if [ $TOKEN_CURL_EXIT_CODE -ne 0 ]; then
+    error "Failed to generate API token. curl exit code: $TOKEN_CURL_EXIT_CODE. Response: ${TOKEN_RESPONSE:0:300}"
 fi
 
-# Clean up any malformed source commands in bashrc
-if grep -q "^source $" ~/.bashrc; then
-    log "Cleaning up malformed source commands in ~/.bashrc..."
-    sed -i '/^source $/d' ~/.bashrc
+# Extract token from response
+if echo "$TOKEN_RESPONSE" | jq . >/dev/null 2>&1; then
+    ROX_API_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.token // .data.token // empty' 2>/dev/null || echo "")
 fi
 
-# Load SCRIPT_DIR and PROJECT_ROOT (set by script 01)
-SCRIPT_DIR=$(load_from_bashrc "SCRIPT_DIR")
-PROJECT_ROOT=$(load_from_bashrc "PROJECT_ROOT")
-
-# Load required variables (set by script 01)
-ROX_ENDPOINT=$(load_from_bashrc "ROX_ENDPOINT")
-ROX_API_TOKEN=$(load_from_bashrc "ROX_API_TOKEN")
-
-# Validate required environment variables
-if [ -z "${ROX_API_TOKEN:-}" ]; then
-    error "ROX_API_TOKEN not set. Please run script 01-rhacs-setup.sh first to generate required variables."
+if [ -z "$ROX_API_TOKEN" ] || [ "$ROX_API_TOKEN" = "null" ]; then
+    # Try to extract token from response text
+    ROX_API_TOKEN=$(echo "$TOKEN_RESPONSE" | grep -oE '[a-zA-Z0-9_-]{40,}' | head -1 || echo "")
 fi
 
-if [ -z "${ROX_ENDPOINT:-}" ]; then
-    error "ROX_ENDPOINT not set. Please run script 01-rhacs-setup.sh first to generate required variables."
+if [ -z "$ROX_API_TOKEN" ]; then
+    error "Failed to extract API token from response. Response: ${TOKEN_RESPONSE:0:500}"
 fi
-log "✓ Required environment variables validated: ROX_ENDPOINT=$ROX_ENDPOINT"
+
+# Verify token is not empty and has reasonable length
+if [ ${#ROX_API_TOKEN} -lt 20 ]; then
+    error "Generated token appears to be invalid (too short: ${#ROX_API_TOKEN} chars)"
+fi
+
+log "✓ API token generated (length: ${#ROX_API_TOKEN} chars)"
 
 # Ensure jq is installed
 if ! command -v jq >/dev/null 2>&1; then
@@ -100,14 +115,10 @@ else
     log "✓ jq is already installed"
 fi
 
-# Ensure ROX_ENDPOINT has https:// prefix
-if [[ ! "$ROX_ENDPOINT" =~ ^https?:// ]]; then
-    ROX_ENDPOINT="https://$ROX_ENDPOINT"
-    log "Added https:// prefix to ROX_ENDPOINT: $ROX_ENDPOINT"
-fi
-
-# API endpoint base URL
-API_BASE="${ROX_ENDPOINT}/v1"
+# Ensure ROX_ENDPOINT has https:// prefix for API calls
+ROX_ENDPOINT_FOR_API="${ROX_ENDPOINT#https://}"
+ROX_ENDPOINT_FOR_API="${ROX_ENDPOINT_FOR_API#http://}"
+API_BASE="https://${ROX_ENDPOINT_FOR_API}/v1"
 
 # Function to make API call
 make_api_call() {
@@ -275,8 +286,9 @@ log "RHACS Configuration Script Completed Successfully"
 log "========================================================="
 log ""
 log "Summary:"
-log "  - RHACS configuration updated (PUT /v1/config)"
-log "  - Configuration validated (GET /v1/config)"
-log "  - Metrics enabled/updated"
-log "  - Additional namespaces added to system policies"
+log "  - Telemetry/monitoring enabled"
+log "  - Metrics collection configured (image, policy, node vulnerabilities)"
+log "  - Platform component rules updated (Red Hat layered products)"
+log "  - Retention policies configured"
+log "  - Configuration validated"
 

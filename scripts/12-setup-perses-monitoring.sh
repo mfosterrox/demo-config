@@ -33,26 +33,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 MONITORING_SETUP_DIR="$PROJECT_ROOT/monitoring-setup"
 
-# Function to load variable from ~/.bashrc if it exists
-load_from_bashrc() {
-    local var_name="$1"
-    
-    # First check if variable is already set in environment
-    local env_value=$(eval "echo \${${var_name}:-}")
-    if [ -n "$env_value" ]; then
-        export "${var_name}=${env_value}"
-        echo "$env_value"
-        return 0
-    fi
-    
-    # Otherwise, try to load from ~/.bashrc
-    if [ -f ~/.bashrc ] && grep -q "^export ${var_name}=" ~/.bashrc; then
-        local var_line=$(grep "^export ${var_name}=" ~/.bashrc | head -1)
-        local var_value=$(echo "$var_line" | awk -F'=' '{print $2}' | sed 's/^["'\'']//; s/["'\'']$//')
-        export "${var_name}=${var_value}"
-        echo "$var_value"
-    fi
-}
+# Set namespace to rhacs-operator (as requested)
+NAMESPACE="rhacs-operator"
+OPERATOR_NAMESPACE="openshift-cluster-observability-operator"
 
 # Prerequisites validation
 log "Validating prerequisites..."
@@ -72,17 +55,7 @@ fi
 log "✓ Cluster admin privileges confirmed"
 
 log "Prerequisites validated successfully"
-
-# Load NAMESPACE from ~/.bashrc (set by previous scripts)
-NAMESPACE=$(load_from_bashrc "NAMESPACE")
-if [ -z "$NAMESPACE" ]; then
-    NAMESPACE="tssc-acs"
-    log "NAMESPACE not found in ~/.bashrc, using default: $NAMESPACE"
-else
-    log "✓ Loaded NAMESPACE from ~/.bashrc: $NAMESPACE"
-fi
-
-OPERATOR_NAMESPACE="openshift-cluster-observability-operator"
+log "Using namespace: $NAMESPACE"
 
 # Step 0: Check if everything is already installed
 log ""
@@ -197,7 +170,7 @@ log "✓ Namespace '$NAMESPACE' exists"
 
 # Generate a private key and certificate
 log "Generating TLS private key and certificate..."
-CERT_CN="rhacs-monitoring-stack.$NAMESPACE.svc"
+CERT_CN="sample-rhacs-operator-prometheus-tls.$NAMESPACE.svc"
 if openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
         -subj "/CN=$CERT_CN" \
         -keyout tls.key -out tls.crt 2>/dev/null; then
@@ -208,12 +181,12 @@ else
 fi
 
 # Always delete existing TLS secret to avoid certificate mixups
-log "Deleting existing TLS secret 'rhacs-prometheus-tls' if it exists..."
-oc delete secret rhacs-prometheus-tls -n "$NAMESPACE" 2>/dev/null && log "  Deleted existing secret" || log "  No existing secret found"
+log "Deleting existing TLS secret 'sample-rhacs-operator-prometheus-tls' if it exists..."
+oc delete secret sample-rhacs-operator-prometheus-tls -n "$NAMESPACE" 2>/dev/null && log "  Deleted existing secret" || log "  No existing secret found"
 
 # Create TLS secret in the namespace
-log "Creating TLS secret 'rhacs-prometheus-tls' in namespace '$NAMESPACE'..."
-if oc create secret tls rhacs-prometheus-tls --cert=tls.crt --key=tls.key -n "$NAMESPACE" 2>/dev/null; then
+log "Creating TLS secret 'sample-rhacs-operator-prometheus-tls' in namespace '$NAMESPACE'..."
+if oc create secret tls sample-rhacs-operator-prometheus-tls --cert=tls.crt --key=tls.key -n "$NAMESPACE" 2>/dev/null; then
     log "✓ TLS secret created successfully"
 else
     error "Failed to create TLS secret"
@@ -221,17 +194,73 @@ fi
 
 # Create UserPKI auth provider in RHACS for Prometheus
 log "Creating UserPKI auth provider in RHACS for Prometheus..."
-# Load required RHACS environment variables
-ROX_ENDPOINT=$(load_from_bashrc "ROX_ENDPOINT")
-ROX_API_TOKEN=$(load_from_bashrc "ROX_API_TOKEN")
 
-if [ -z "$ROX_ENDPOINT" ]; then
-    warning "ROX_ENDPOINT not found in ~/.bashrc. Skipping auth provider creation."
+# Generate ROX_ENDPOINT from Central route
+log "Extracting ROX_ENDPOINT from Central route..."
+CENTRAL_ROUTE=$(oc get route central -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+if [ -z "$CENTRAL_ROUTE" ]; then
+    warning "Central route not found in namespace '$NAMESPACE'. Skipping auth provider creation."
     warning "You may need to create the UserPKI auth provider manually later."
-elif [ -z "$ROX_API_TOKEN" ]; then
-    warning "ROX_API_TOKEN not found in ~/.bashrc. Skipping auth provider creation."
-    warning "You may need to create the UserPKI auth provider manually later."
+    ROX_ENDPOINT=""
 else
+    ROX_ENDPOINT="$CENTRAL_ROUTE"
+    log "✓ Extracted ROX_ENDPOINT: $ROX_ENDPOINT"
+fi
+
+# Generate ROX_API_TOKEN if ROX_ENDPOINT is available
+ROX_API_TOKEN=""
+if [ -n "$ROX_ENDPOINT" ]; then
+    log "Generating API token..."
+    
+    # Get ADMIN_PASSWORD from secret
+    ADMIN_PASSWORD_B64=$(oc get secret central-htpasswd -n "$NAMESPACE" -o jsonpath='{.data.password}' 2>/dev/null || echo "")
+    if [ -z "$ADMIN_PASSWORD_B64" ]; then
+        warning "Admin password secret 'central-htpasswd' not found in namespace '$NAMESPACE'. Skipping auth provider creation."
+        ROX_ENDPOINT=""
+    else
+        ADMIN_PASSWORD=$(echo "$ADMIN_PASSWORD_B64" | base64 -d)
+        if [ -z "$ADMIN_PASSWORD" ]; then
+            warning "Failed to decode admin password from secret. Skipping auth provider creation."
+            ROX_ENDPOINT=""
+        else
+            # Generate API token
+            ROX_ENDPOINT_FOR_API="${ROX_ENDPOINT#https://}"
+            ROX_ENDPOINT_FOR_API="${ROX_ENDPOINT_FOR_API#http://}"
+            
+            set +e
+            TOKEN_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 60 -X POST \
+                -u "admin:${ADMIN_PASSWORD}" \
+                -H "Content-Type: application/json" \
+                "https://${ROX_ENDPOINT_FOR_API}/v1/apitokens/generate" \
+                -d '{"name":"perses-monitoring-script-token","roles":["Admin"]}' 2>&1)
+            TOKEN_CURL_EXIT_CODE=$?
+            set -e
+            
+            if [ $TOKEN_CURL_EXIT_CODE -eq 0 ]; then
+                # Extract token from response
+                if echo "$TOKEN_RESPONSE" | jq . >/dev/null 2>&1; then
+                    ROX_API_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.token // .data.token // empty' 2>/dev/null || echo "")
+                fi
+                
+                if [ -z "$ROX_API_TOKEN" ] || [ "$ROX_API_TOKEN" = "null" ]; then
+                    ROX_API_TOKEN=$(echo "$TOKEN_RESPONSE" | grep -oE '[a-zA-Z0-9_-]{40,}' | head -1 || echo "")
+                fi
+                
+                if [ -z "$ROX_API_TOKEN" ]; then
+                    warning "Failed to extract API token from response. Skipping auth provider creation."
+                    ROX_ENDPOINT=""
+                else
+                    log "✓ API token generated (length: ${#ROX_API_TOKEN} chars)"
+                fi
+            else
+                warning "Failed to generate API token. curl exit code: $TOKEN_CURL_EXIT_CODE. Skipping auth provider creation."
+                ROX_ENDPOINT=""
+            fi
+        fi
+    fi
+fi
+
+if [ -n "$ROX_ENDPOINT" ] && [ -n "$ROX_API_TOKEN" ]; then
     # Check if roxctl is available
     if ! command -v roxctl &>/dev/null; then
         log "roxctl not found, checking if it needs to be installed..."
