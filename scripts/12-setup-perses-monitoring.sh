@@ -518,6 +518,71 @@ else
     log "Cluster Observability Operator not found, proceeding with installation..."
 fi
 
+# Function to force delete namespace stuck in Terminating state
+force_delete_stuck_namespace() {
+    local namespace=$1
+    
+    if oc get namespace "$namespace" &>/dev/null 2>&1; then
+        NS_PHASE=$(oc get namespace "$namespace" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+        if [ "$NS_PHASE" = "Terminating" ]; then
+            warning "Namespace $namespace is stuck in Terminating state - force deleting..."
+            
+            # Get current finalizers (finalizers are in metadata, not spec)
+            FINALIZERS_JSON=$(oc get namespace "$namespace" -o jsonpath='{.metadata.finalizers}' 2>/dev/null || echo "[]")
+            
+            # Check if there are finalizers
+            if [ "$FINALIZERS_JSON" != "[]" ] && [ -n "$FINALIZERS_JSON" ]; then
+                FINALIZERS_LIST=$(oc get namespace "$namespace" -o jsonpath='{.metadata.finalizers[*]}' 2>/dev/null || echo "")
+                log "  Removing finalizers: $FINALIZERS_LIST"
+                
+                # Try to replace finalizers with empty array using merge patch
+                if oc patch namespace "$namespace" --type merge -p '{"metadata":{"finalizers":[]}}' &>/dev/null 2>&1; then
+                    log "  ✓ Finalizers removed - waiting for namespace deletion to complete..."
+                    # Wait for namespace to be deleted (max 60 seconds)
+                    for i in {1..12}; do
+                        sleep 5
+                        if ! oc get namespace "$namespace" &>/dev/null 2>&1; then
+                            log "  ✓ Namespace $namespace has been deleted"
+                            return 0
+                        fi
+                    done
+                    warning "  Namespace $namespace still exists after removing finalizers (may need more time)"
+                    return 0
+                else
+                    # Try JSON patch as fallback
+                    oc patch namespace "$namespace" --type json -p='[{"op": "replace", "path": "/metadata/finalizers", "value": []}]' &>/dev/null 2>&1
+                    if [ $? -eq 0 ]; then
+                        log "  ✓ Finalizers removed via JSON patch - waiting for namespace deletion..."
+                        sleep 10
+                        return 0
+                    else
+                        warning "  Failed to remove finalizers from namespace $namespace"
+                        return 1
+                    fi
+                fi
+            else
+                log "  No finalizers found - namespace should complete deletion soon"
+                # Wait a bit for namespace to finish deleting
+                sleep 10
+                return 0
+            fi
+        fi
+    fi
+    return 0
+}
+
+# Check and handle stuck namespace before creating
+log "Checking $OPERATOR_NAMESPACE namespace status..."
+if oc get namespace $OPERATOR_NAMESPACE &>/dev/null 2>&1; then
+    NS_PHASE=$(oc get namespace $OPERATOR_NAMESPACE -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+    if [ "$NS_PHASE" = "Terminating" ]; then
+        log "Namespace $OPERATOR_NAMESPACE is stuck in Terminating state"
+        force_delete_stuck_namespace "$OPERATOR_NAMESPACE"
+        # Wait a moment after force delete attempt
+        sleep 5
+    fi
+fi
+
 # Create namespace for Cluster Observability Operator
 log "Creating $OPERATOR_NAMESPACE namespace..."
 if ! oc get namespace $OPERATOR_NAMESPACE >/dev/null 2>&1; then
@@ -526,6 +591,10 @@ if ! oc get namespace $OPERATOR_NAMESPACE >/dev/null 2>&1; then
     fi
     log "✓ Namespace created successfully"
 else
+    NS_PHASE=$(oc get namespace $OPERATOR_NAMESPACE -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+    if [ "$NS_PHASE" = "Terminating" ]; then
+        error "Namespace $OPERATOR_NAMESPACE is still in Terminating state. Please run cleanup script first: ./cleanup/cleanup-all.sh"
+    fi
     log "✓ Namespace already exists"
 fi
 

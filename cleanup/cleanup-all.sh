@@ -371,27 +371,27 @@ force_delete_namespace() {
         if [ "$NS_PHASE" = "Terminating" ]; then
             log "  Namespace $namespace is stuck in Terminating state - force deleting..."
             
-            # Get current finalizers as JSON array
-            FINALIZERS_JSON=$(oc get namespace "$namespace" -o jsonpath='{.spec.finalizers}' 2>/dev/null || echo "[]")
+            # Get current finalizers as JSON array (finalizers are in metadata, not spec)
+            FINALIZERS_JSON=$(oc get namespace "$namespace" -o jsonpath='{.metadata.finalizers}' 2>/dev/null || echo "[]")
             
             # Check if there are finalizers
             if [ "$FINALIZERS_JSON" != "[]" ] && [ -n "$FINALIZERS_JSON" ]; then
-                FINALIZERS_LIST=$(oc get namespace "$namespace" -o jsonpath='{.spec.finalizers[*]}' 2>/dev/null || echo "")
+                FINALIZERS_LIST=$(oc get namespace "$namespace" -o jsonpath='{.metadata.finalizers[*]}' 2>/dev/null || echo "")
                 log "    Removing finalizers: $FINALIZERS_LIST"
                 
                 # Method 1: Try to replace finalizers with empty array using merge patch
-                if oc patch namespace "$namespace" --type merge -p '{"spec":{"finalizers":[]}}' &>/dev/null 2>&1; then
+                if oc patch namespace "$namespace" --type merge -p '{"metadata":{"finalizers":[]}}' &>/dev/null 2>&1; then
                     log "    ✓ Finalizers removed - namespace should complete deletion"
                     return 0
                 else
                     # Method 2: Try JSON patch to replace finalizers array
-                    if oc patch namespace "$namespace" --type json -p='[{"op": "replace", "path": "/spec/finalizers", "value": []}]' &>/dev/null 2>&1; then
+                    if oc patch namespace "$namespace" --type json -p='[{"op": "replace", "path": "/metadata/finalizers", "value": []}]' &>/dev/null 2>&1; then
                         log "    ✓ Finalizers removed - namespace should complete deletion"
                         return 0
                     else
                         # Method 3: Try to edit namespace directly (last resort)
                         log "    Attempting direct edit to remove finalizers..."
-                        oc get namespace "$namespace" -o json | jq 'del(.spec.finalizers)' | oc replace -f - &>/dev/null 2>&1
+                        oc get namespace "$namespace" -o json | jq 'del(.metadata.finalizers)' | oc replace -f - &>/dev/null 2>&1
                         if [ $? -eq 0 ]; then
                             log "    ✓ Finalizers removed via direct edit - namespace should complete deletion"
                             return 0
