@@ -362,6 +362,74 @@ log ""
 log "Waiting for namespace deletions to begin..."
 sleep 15
 
+# Function to force delete namespace by removing finalizers
+force_delete_namespace() {
+    local namespace=$1
+    
+    if oc get namespace "$namespace" &>/dev/null 2>&1; then
+        NS_PHASE=$(oc get namespace "$namespace" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+        if [ "$NS_PHASE" = "Terminating" ]; then
+            log "  Namespace $namespace is stuck in Terminating state - force deleting..."
+            
+            # Get current finalizers as JSON array
+            FINALIZERS_JSON=$(oc get namespace "$namespace" -o jsonpath='{.spec.finalizers}' 2>/dev/null || echo "[]")
+            
+            # Check if there are finalizers
+            if [ "$FINALIZERS_JSON" != "[]" ] && [ -n "$FINALIZERS_JSON" ]; then
+                FINALIZERS_LIST=$(oc get namespace "$namespace" -o jsonpath='{.spec.finalizers[*]}' 2>/dev/null || echo "")
+                log "    Removing finalizers: $FINALIZERS_LIST"
+                
+                # Method 1: Try to replace finalizers with empty array using merge patch
+                if oc patch namespace "$namespace" --type merge -p '{"spec":{"finalizers":[]}}' &>/dev/null 2>&1; then
+                    log "    ✓ Finalizers removed - namespace should complete deletion"
+                    return 0
+                else
+                    # Method 2: Try JSON patch to replace finalizers array
+                    if oc patch namespace "$namespace" --type json -p='[{"op": "replace", "path": "/spec/finalizers", "value": []}]' &>/dev/null 2>&1; then
+                        log "    ✓ Finalizers removed - namespace should complete deletion"
+                        return 0
+                    else
+                        # Method 3: Try to edit namespace directly (last resort)
+                        log "    Attempting direct edit to remove finalizers..."
+                        oc get namespace "$namespace" -o json | jq 'del(.spec.finalizers)' | oc replace -f - &>/dev/null 2>&1
+                        if [ $? -eq 0 ]; then
+                            log "    ✓ Finalizers removed via direct edit - namespace should complete deletion"
+                            return 0
+                        else
+                            warning "    Failed to remove finalizers from namespace $namespace (may require manual intervention)"
+                            return 1
+                        fi
+                    fi
+                fi
+            else
+                log "    No finalizers found - namespace should complete deletion soon"
+                return 0
+            fi
+        else
+            # Namespace is not in Terminating state, skip force delete
+            return 0
+        fi
+    else
+        # Namespace doesn't exist, already deleted
+        return 0
+    fi
+}
+
+log ""
+log "Checking for namespaces stuck in Terminating state..."
+log "Force deleting namespaces if needed..."
+
+# Force delete namespaces that are stuck
+set +e  # Temporarily disable exit on error
+force_delete_namespace "$RHACS_NAMESPACE" || true
+force_delete_namespace "$CLUSTER_OBSERVABILITY_NS" || true
+force_delete_namespace "$COMPLIANCE_NAMESPACE" || true
+set -e  # Re-enable exit on error
+
+log ""
+log "Waiting for force-deleted namespaces to complete deletion..."
+sleep 10
+
 log ""
 log "========================================================="
 log "Step 5: Verifying cleanup"
