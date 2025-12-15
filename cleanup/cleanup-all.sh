@@ -104,8 +104,10 @@ delete_all_resources() {
     fi
 }
 
-# RHACS namespace
+# Namespace definitions
 RHACS_NAMESPACE="rhacs-operator"
+CLUSTER_OBSERVABILITY_NS="openshift-cluster-observability-operator"
+COMPLIANCE_NAMESPACE="openshift-compliance"
 
 # Delete RHACS custom resources
 log "Deleting RHACS custom resources..."
@@ -258,7 +260,6 @@ else
 fi
 
 # Delete Cluster Observability Operator subscription
-CLUSTER_OBSERVABILITY_NS="openshift-cluster-observability-operator"
 log "Deleting Cluster Observability Operator subscription..."
 if oc get subscription.operators.coreos.com cluster-observability-operator -n "$CLUSTER_OBSERVABILITY_NS" &>/dev/null 2>&1; then
     log "  Deleting subscription cluster-observability-operator in namespace $CLUSTER_OBSERVABILITY_NS..."
