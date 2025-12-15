@@ -195,9 +195,58 @@ fi
 
 log ""
 log "========================================================="
-log "Step 2: Deleting operator subscriptions"
+log "Step 2: Deleting operator subscriptions and OperatorGroups"
 log "========================================================="
 log ""
+
+# Function to delete OperatorGroup
+delete_operatorgroup() {
+    local namespace=$1
+    local og_name="${2:-}"
+    
+    if [ -z "$og_name" ]; then
+        # Delete all OperatorGroups in the namespace
+        local ogs=$(oc get operatorgroup -n "$namespace" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+        if [ -n "$ogs" ]; then
+            for og in $ogs; do
+                log "  Deleting OperatorGroup $og in namespace $namespace..."
+                oc delete operatorgroup "$og" -n "$namespace" --timeout=60s &>/dev/null 2>&1 && log "    ✓ Deleted" || warning "    Failed to delete OperatorGroup $og"
+            done
+        else
+            log "  No OperatorGroups found in namespace $namespace"
+        fi
+    else
+        # Delete specific OperatorGroup
+        if oc get operatorgroup "$og_name" -n "$namespace" &>/dev/null 2>&1; then
+            log "  Deleting OperatorGroup $og_name in namespace $namespace..."
+            oc delete operatorgroup "$og_name" -n "$namespace" --timeout=60s &>/dev/null 2>&1 && log "    ✓ Deleted" || warning "    Failed to delete OperatorGroup $og_name"
+        else
+            log "  OperatorGroup $og_name not found in namespace $namespace"
+        fi
+    fi
+}
+
+# Delete OperatorGroups first (before subscriptions)
+log "Deleting OperatorGroups..."
+
+# Delete RHACS OperatorGroup
+log "Deleting RHACS OperatorGroup..."
+delete_operatorgroup "$RHACS_NAMESPACE" "rhacs-operator-group"
+
+# Delete Cluster Observability OperatorGroup
+log "Deleting Cluster Observability OperatorGroup..."
+delete_operatorgroup "$CLUSTER_OBSERVABILITY_NS" "cluster-observability-og"
+
+# Delete Compliance OperatorGroup
+log "Deleting Compliance OperatorGroup..."
+delete_operatorgroup "$COMPLIANCE_NAMESPACE" "openshift-compliance"
+
+log ""
+log "Waiting for OperatorGroups to be deleted..."
+sleep 5
+
+log ""
+log "Deleting operator subscriptions..."
 
 # Delete RHACS operator subscription
 log "Deleting RHACS operator subscription..."
@@ -410,6 +459,41 @@ else
     log "  ✓ No remaining operator subscriptions (cert-manager excluded)"
 fi
 
+# Check for remaining OperatorGroups
+log "Verifying OperatorGroups are deleted..."
+REMAINING_OGS=0
+
+# Check RHACS OperatorGroup
+if oc get namespace "$RHACS_NAMESPACE" &>/dev/null 2>&1; then
+    OG_COUNT=$(oc get operatorgroup -n "$RHACS_NAMESPACE" --no-headers 2>/dev/null | wc -l 2>/dev/null || echo "0")
+    OG_COUNT=$(echo "$OG_COUNT" | tr -d '[:space:]')
+    OG_COUNT=$((OG_COUNT + 0))
+    REMAINING_OGS=$((REMAINING_OGS + OG_COUNT))
+fi
+
+# Check Cluster Observability OperatorGroup
+if oc get namespace "$CLUSTER_OBSERVABILITY_NS" &>/dev/null 2>&1; then
+    OG_COUNT=$(oc get operatorgroup -n "$CLUSTER_OBSERVABILITY_NS" --no-headers 2>/dev/null | wc -l 2>/dev/null || echo "0")
+    OG_COUNT=$(echo "$OG_COUNT" | tr -d '[:space:]')
+    OG_COUNT=$((OG_COUNT + 0))
+    REMAINING_OGS=$((REMAINING_OGS + OG_COUNT))
+fi
+
+# Check Compliance OperatorGroup
+if oc get namespace "$COMPLIANCE_NAMESPACE" &>/dev/null 2>&1; then
+    OG_COUNT=$(oc get operatorgroup -n "$COMPLIANCE_NAMESPACE" --no-headers 2>/dev/null | wc -l 2>/dev/null || echo "0")
+    OG_COUNT=$(echo "$OG_COUNT" | tr -d '[:space:]')
+    OG_COUNT=$((OG_COUNT + 0))
+    REMAINING_OGS=$((REMAINING_OGS + OG_COUNT))
+fi
+
+if [ "$REMAINING_OGS" -gt 0 ]; then
+    warning "  Found remaining OperatorGroups: $REMAINING_OGS"
+    ALL_DELETED=false
+else
+    log "  ✓ No remaining OperatorGroups"
+fi
+
 # Check for remaining demo applications
 REMAINING_DEMO=$(oc get deployments -l "$DEMO_LABEL" -A --no-headers 2>/dev/null | wc -l 2>/dev/null || echo "0")
 REMAINING_DEMO=$(echo "$REMAINING_DEMO" | tr -d '[:space:]')
@@ -432,6 +516,8 @@ if [ "$ALL_DELETED" = true ]; then
     log "  ✓ RHACS operator and custom resources"
     log "  ✓ Cluster Observability Operator and monitoring resources"
     log "  ✓ Compliance Operator and resources"
+    log "  ✓ OperatorGroups"
+    log "  ✓ Operator subscriptions"
     log "  ✓ Demo applications (demo=roadshow)"
     log "  ✓ All namespaces (except cert-manager-operator)"
     log ""
@@ -447,6 +533,7 @@ else
     log "  oc get namespaces | grep -E '(rhacs-operator|openshift-cluster-observability|openshift-compliance)'"
     log "  oc get central,securedcluster --all-namespaces"
     log "  oc get subscription --all-namespaces | grep -E '(rhacs|observability|compliance)'"
+    log "  oc get operatorgroup --all-namespaces | grep -E '(rhacs|observability|compliance)'"
     log "  oc get deployments -l demo=roadshow -A"
     log ""
 fi
