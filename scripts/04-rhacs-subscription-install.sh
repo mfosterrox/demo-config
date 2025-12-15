@@ -139,24 +139,52 @@ if [ "${NEEDS_INSTALL:-true}" = true ] || [ "$EXISTING_SUBSCRIPTION" = true ]; t
         log "Using default channel: $CHANNEL (will fall back to rhacs-4.9 if unavailable)"
     fi
     
-    # Create OperatorGroup if it doesn't exist
+    # Create or update OperatorGroup (RHACS requires AllNamespaces mode)
     log ""
-    log "Ensuring OperatorGroup exists..."
-    if ! oc get operatorgroup -n "$OPERATOR_NAMESPACE" &>/dev/null 2>&1; then
-        log "Creating OperatorGroup..."
-        cat <<EOF | oc apply -f -
+    log "Ensuring OperatorGroup exists with AllNamespaces mode..."
+    
+    EXISTING_OG=$(oc get operatorgroup -n "$OPERATOR_NAMESPACE" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+    NEEDS_OG_UPDATE=false
+    
+    if [ -n "$EXISTING_OG" ]; then
+        # Check if existing OperatorGroup uses AllNamespaces mode (empty targetNamespaces)
+        OG_TARGET_NS=$(oc get operatorgroup "$EXISTING_OG" -n "$OPERATOR_NAMESPACE" -o jsonpath='{.spec.targetNamespaces[*]}' 2>/dev/null || echo "")
+        if [ -n "$OG_TARGET_NS" ]; then
+            log "  Existing OperatorGroup '$EXISTING_OG' uses single-namespace mode (targetNamespaces: $OG_TARGET_NS)"
+            log "  RHACS operator requires AllNamespaces mode - updating OperatorGroup..."
+            NEEDS_OG_UPDATE=true
+        else
+            log "✓ OperatorGroup '$EXISTING_OG' already uses AllNamespaces mode"
+        fi
+    else
+        log "  No OperatorGroup found - creating new one with AllNamespaces mode..."
+        NEEDS_OG_UPDATE=true
+    fi
+    
+    if [ "$NEEDS_OG_UPDATE" = true ]; then
+        # Delete existing OperatorGroup if it exists (to recreate with correct mode)
+        if [ -n "$EXISTING_OG" ]; then
+            log "  Deleting existing OperatorGroup '$EXISTING_OG'..."
+            oc delete operatorgroup "$EXISTING_OG" -n "$OPERATOR_NAMESPACE" --timeout=60s &>/dev/null 2>&1 || warning "Failed to delete existing OperatorGroup (may already be deleting)"
+            sleep 3  # Wait for deletion to complete
+        fi
+        
+        # Create OperatorGroup with AllNamespaces mode (empty targetNamespaces array)
+        log "  Creating OperatorGroup with AllNamespaces mode..."
+        if ! cat <<EOF | oc apply -f -
 apiVersion: operators.coreos.com/v1
 kind: OperatorGroup
 metadata:
   name: rhacs-operator-group
   namespace: $OPERATOR_NAMESPACE
 spec:
-  targetNamespaces:
-  - $OPERATOR_NAMESPACE
+  targetNamespaces: []   # Empty array = AllNamespaces mode (required for RHACS)
 EOF
-        log "✓ OperatorGroup created"
-    else
-        log "✓ OperatorGroup already exists"
+        then
+            error "Failed to create OperatorGroup"
+        fi
+        log "✓ OperatorGroup created with AllNamespaces mode"
+        sleep 3  # Wait for OperatorGroup to be ready
     fi
     
     # Create or update Subscription
