@@ -627,7 +627,8 @@ SCAN_CONFIG_RESPONSE=$(curl -k -s --connect-timeout 15 --max-time 120 -X POST \
                 \"ocp4-nerc-cip\",
                 \"ocp4-nerc-cip-node\",
                 \"ocp4-pci-dss\",
-                \"ocp4-pci-dss-node\"
+                \"ocp4-pci-dss-node\",
+                \"ocp4-stig-node\"
             ],
             \"scanSchedule\": {
                 \"intervalType\": \"DAILY\",

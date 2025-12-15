@@ -154,12 +154,16 @@ fi
 
 # Wait for certificate to be ready
 log "Waiting for certificate to be ready..."
+log "  Note: Certificate provisioning typically takes 60-120 seconds"
+log "  This includes DNS validation and certificate issuance"
+log ""
 MAX_WAIT=300
 WAIT_COUNT=0
 CERT_READY=false
 
 while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
     CERT_STATUS=$(oc get certificate "$CERT_NAME" -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+    CERT_REASON=$(oc get certificate "$CERT_NAME" -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}' 2>/dev/null || echo "")
     
     if [ "$CERT_STATUS" = "True" ]; then
         CERT_READY=true
@@ -167,9 +171,13 @@ while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
         break
     fi
     
+    # Show progress every 30 seconds with cleaner status
     if [ $((WAIT_COUNT % 30)) -eq 0 ] && [ $WAIT_COUNT -gt 0 ]; then
-        log "  Still waiting... (${WAIT_COUNT}s/${MAX_WAIT}s)"
-        oc get certificate "$CERT_NAME" -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[*]}' 2>/dev/null || true
+        if [ -n "$CERT_REASON" ] && [ "$CERT_REASON" != "Unknown" ]; then
+            log "  Still waiting... (${WAIT_COUNT}s/${MAX_WAIT}s) - Status: $CERT_REASON"
+        else
+            log "  Still waiting... (${WAIT_COUNT}s/${MAX_WAIT}s)"
+        fi
     fi
     
     sleep 5
@@ -178,8 +186,13 @@ done
 
 if [ "$CERT_READY" = false ]; then
     warning "Certificate did not become ready within ${MAX_WAIT} seconds"
-    oc get certificate "$CERT_NAME" -n "$RHACS_OPERATOR_NAMESPACE" -o yaml
-    error "Certificate is not ready. Check cert-manager logs for details."
+    CERT_REASON=$(oc get certificate "$CERT_NAME" -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}' 2>/dev/null || echo "Unknown")
+    CERT_MESSAGE=$(oc get certificate "$CERT_NAME" -n "$RHACS_OPERATOR_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null || echo "")
+    if [ -n "$CERT_MESSAGE" ]; then
+        warning "Certificate status reason: $CERT_REASON"
+        warning "Certificate status message: $CERT_MESSAGE"
+    fi
+    error "Certificate is not ready. Check cert-manager logs for details: oc logs -n cert-manager -l app=cert-manager"
 fi
 
 # Verify the cert-manager secret exists
