@@ -117,24 +117,94 @@ section "RHACS (Red Hat Advanced Cluster Security) Information"
 if oc get namespace "$RHACS_NAMESPACE" >/dev/null 2>&1; then
     success "Namespace '$RHACS_NAMESPACE' exists"
     
+    # ============================================================
+    # Gather all information first (all checks done here)
+    # ============================================================
+    
     # Get Central route
     CENTRAL_ROUTE=$(oc get route central -n "$RHACS_NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+    
+    # Get admin password
+    ADMIN_PASSWORD=""
     if [ -n "$CENTRAL_ROUTE" ]; then
-        info "Central Route: $CENTRAL_ROUTE"
-        info "RHACS UI URL: https://$CENTRAL_ROUTE"
-        
-        # Get admin password
         ADMIN_PASSWORD_B64=$(oc get secret central-htpasswd -n "$RHACS_NAMESPACE" -o jsonpath='{.data.password}' 2>/dev/null || echo "")
         if [ -n "$ADMIN_PASSWORD_B64" ]; then
             ADMIN_PASSWORD=$(echo "$ADMIN_PASSWORD_B64" | base64 -d 2>/dev/null || echo "")
-            if [ -n "$ADMIN_PASSWORD" ]; then
-                info "Username: admin"
-                info "Password: $ADMIN_PASSWORD"
-            fi
         fi
-        
-        # Get ROX_ENDPOINT
-        ROX_ENDPOINT="${ROX_ENDPOINT:-$CENTRAL_ROUTE}"
+    fi
+    
+    # Get ROX_ENDPOINT
+    ROX_ENDPOINT="${ROX_ENDPOINT:-$CENTRAL_ROUTE}"
+    
+    # Check Central deployment
+    CENTRAL_EXISTS=false
+    CENTRAL_READY="unknown"
+    CENTRAL_AVAILABLE="unknown"
+    if oc get deployment central -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
+        CENTRAL_EXISTS=true
+        CENTRAL_READY=$(oc get deployment central -n "$RHACS_NAMESPACE" -o jsonpath='{.status.readyReplicas}/{.spec.replicas}' 2>/dev/null || echo "unknown")
+        CENTRAL_AVAILABLE=$(oc get deployment central -n "$RHACS_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "unknown")
+    fi
+    
+    # Check Sensor deployment
+    SENSOR_EXISTS=false
+    SENSOR_READY="unknown"
+    if oc get deployment sensor -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
+        SENSOR_EXISTS=true
+        SENSOR_READY=$(oc get deployment sensor -n "$RHACS_NAMESPACE" -o jsonpath='{.status.readyReplicas}/{.spec.replicas}' 2>/dev/null || echo "unknown")
+    fi
+    
+    # Check Admission Control deployment
+    ADMISSION_EXISTS=false
+    ADMISSION_READY="unknown"
+    if oc get deployment admission-control -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
+        ADMISSION_EXISTS=true
+        ADMISSION_READY=$(oc get deployment admission-control -n "$RHACS_NAMESPACE" -o jsonpath='{.status.readyReplicas}/{.spec.replicas}' 2>/dev/null || echo "unknown")
+    fi
+    
+    # Check Collector DaemonSet
+    COLLECTOR_EXISTS=false
+    COLLECTOR_READY="unknown"
+    if oc get daemonset collector -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
+        COLLECTOR_EXISTS=true
+        COLLECTOR_READY=$(oc get daemonset collector -n "$RHACS_NAMESPACE" -o jsonpath='{.status.numberReady}/{.status.desiredNumberScheduled}' 2>/dev/null || echo "unknown")
+    fi
+    
+    # Check Scanner deployment
+    SCANNER_EXISTS=false
+    SCANNER_READY="unknown"
+    if oc get deployment scanner -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
+        SCANNER_EXISTS=true
+        SCANNER_READY=$(oc get deployment scanner -n "$RHACS_NAMESPACE" -o jsonpath='{.status.readyReplicas}/{.spec.replicas}' 2>/dev/null || echo "unknown")
+    fi
+    
+    # Check SecuredCluster resource
+    SECUREDCLUSTER_EXISTS=false
+    SECUREDCLUSTER_COUNT=0
+    SECUREDCLUSTER_LIST=""
+    if oc get securedcluster -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
+        SECUREDCLUSTER_COUNT=$(oc get securedcluster -n "$RHACS_NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$SECUREDCLUSTER_COUNT" -gt 0 ]; then
+            SECUREDCLUSTER_EXISTS=true
+            SECUREDCLUSTER_LIST=$(oc get securedcluster -n "$RHACS_NAMESPACE" -o custom-columns=NAME:.metadata.name,STATUS:.status.conditions[0].type --no-headers 2>/dev/null || echo "")
+        fi
+    fi
+    
+    # ============================================================
+    # Display all information (after all checks are complete)
+    # ============================================================
+    
+    # Display Central route and credentials
+    if [ -n "$CENTRAL_ROUTE" ]; then
+        info "Central Route: $CENTRAL_ROUTE"
+        info "RHACS UI URL: https://$CENTRAL_ROUTE"
+        if [ -n "$ADMIN_PASSWORD" ]; then
+            info "Username: admin"
+            info "Password: $ADMIN_PASSWORD"
+        fi
+        if [ -n "${ROX_API_TOKEN:-}" ]; then
+            info "API Token: ${ROX_API_TOKEN:0:20}... (from environment)"
+        fi
         if [ -n "$ROX_ENDPOINT" ]; then
             info "ROX_ENDPOINT: $ROX_ENDPOINT"
         fi
@@ -142,12 +212,10 @@ if oc get namespace "$RHACS_NAMESPACE" >/dev/null 2>&1; then
         warning "Central route not found (may still be deploying)"
     fi
     
-    # Check Central deployment
+    # Display Central deployment status
     echo ""
     info "Central Deployment Status:"
-    if oc get deployment central -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
-        CENTRAL_READY=$(oc get deployment central -n "$RHACS_NAMESPACE" -o jsonpath='{.status.readyReplicas}/{.spec.replicas}' 2>/dev/null || echo "unknown")
-        CENTRAL_AVAILABLE=$(oc get deployment central -n "$RHACS_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "unknown")
+    if [ "$CENTRAL_EXISTS" = true ]; then
         if [ "$CENTRAL_AVAILABLE" = "True" ]; then
             success "  Central: Ready ($CENTRAL_READY)"
         else
@@ -157,55 +225,42 @@ if oc get namespace "$RHACS_NAMESPACE" >/dev/null 2>&1; then
         warning "  Central deployment not found"
     fi
     
-    # Check Secured Cluster components
+    # Display Secured Cluster Services status
     echo ""
     info "Secured Cluster Services Status:"
     
-    # Sensor
-    if oc get deployment sensor -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
-        SENSOR_READY=$(oc get deployment sensor -n "$RHACS_NAMESPACE" -o jsonpath='{.status.readyReplicas}/{.spec.replicas}' 2>/dev/null || echo "unknown")
+    if [ "$SENSOR_EXISTS" = true ]; then
         success "  Sensor: Ready ($SENSOR_READY)"
     else
         warning "  Sensor: Not found"
     fi
     
-    # Admission Control
-    if oc get deployment admission-control -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
-        ADMISSION_READY=$(oc get deployment admission-control -n "$RHACS_NAMESPACE" -o jsonpath='{.status.readyReplicas}/{.spec.replicas}' 2>/dev/null || echo "unknown")
+    if [ "$ADMISSION_EXISTS" = true ]; then
         success "  Admission Control: Ready ($ADMISSION_READY)"
     else
         warning "  Admission Control: Not found"
     fi
     
-    # Collector DaemonSet
-    if oc get daemonset collector -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
-        COLLECTOR_READY=$(oc get daemonset collector -n "$RHACS_NAMESPACE" -o jsonpath='{.status.numberReady}/{.status.desiredNumberScheduled}' 2>/dev/null || echo "unknown")
+    if [ "$COLLECTOR_EXISTS" = true ]; then
         success "  Collector: Ready ($COLLECTOR_READY)"
     else
         warning "  Collector: Not found"
     fi
     
-    # Scanner
-    if oc get deployment scanner -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
-        SCANNER_READY=$(oc get deployment scanner -n "$RHACS_NAMESPACE" -o jsonpath='{.status.readyReplicas}/{.spec.replicas}' 2>/dev/null || echo "unknown")
+    if [ "$SCANNER_EXISTS" = true ]; then
         success "  Scanner: Ready ($SCANNER_READY)"
     else
         warning "  Scanner: Not found"
     fi
     
-    # Check SecuredCluster resource
+    # Display SecuredCluster resource
     echo ""
     info "SecuredCluster Resource:"
-    if oc get securedcluster -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
-        SC_COUNT=$(oc get securedcluster -n "$RHACS_NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-        if [ "$SC_COUNT" -gt 0 ]; then
-            success "  Found $SC_COUNT SecuredCluster resource(s)"
-            oc get securedcluster -n "$RHACS_NAMESPACE" -o custom-columns=NAME:.metadata.name,STATUS:.status.conditions[0].type 2>/dev/null | head -5 || true
-        else
-            warning "  No SecuredCluster resources found"
-        fi
+    if [ "$SECUREDCLUSTER_EXISTS" = true ]; then
+        success "  Found $SECUREDCLUSTER_COUNT SecuredCluster resource(s)"
+        echo "$SECUREDCLUSTER_LIST" | head -5 | sed 's/^/  /'
     else
-        warning "  SecuredCluster CRD not found"
+        warning "  No SecuredCluster resources found"
     fi
     
 else
