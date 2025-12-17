@@ -4,7 +4,7 @@
 # Displays comprehensive information about the installed environment
 
 # Exit immediately on error
-set -euo pipefail
+set -eo pipefail
 
 # Colors
 RED='\033[0;31m'
@@ -54,8 +54,7 @@ if ! oc whoami >/dev/null 2>&1; then
     exit 1
 fi
 
-# Get script directory
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Script directory not needed for this script (it only queries cluster state)
 
 # Load environment variables from ~/.bashrc if they exist
 # Only load specific variables we need, using a safe method
@@ -134,11 +133,6 @@ if oc get namespace "$RHACS_NAMESPACE" >/dev/null 2>&1; then
             fi
         fi
         
-        # Check for API token in environment
-        if [ -n "${ROX_API_TOKEN:-}" ]; then
-            info "API Token: ${ROX_API_TOKEN:0:20}... (from environment)"
-        fi
-        
         # Get ROX_ENDPOINT
         ROX_ENDPOINT="${ROX_ENDPOINT:-$CENTRAL_ROUTE}"
         if [ -n "$ROX_ENDPOINT" ]; then
@@ -214,18 +208,6 @@ if oc get namespace "$RHACS_NAMESPACE" >/dev/null 2>&1; then
         warning "  SecuredCluster CRD not found"
     fi
     
-    # Check pods
-    echo ""
-    info "Pod Status:"
-    POD_COUNT=$(oc get pods -n "$RHACS_NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-    if [ "$POD_COUNT" -gt 0 ]; then
-        RUNNING_COUNT=$(oc get pods -n "$RHACS_NAMESPACE" --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l | tr -d ' ')
-        info "  Total Pods: $POD_COUNT (Running: $RUNNING_COUNT)"
-        oc get pods -n "$RHACS_NAMESPACE" -o custom-columns=NAME:.metadata.name,STATUS:.status.phase,READY:.status.containerStatuses[0].ready 2>/dev/null | head -10 || true
-    else
-        warning "  No pods found"
-    fi
-    
 else
     warning "Namespace '$RHACS_NAMESPACE' not found - RHACS may not be installed"
 fi
@@ -275,62 +257,8 @@ if oc get namespace "$COMPLIANCE_NAMESPACE" >/dev/null 2>&1; then
         warning "  No ComplianceScans found"
     fi
     
-    # Check pods
-    echo ""
-    info "Pod Status:"
-    POD_COUNT=$(oc get pods -n "$COMPLIANCE_NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-    if [ "$POD_COUNT" -gt 0 ]; then
-        RUNNING_COUNT=$(oc get pods -n "$COMPLIANCE_NAMESPACE" --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l | tr -d ' ')
-        info "  Total Pods: $POD_COUNT (Running: $RUNNING_COUNT)"
-    else
-        warning "  No pods found"
-    fi
-    
 else
     warning "Namespace '$COMPLIANCE_NAMESPACE' not found - Compliance Operator may not be installed"
-fi
-
-# ============================================================
-# Cert-Manager Information
-# ============================================================
-section "Cert-Manager Information"
-
-# Check cert-manager operator namespace (could be in openshift-operators or cert-manager-operator)
-CERT_MANAGER_FOUND=false
-
-# Check openshift-operators namespace first (common location)
-if oc get subscription cert-manager-operator -n openshift-operators >/dev/null 2>&1; then
-    CERT_MANAGER_FOUND=true
-    CERT_MANAGER_NS="openshift-operators"
-elif oc get subscription cert-manager-operator -n "$CERT_MANAGER_NAMESPACE" >/dev/null 2>&1; then
-    CERT_MANAGER_FOUND=true
-    CERT_MANAGER_NS="$CERT_MANAGER_NAMESPACE"
-fi
-
-if [ "$CERT_MANAGER_FOUND" = true ]; then
-    success "Cert-Manager Operator found in namespace '$CERT_MANAGER_NS'"
-    
-    CSV_NAME=$(oc get subscription cert-manager-operator -n "$CERT_MANAGER_NS" -o jsonpath='{.status.currentCSV}' 2>/dev/null || echo "")
-    CSV_PHASE=$(oc get csv "$CSV_NAME" -n "$CERT_MANAGER_NS" -o jsonpath='{.status.phase}' 2>/dev/null || echo "unknown")
-    if [ "$CSV_PHASE" = "Succeeded" ]; then
-        success "  Cert-Manager Operator: Installed ($CSV_NAME)"
-    else
-        warning "  Cert-Manager Operator: $CSV_PHASE"
-    fi
-    
-    # Check certificates
-    echo ""
-    info "Certificates:"
-    CERT_COUNT=$(oc get certificate --all-namespaces --no-headers 2>/dev/null | wc -l | tr -d ' ')
-    if [ "$CERT_COUNT" -gt 0 ]; then
-        info "  Total Certificates: $CERT_COUNT"
-        oc get certificate --all-namespaces -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,READY:.status.conditions[0].status 2>/dev/null | head -10 || true
-    else
-        info "  No certificates found"
-    fi
-    
-else
-    warning "Cert-Manager Operator not found - may not be installed"
 fi
 
 # ============================================================
@@ -356,49 +284,103 @@ if oc get namespace "$COO_NAMESPACE" >/dev/null 2>&1; then
         warning "  Cluster Observability Operator subscription not found"
     fi
     
-    # Check MonitoringStack
+    # Check MonitoringStack (in COO namespace)
     echo ""
     info "Monitoring Resources:"
-    if oc get monitoringstack rhacs-monitoring-stack -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
-        success "  MonitoringStack (rhacs-monitoring-stack): Found"
+    # Check both namespaces in case resources are in different locations
+    MONITORINGSTACK_FOUND=false
+    MONITORINGSTACK_NS=""
+    if oc get monitoringstack rhacs-monitoring-stack -n "$COO_NAMESPACE" >/dev/null 2>&1; then
+        MONITORINGSTACK_FOUND=true
+        MONITORINGSTACK_NS="$COO_NAMESPACE"
+    elif oc get monitoringstack rhacs-monitoring-stack -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
+        MONITORINGSTACK_FOUND=true
+        MONITORINGSTACK_NS="$RHACS_NAMESPACE"
+    fi
+    
+    if [ "$MONITORINGSTACK_FOUND" = true ]; then
+        success "  MonitoringStack (rhacs-monitoring-stack): Found in namespace '$MONITORINGSTACK_NS'"
     else
         warning "  MonitoringStack (rhacs-monitoring-stack): Not found"
     fi
     
-    if oc get scrapeconfig rhacs-scrape-config -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
-        success "  ScrapeConfig (rhacs-scrape-config): Found"
+    SCRAPECONFIG_FOUND=false
+    SCRAPECONFIG_NS=""
+    if oc get scrapeconfig rhacs-scrape-config -n "$COO_NAMESPACE" >/dev/null 2>&1; then
+        SCRAPECONFIG_FOUND=true
+        SCRAPECONFIG_NS="$COO_NAMESPACE"
+    elif oc get scrapeconfig rhacs-scrape-config -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
+        SCRAPECONFIG_FOUND=true
+        SCRAPECONFIG_NS="$RHACS_NAMESPACE"
+    fi
+    
+    if [ "$SCRAPECONFIG_FOUND" = true ]; then
+        success "  ScrapeConfig (rhacs-scrape-config): Found in namespace '$SCRAPECONFIG_NS'"
     else
         warning "  ScrapeConfig (rhacs-scrape-config): Not found"
     fi
     
-    if oc get prometheus rhacs-prometheus-server -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
+    PROMETHEUS_FOUND=false
+    PROMETHEUS_NS=""
+    PROM_STATUS="unknown"
+    if oc get prometheus rhacs-prometheus-server -n "$COO_NAMESPACE" >/dev/null 2>&1; then
+        PROMETHEUS_FOUND=true
+        PROMETHEUS_NS="$COO_NAMESPACE"
+        PROM_STATUS=$(oc get prometheus rhacs-prometheus-server -n "$COO_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "unknown")
+    elif oc get prometheus rhacs-prometheus-server -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
+        PROMETHEUS_FOUND=true
+        PROMETHEUS_NS="$RHACS_NAMESPACE"
         PROM_STATUS=$(oc get prometheus rhacs-prometheus-server -n "$RHACS_NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "unknown")
+    fi
+    
+    if [ "$PROMETHEUS_FOUND" = true ]; then
         if [ "$PROM_STATUS" = "True" ]; then
-            success "  Prometheus (rhacs-prometheus-server): Available"
+            success "  Prometheus (rhacs-prometheus-server): Available in namespace '$PROMETHEUS_NS'"
         else
-            warning "  Prometheus (rhacs-prometheus-server): $PROM_STATUS"
+            warning "  Prometheus (rhacs-prometheus-server): $PROM_STATUS in namespace '$PROMETHEUS_NS'"
         fi
     else
         warning "  Prometheus (rhacs-prometheus-server): Not found"
     fi
     
-    # Check Perses resources
+    # Check Perses resources (check both namespaces)
     echo ""
     info "Perses Resources:"
-    if oc get datasource rhacs-datasource -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
-        success "  Datasource (rhacs-datasource): Found"
+    DATASOURCE_FOUND=false
+    DATASOURCE_NS=""
+    if oc get datasource rhacs-datasource -n "$COO_NAMESPACE" >/dev/null 2>&1; then
+        DATASOURCE_FOUND=true
+        DATASOURCE_NS="$COO_NAMESPACE"
+    elif oc get datasource rhacs-datasource -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
+        DATASOURCE_FOUND=true
+        DATASOURCE_NS="$RHACS_NAMESPACE"
+    fi
+    
+    if [ "$DATASOURCE_FOUND" = true ]; then
+        success "  Datasource (rhacs-datasource): Found in namespace '$DATASOURCE_NS'"
     else
         warning "  Datasource (rhacs-datasource): Not found"
     fi
     
-    if oc get dashboard rhacs-dashboard -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
-        success "  Dashboard (rhacs-dashboard): Found"
+    DASHBOARD_FOUND=false
+    DASHBOARD_NS=""
+    if oc get dashboard rhacs-dashboard -n "$COO_NAMESPACE" >/dev/null 2>&1; then
+        DASHBOARD_FOUND=true
+        DASHBOARD_NS="$COO_NAMESPACE"
+    elif oc get dashboard rhacs-dashboard -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
+        DASHBOARD_FOUND=true
+        DASHBOARD_NS="$RHACS_NAMESPACE"
+    fi
+    
+    if [ "$DASHBOARD_FOUND" = true ]; then
+        success "  Dashboard (rhacs-dashboard): Found in namespace '$DASHBOARD_NS'"
     else
         warning "  Dashboard (rhacs-dashboard): Not found"
     fi
     
+    # UI Plugin is cluster-scoped
     if oc get uiplugin rhacs-ui-plugin >/dev/null 2>&1; then
-        success "  UI Plugin (rhacs-ui-plugin): Found"
+        success "  UI Plugin (rhacs-ui-plugin): Found (cluster-scoped)"
     else
         warning "  UI Plugin (rhacs-ui-plugin): Not found"
     fi
@@ -515,7 +497,7 @@ echo ""
 section "Summary"
 
 COMPONENTS_INSTALLED=0
-COMPONENTS_TOTAL=5
+COMPONENTS_TOTAL=4
 
 # Check RHACS
 if oc get namespace "$RHACS_NAMESPACE" >/dev/null 2>&1 && oc get route central -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
@@ -527,18 +509,13 @@ if oc get namespace "$COMPLIANCE_NAMESPACE" >/dev/null 2>&1 && oc get subscripti
     COMPONENTS_INSTALLED=$((COMPONENTS_INSTALLED + 1))
 fi
 
-# Check Cert-Manager
-if [ "$CERT_MANAGER_FOUND" = true ]; then
-    COMPONENTS_INSTALLED=$((COMPONENTS_INSTALLED + 1))
-fi
-
 # Check Cluster Observability Operator
 if oc get namespace "$COO_NAMESPACE" >/dev/null 2>&1 && oc get subscription cluster-observability-operator -n "$COO_NAMESPACE" >/dev/null 2>&1; then
     COMPONENTS_INSTALLED=$((COMPONENTS_INSTALLED + 1))
 fi
 
-# Check MonitoringStack
-if oc get monitoringstack rhacs-monitoring-stack -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
+# Check MonitoringStack (check COO namespace first, then RHACS namespace)
+if oc get monitoringstack rhacs-monitoring-stack -n "$COO_NAMESPACE" >/dev/null 2>&1 || oc get monitoringstack rhacs-monitoring-stack -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
     COMPONENTS_INSTALLED=$((COMPONENTS_INSTALLED + 1))
 fi
 
