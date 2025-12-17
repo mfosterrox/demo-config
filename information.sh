@@ -217,24 +217,6 @@ if oc get namespace "$RHACS_NAMESPACE" >/dev/null 2>&1; then
     # Display all information (after all checks are complete)
     # ============================================================
     
-    # Display Central route and credentials
-    if [ -n "$CENTRAL_ROUTE" ]; then
-        info "Central Route: $CENTRAL_ROUTE"
-        info "RHACS UI URL: https://$CENTRAL_ROUTE"
-        if [ -n "$ADMIN_PASSWORD" ]; then
-            info "Username: admin"
-            info "Password: $ADMIN_PASSWORD"
-        fi
-        if [ -n "${ROX_API_TOKEN:-}" ]; then
-            info "API Token: ${ROX_API_TOKEN:0:20}... (from environment)"
-        fi
-        if [ -n "$ROX_ENDPOINT" ]; then
-            info "ROX_ENDPOINT: $ROX_ENDPOINT"
-        fi
-    else
-        warning "Central route not found (may still be deploying)"
-    fi
-    
     # Display Central deployment status
     echo ""
     verify "Central Deployment Status:"
@@ -288,6 +270,25 @@ if oc get namespace "$RHACS_NAMESPACE" >/dev/null 2>&1; then
         warning "  No SecuredCluster resources found"
     fi
     
+    # Display Central route and credentials (after verification steps)
+    echo ""
+    if [ -n "$CENTRAL_ROUTE" ]; then
+        info "Central Route: $CENTRAL_ROUTE"
+        info "RHACS UI URL: https://$CENTRAL_ROUTE"
+        if [ -n "$ADMIN_PASSWORD" ]; then
+            info "Username: admin"
+            info "Password: $ADMIN_PASSWORD"
+        fi
+        if [ -n "${ROX_API_TOKEN:-}" ]; then
+            info "API Token: ${ROX_API_TOKEN:0:20}... (from environment)"
+        fi
+        if [ -n "$ROX_ENDPOINT" ]; then
+            info "ROX_ENDPOINT: $ROX_ENDPOINT"
+        fi
+    else
+        warning "Central route not found (may still be deploying)"
+    fi
+    
 else
     warning "Namespace '$RHACS_NAMESPACE' not found - RHACS may not be installed"
 fi
@@ -300,39 +301,93 @@ section "Compliance Operator Information"
 if oc get namespace "$COMPLIANCE_NAMESPACE" >/dev/null 2>&1; then
     success "Namespace '$COMPLIANCE_NAMESPACE' exists"
     
+    # ============================================================
+    # Gather all information first (all checks done here)
+    # ============================================================
+    
     # Check operator subscription
+    COMPLIANCE_SUB_EXISTS=false
+    COMPLIANCE_CSV_NAME=""
+    COMPLIANCE_CSV_PHASE="unknown"
+    if oc get subscription compliance-operator -n "$COMPLIANCE_NAMESPACE" >/dev/null 2>&1; then
+        COMPLIANCE_SUB_EXISTS=true
+        COMPLIANCE_CSV_NAME=$(oc get subscription compliance-operator -n "$COMPLIANCE_NAMESPACE" -o jsonpath='{.status.currentCSV}' 2>/dev/null || echo "")
+        if [ -n "$COMPLIANCE_CSV_NAME" ] && [ "$COMPLIANCE_CSV_NAME" != "null" ]; then
+            COMPLIANCE_CSV_PHASE=$(oc get csv "$COMPLIANCE_CSV_NAME" -n "$COMPLIANCE_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "unknown")
+        fi
+    fi
+    
+    # Check ScanSettingBindings
+    SCAN_BINDING_COUNT=0
+    SCAN_BINDING_LIST=""
+    ACS_CATCH_ALL_EXISTS=false
+    ACS_CATCH_ALL_STATUS="unknown"
+    SCAN_BINDING_OUTPUT=$(oc get scansettingbinding -n "$COMPLIANCE_NAMESPACE" --no-headers 2>/dev/null || echo "")
+    if [ -n "$SCAN_BINDING_OUTPUT" ]; then
+        SCAN_BINDING_COUNT=$(echo "$SCAN_BINDING_OUTPUT" | wc -l | tr -d ' ')
+        SCAN_BINDING_LIST=$(oc get scansettingbinding -n "$COMPLIANCE_NAMESPACE" -o custom-columns=NAME:.metadata.name,STATUS:.status.conditions[0].type --no-headers 2>/dev/null || echo "")
+        # Check specifically for acs-catch-all
+        if echo "$SCAN_BINDING_OUTPUT" | grep -q "acs-catch-all"; then
+            ACS_CATCH_ALL_EXISTS=true
+            ACS_CATCH_ALL_STATUS=$(oc get scansettingbinding acs-catch-all -n "$COMPLIANCE_NAMESPACE" -o jsonpath='{.status.conditions[0].type}' 2>/dev/null || echo "unknown")
+        fi
+    fi
+    
+    # Check ComplianceScans
+    SCAN_COUNT=0
+    SCAN_LIST=""
+    SCAN_OUTPUT=$(oc get compliancescan -n "$COMPLIANCE_NAMESPACE" --no-headers 2>/dev/null || echo "")
+    if [ -n "$SCAN_OUTPUT" ]; then
+        SCAN_COUNT=$(echo "$SCAN_OUTPUT" | wc -l | tr -d ' ')
+        SCAN_LIST=$(oc get compliancescan -n "$COMPLIANCE_NAMESPACE" -o custom-columns=NAME:.metadata.name,STATUS:.status.phase --no-headers 2>/dev/null || echo "")
+    fi
+    
+    # ============================================================
+    # Display all information (after all checks are complete)
+    # ============================================================
+    
+    # Display operator subscription status
     echo ""
     verify "Operator Status:"
-    if oc get subscription compliance-operator -n "$COMPLIANCE_NAMESPACE" >/dev/null 2>&1; then
-        CSV_NAME=$(oc get subscription compliance-operator -n "$COMPLIANCE_NAMESPACE" -o jsonpath='{.status.currentCSV}' 2>/dev/null || echo "")
-        CSV_PHASE=$(oc get csv "$CSV_NAME" -n "$COMPLIANCE_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "unknown")
-        if [ "$CSV_PHASE" = "Succeeded" ]; then
-            success "  Compliance Operator: Installed ($CSV_NAME)"
+    if [ "$COMPLIANCE_SUB_EXISTS" = true ]; then
+        if [ "$COMPLIANCE_CSV_PHASE" = "Succeeded" ]; then
+            success "  Compliance Operator: Installed ($COMPLIANCE_CSV_NAME)"
         else
-            warning "  Compliance Operator: $CSV_PHASE"
+            warning "  Compliance Operator: $COMPLIANCE_CSV_PHASE"
         fi
     else
         warning "  Compliance Operator subscription not found"
     fi
     
-    # Check ScanSettingBindings
+    # Display ScanSettingBindings status
     echo ""
-    info "Scan Configurations:"
-    SCAN_BINDING_COUNT=$(oc get scansettingbinding -n "$COMPLIANCE_NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    verify "ScanSettingBindings Status:"
     if [ "$SCAN_BINDING_COUNT" -gt 0 ]; then
         success "  Found $SCAN_BINDING_COUNT ScanSettingBinding(s)"
-        oc get scansettingbinding -n "$COMPLIANCE_NAMESPACE" -o custom-columns=NAME:.metadata.name,STATUS:.status.conditions[0].type 2>/dev/null | head -10 || true
+        if [ "$ACS_CATCH_ALL_EXISTS" = true ]; then
+            if [ "$ACS_CATCH_ALL_STATUS" != "unknown" ] && [ -n "$ACS_CATCH_ALL_STATUS" ]; then
+                success "    acs-catch-all: $ACS_CATCH_ALL_STATUS"
+            else
+                success "    acs-catch-all: Found"
+            fi
+        else
+            warning "    acs-catch-all: Not found"
+        fi
+        if [ -n "$SCAN_BINDING_LIST" ]; then
+            echo "$SCAN_BINDING_LIST" | head -10 | sed 's/^/    /'
+        fi
     else
         warning "  No ScanSettingBindings found"
     fi
     
-    # Check ComplianceScans
+    # Display ComplianceScans
     echo ""
     info "Compliance Scans:"
-    SCAN_COUNT=$(oc get compliancescan -n "$COMPLIANCE_NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
     if [ "$SCAN_COUNT" -gt 0 ]; then
         info "  Total Scans: $SCAN_COUNT"
-        oc get compliancescan -n "$COMPLIANCE_NAMESPACE" -o custom-columns=NAME:.metadata.name,STATUS:.status.phase 2>/dev/null | head -10 || true
+        if [ -n "$SCAN_LIST" ]; then
+            echo "$SCAN_LIST" | head -10 | sed 's/^/    /'
+        fi
     else
         warning "  No ComplianceScans found"
     fi
