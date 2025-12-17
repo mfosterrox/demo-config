@@ -27,6 +27,16 @@ info() {
     echo -e "${BLUE}[INFO]${NC} $1"
 }
 
+# Check line (shows what is being checked)
+check() {
+    echo -e "${CYAN}[CHECK]${NC} $1"
+}
+
+# Verify line (shows verification/status information)
+verify() {
+    echo -e "${BLUE}[VERIFY]${NC} $1"
+}
+
 # Success line
 success() {
     echo -e "${GREEN}[✓]${NC} $1"
