@@ -95,27 +95,45 @@ echo ""
 # ============================================================
 section "OpenShift Cluster Information"
 
+# ============================================================
+# Gather all information first (all checks done here)
+# ============================================================
+
 CLUSTER_USER=$(oc whoami 2>/dev/null || echo "unknown")
+CLUSTER_URL=$(oc whoami --show-server 2>/dev/null || echo "unknown")
+CLUSTER_VERSION=$(oc version -o json 2>/dev/null | grep -o '"openshiftVersion":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
+KUBERNETES_VERSION=$(oc version -o json 2>/dev/null | grep -o '"gitVersion":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
+
+# Check cluster admin privileges
+HAS_ADMIN_PRIVILEGES=false
+if oc auth can-i create subscriptions --all-namespaces >/dev/null 2>&1; then
+    HAS_ADMIN_PRIVILEGES=true
+fi
+
+# ============================================================
+# Display all information (after all checks are complete)
+# ============================================================
+
+# Display cluster admin privileges check first
+if [ "$HAS_ADMIN_PRIVILEGES" = true ]; then
+    success "Cluster admin privileges: Yes"
+else
+    warning "Cluster admin privileges: No (limited information may be displayed)"
+fi
+
+# Display current user
 info "Current User: $CLUSTER_USER"
 
-CLUSTER_URL=$(oc whoami --show-server 2>/dev/null || echo "unknown")
+# Display cluster URL
 info "Cluster URL: $CLUSTER_URL"
 
-CLUSTER_VERSION=$(oc version -o json 2>/dev/null | grep -o '"openshiftVersion":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
+# Display versions if available
 if [ "$CLUSTER_VERSION" != "unknown" ]; then
     info "OpenShift Version: $CLUSTER_VERSION"
 fi
 
-KUBERNETES_VERSION=$(oc version -o json 2>/dev/null | grep -o '"gitVersion":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
 if [ "$KUBERNETES_VERSION" != "unknown" ]; then
     info "Kubernetes Version: $KUBERNETES_VERSION"
-fi
-
-# Check cluster admin privileges
-if oc auth can-i create subscriptions --all-namespaces >/dev/null 2>&1; then
-    success "Cluster admin privileges: Yes"
-else
-    warning "Cluster admin privileges: No (limited information may be displayed)"
 fi
 
 # ============================================================
