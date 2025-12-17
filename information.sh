@@ -179,15 +179,28 @@ if oc get namespace "$RHACS_NAMESPACE" >/dev/null 2>&1; then
     fi
     
     # Check SecuredCluster resource
+    SECUREDCLUSTER_CRD_EXISTS=false
     SECUREDCLUSTER_EXISTS=false
     SECUREDCLUSTER_COUNT=0
     SECUREDCLUSTER_LIST=""
-    if oc get securedcluster -n "$RHACS_NAMESPACE" >/dev/null 2>&1; then
-        SECUREDCLUSTER_COUNT=$(oc get securedcluster -n "$RHACS_NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    # Check if CRD exists by attempting to get it and checking for CRD-specific error
+    # SecuredCluster is cluster-scoped, so don't use -n flag
+    SECUREDCLUSTER_OUTPUT=$(oc get securedcluster 2>&1)
+    SECUREDCLUSTER_EXIT_CODE=$?
+    if [ $SECUREDCLUSTER_EXIT_CODE -eq 0 ]; then
+        # CRD exists, check for resources
+        SECUREDCLUSTER_CRD_EXISTS=true
+        SECUREDCLUSTER_COUNT=$(echo "$SECUREDCLUSTER_OUTPUT" | grep -v "^NAME" | grep -v "^$" | wc -l | tr -d ' ')
         if [ "$SECUREDCLUSTER_COUNT" -gt 0 ]; then
             SECUREDCLUSTER_EXISTS=true
-            SECUREDCLUSTER_LIST=$(oc get securedcluster -n "$RHACS_NAMESPACE" -o custom-columns=NAME:.metadata.name,STATUS:.status.conditions[0].type --no-headers 2>/dev/null || echo "")
+            SECUREDCLUSTER_LIST=$(oc get securedcluster -o custom-columns=NAME:.metadata.name,STATUS:.status.conditions[0].type --no-headers 2>/dev/null || echo "")
         fi
+    elif echo "$SECUREDCLUSTER_OUTPUT" | grep -qi "the server doesn't have a resource type\|no matches for kind\|unable to recognize\|NotFound"; then
+        # CRD doesn't exist
+        SECUREDCLUSTER_CRD_EXISTS=false
+    else
+        # Some other error occurred, assume CRD might exist but we can't check
+        SECUREDCLUSTER_CRD_EXISTS="unknown"
     fi
     
     # ============================================================
@@ -256,7 +269,9 @@ if oc get namespace "$RHACS_NAMESPACE" >/dev/null 2>&1; then
     # Display SecuredCluster resource
     echo ""
     info "SecuredCluster Resource:"
-    if [ "$SECUREDCLUSTER_EXISTS" = true ]; then
+    if [ "$SECUREDCLUSTER_CRD_EXISTS" = false ]; then
+        warning "  SecuredCluster CRD not found"
+    elif [ "$SECUREDCLUSTER_EXISTS" = true ]; then
         success "  Found $SECUREDCLUSTER_COUNT SecuredCluster resource(s)"
         echo "$SECUREDCLUSTER_LIST" | head -5 | sed 's/^/  /'
     else
