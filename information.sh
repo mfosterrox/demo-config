@@ -214,7 +214,7 @@ if oc get namespace "$RHACS_NAMESPACE" >/dev/null 2>&1; then
     
     # Display Central deployment status
     echo ""
-    info "Central Deployment Status:"
+    verify "Central Deployment Status:"
     if [ "$CENTRAL_EXISTS" = true ]; then
         if [ "$CENTRAL_AVAILABLE" = "True" ]; then
             success "  Central: Ready ($CENTRAL_READY)"
@@ -227,7 +227,7 @@ if oc get namespace "$RHACS_NAMESPACE" >/dev/null 2>&1; then
     
     # Display Secured Cluster Services status
     echo ""
-    info "Secured Cluster Services Status:"
+    verify "Secured Cluster Services Status:"
     
     if [ "$SENSOR_EXISTS" = true ]; then
         success "  Sensor: Ready ($SENSOR_READY)"
@@ -277,7 +277,7 @@ if oc get namespace "$COMPLIANCE_NAMESPACE" >/dev/null 2>&1; then
     
     # Check operator subscription
     echo ""
-    info "Operator Status:"
+    verify "Operator Status:"
     if oc get subscription compliance-operator -n "$COMPLIANCE_NAMESPACE" >/dev/null 2>&1; then
         CSV_NAME=$(oc get subscription compliance-operator -n "$COMPLIANCE_NAMESPACE" -o jsonpath='{.status.currentCSV}' 2>/dev/null || echo "")
         CSV_PHASE=$(oc get csv "$CSV_NAME" -n "$COMPLIANCE_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "unknown")
@@ -326,7 +326,7 @@ if oc get namespace "$COO_NAMESPACE" >/dev/null 2>&1; then
     success "Namespace '$COO_NAMESPACE' exists"
     
     echo ""
-    info "Cluster Observability Operator Status:"
+    verify "Cluster Observability Operator Status:"
     if oc get subscription cluster-observability-operator -n "$COO_NAMESPACE" >/dev/null 2>&1; then
         CSV_NAME=$(oc get subscription cluster-observability-operator -n "$COO_NAMESPACE" -o jsonpath='{.status.currentCSV}' 2>/dev/null || echo "")
         CSV_PHASE=$(oc get csv "$CSV_NAME" -n "$COO_NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "unknown")
