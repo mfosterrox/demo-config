@@ -292,6 +292,9 @@ main() {
     if [ -n "$ADMIN_PASSWORD" ]; then
         save_to_bashrc "ADMIN_PASSWORD" "$ADMIN_PASSWORD" "RHACS admin password"
     fi
+    # Initialize variables that may be set by other scripts
+    CONSOLE_ROUTE="${CONSOLE_ROUTE:-}"
+    RHDH_ROUTE="${RHDH_ROUTE:-}"
     if [ -n "$CONSOLE_ROUTE" ]; then
         save_to_bashrc "CONSOLE_ROUTE" "$CONSOLE_ROUTE" "OpenShift Console route"
     fi
