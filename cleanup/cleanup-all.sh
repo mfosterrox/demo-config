@@ -104,6 +104,42 @@ delete_all_resources() {
     fi
 }
 
+# Function to delete compliance scans with finalizer removal
+delete_compliance_scans() {
+    local namespace=$1
+    
+    local scans=$(oc get compliancescan.compliance.openshift.io -n "$namespace" -o name 2>/dev/null || echo "")
+    
+    if [ -n "$scans" ]; then
+        log "  Found $(echo "$scans" | wc -l | tr -d '[:space:]') ComplianceScan resources in namespace $namespace"
+        for scan in $scans; do
+            scan_name=$(echo "$scan" | cut -d'/' -f2)
+            
+            if oc get compliancescan.compliance.openshift.io "$scan_name" -n "$namespace" &>/dev/null 2>&1; then
+                log "  Processing ComplianceScan: $scan_name"
+                
+                # Remove finalizers first
+                log "    Removing finalizers from $scan_name..."
+                if oc patch compliancescan.compliance.openshift.io/"$scan_name" -n "$namespace" --type=merge -p '{"metadata":{"finalizers":null}}' &>/dev/null 2>&1; then
+                    log "      ✓ Finalizers removed"
+                else
+                    warning "      Failed to remove finalizers (may not have any)"
+                fi
+                
+                # Then delete the scan
+                log "    Deleting ComplianceScan $scan_name..."
+                if oc delete compliancescan.compliance.openshift.io "$scan_name" -n "$namespace" --timeout=60s &>/dev/null 2>&1; then
+                    log "      ✓ Deleted ComplianceScan $scan_name"
+                else
+                    warning "      Failed to delete ComplianceScan $scan_name (may already be deleting)"
+                fi
+            fi
+        done
+    else
+        log "  No ComplianceScan resources found in namespace $namespace"
+    fi
+}
+
 # Namespace definitions
 RHACS_NAMESPACE="rhacs-operator"
 CLUSTER_OBSERVABILITY_NS="openshift-cluster-observability-operator"
@@ -183,8 +219,8 @@ if oc get namespace "$COMPLIANCE_NAMESPACE" &>/dev/null 2>&1; then
     # Delete ScanConfigurations
     delete_all_resources "scanconfiguration" "$COMPLIANCE_NAMESPACE" "ScanConfiguration"
     
-    # Delete ComplianceScans
-    delete_all_resources "compliancescan" "$COMPLIANCE_NAMESPACE" "ComplianceScan"
+    # Delete ComplianceScans (with finalizer removal)
+    delete_compliance_scans "$COMPLIANCE_NAMESPACE"
     
     # Delete ProfileBundles (optional - may be managed by operator)
     delete_all_resources "profilebundle" "$COMPLIANCE_NAMESPACE" "ProfileBundle"
@@ -192,6 +228,25 @@ if oc get namespace "$COMPLIANCE_NAMESPACE" &>/dev/null 2>&1; then
     log ""
 else
     log "  Namespace $COMPLIANCE_NAMESPACE not found (skipping)"
+    log ""
+fi
+
+# Delete ComplianceScans in other namespaces (if any)
+log "Checking for ComplianceScans in other namespaces..."
+SCANS_IN_OTHER_NS=$(oc get compliancescan.compliance.openshift.io --all-namespaces --no-headers 2>/dev/null | grep -v "^${COMPLIANCE_NAMESPACE}" || echo "")
+
+if [ -n "$SCANS_IN_OTHER_NS" ]; then
+    log "  Found ComplianceScans in other namespaces, deleting..."
+    
+    # Get unique namespaces
+    OTHER_NS=$(echo "$SCANS_IN_OTHER_NS" | awk '{print $1}' | sort -u)
+    
+    for ns in $OTHER_NS; do
+        if [ -n "$ns" ] && [ "$ns" != "$COMPLIANCE_NAMESPACE" ]; then
+            log "  Processing namespace: $ns"
+            delete_compliance_scans "$ns"
+        fi
+    done
     log ""
 fi
 
