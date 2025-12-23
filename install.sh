@@ -211,11 +211,51 @@ main() {
     install_rhacs_central
     setup_rhacs_scs
     install_compliance_operator
-    deploy_applications
-    setup_co_scan_schedule
+    
+    # Run scripts 08, 09, 11, and 12 in parallel to speed up installation
+    log "Running scripts 08, 09, 11, and 12 in parallel..."
+    
+    # Start scripts 08, 09, 11, and 12 in background
+    deploy_applications &
+    DEPLOY_APPS_PID=$!
+    
+    setup_co_scan_schedule &
+    SETUP_SCAN_PID=$!
+    
+    configure_rhacs_settings &
+    CONFIG_RHACS_PID=$!
+    
+    setup_perses_monitoring &
+    SETUP_PERSES_PID=$!
+    
+    # Wait for script 09 to complete before running script 10
+    log "Waiting for compliance scan schedule setup (script 09) to complete..."
+    wait $SETUP_SCAN_PID
+    if [ $? -ne 0 ]; then
+        error "Compliance scan schedule setup failed. Installation stopped."
+    fi
+    
+    # Now run script 10 (depends on script 09)
     trigger_compliance_scan
-    configure_rhacs_settings
-    setup_perses_monitoring
+    
+    # Wait for remaining parallel scripts to complete
+    log "Waiting for remaining parallel scripts to complete..."
+    wait $DEPLOY_APPS_PID
+    if [ $? -ne 0 ]; then
+        error "Application deployment failed. Installation stopped."
+    fi
+    
+    wait $CONFIG_RHACS_PID
+    if [ $? -ne 0 ]; then
+        error "RHACS configuration failed. Installation stopped."
+    fi
+    
+    wait $SETUP_PERSES_PID
+    if [ $? -ne 0 ]; then
+        error "Perses monitoring setup failed. Installation stopped."
+    fi
+    
+    log "✓ All parallel scripts completed successfully"
     
     log "========================================================="
     success "Demo Config setup completed successfully!"
