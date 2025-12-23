@@ -8,11 +8,12 @@
 #
 # This script deletes everything at once and then verifies cleanup
 
+# Get script directory before enabling strict mode
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${0}}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
 # Exit immediately on error, show exact error message
 set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # Colors
 RED='\033[0;31m'
@@ -386,37 +387,6 @@ log "Step 4: Deleting namespaces"
 log "========================================================="
 log ""
 
-# Function to delete namespace
-delete_namespace() {
-    local namespace=$1
-    
-    if oc get namespace "$namespace" &>/dev/null 2>&1; then
-        log "  Deleting namespace: $namespace"
-        if oc delete namespace "$namespace" --timeout=120s &>/dev/null 2>&1; then
-            log "    ✓ Namespace deletion initiated"
-            return 0
-        else
-            warning "    Failed to delete namespace $namespace (may already be deleting)"
-            return 1
-        fi
-    else
-        log "  Namespace $namespace not found (skipping)"
-        return 0
-    fi
-}
-
-# Delete namespaces (non-fatal - continue even if some fail)
-set +e  # Temporarily disable exit on error for namespace deletion
-delete_namespace "$RHACS_NAMESPACE" || true
-delete_namespace "$CLUSTER_OBSERVABILITY_NS" || true
-delete_namespace "$COMPLIANCE_NAMESPACE" || true
-# Note: cert-manager-operator namespace is NOT deleted as cert-manager may be used by other components
-set -e  # Re-enable exit on error
-
-log ""
-log "Waiting for namespace deletions to begin..."
-sleep 15
-
 # Function to force delete namespace by removing finalizers
 force_delete_namespace() {
     local namespace=$1
@@ -581,55 +551,96 @@ force_delete_namespace() {
     fi
 }
 
+# Force delete all namespaces created by install scripts (except cert-manager-operator)
 log ""
-log "Checking for namespaces that need force deletion..."
-log "This includes namespaces stuck in Terminating state or with finalizers..."
+log "Force deleting all namespaces created by install scripts..."
+log "Note: cert-manager-operator namespace is NOT deleted as cert-manager may be used by other components"
+log ""
 
-# Function to check if namespace needs force deletion
-namespace_needs_force_delete() {
-    local namespace=$1
-    
-    if ! oc get namespace "$namespace" &>/dev/null 2>&1; then
-        return 1  # Namespace doesn't exist, no force delete needed
-    fi
-    
-    NS_PHASE=$(oc get namespace "$namespace" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-    
-    # Check for finalizers in both metadata and spec
-    FINALIZERS_META=$(oc get namespace "$namespace" -o jsonpath='{.metadata.finalizers[*]}' 2>/dev/null || echo "")
-    FINALIZERS_SPEC=$(oc get namespace "$namespace" -o jsonpath='{.spec.finalizers[*]}' 2>/dev/null || echo "")
-    
-    # Need force delete if: Terminating state OR has finalizers
-    if [ "$NS_PHASE" = "Terminating" ] || [ -n "$FINALIZERS_META" ] || [ -n "$FINALIZERS_SPEC" ]; then
-        return 0  # Needs force delete
-    fi
-    
-    return 1  # Doesn't need force delete
-}
+set +e  # Temporarily disable exit on error for namespace deletion
 
-# Force delete namespaces that are stuck or have finalizers
-set +e  # Temporarily disable exit on error
+# Force delete main namespaces
+log "Force deleting namespace: $RHACS_NAMESPACE"
+force_delete_namespace "$RHACS_NAMESPACE" || true
 
-if namespace_needs_force_delete "$RHACS_NAMESPACE"; then
-    log "  Force deleting namespace: $RHACS_NAMESPACE"
-    force_delete_namespace "$RHACS_NAMESPACE" || true
-fi
+log "Force deleting namespace: $CLUSTER_OBSERVABILITY_NS"
+force_delete_namespace "$CLUSTER_OBSERVABILITY_NS" || true
 
-if namespace_needs_force_delete "$CLUSTER_OBSERVABILITY_NS"; then
-    log "  Force deleting namespace: $CLUSTER_OBSERVABILITY_NS"
-    force_delete_namespace "$CLUSTER_OBSERVABILITY_NS" || true
-fi
+log "Force deleting namespace: $COMPLIANCE_NAMESPACE"
+force_delete_namespace "$COMPLIANCE_NAMESPACE" || true
 
-if namespace_needs_force_delete "$COMPLIANCE_NAMESPACE"; then
-    log "  Force deleting namespace: $COMPLIANCE_NAMESPACE"
-    force_delete_namespace "$COMPLIANCE_NAMESPACE" || true
+# Find and force delete any demo application namespaces
+log ""
+log "Finding demo application namespaces..."
+DEMO_LABEL="demo=roadshow"
+DEMO_NAMESPACES=$(oc get deployments -l "$DEMO_LABEL" -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' 2>/dev/null | sort -u || echo "")
+
+if [ -n "$DEMO_NAMESPACES" ]; then
+    log "Found demo application namespaces:"
+    for ns in $DEMO_NAMESPACES; do
+        if [ -n "$ns" ] && [ "$ns" != "cert-manager-operator" ]; then
+            log "  - $ns"
+        fi
+    done
+    
+    log ""
+    log "Force deleting demo application namespaces..."
+    for ns in $DEMO_NAMESPACES; do
+        if [ -n "$ns" ] && [ "$ns" != "cert-manager-operator" ]; then
+            log "Force deleting namespace: $ns"
+            force_delete_namespace "$ns" || true
+        fi
+    done
+else
+    log "No demo application namespaces found"
 fi
 
 set -e  # Re-enable exit on error
 
 log ""
-log "Waiting for force-deleted namespaces to complete deletion..."
+log "Waiting for namespace deletions to complete..."
 sleep 10
+
+log ""
+log "Performing final cleanup pass - force deleting any remaining namespaces..."
+log ""
+
+# Final cleanup pass - force delete any namespaces that still exist
+set +e  # Temporarily disable exit on error
+
+# Force delete main namespaces if they still exist
+if oc get namespace "$RHACS_NAMESPACE" &>/dev/null 2>&1; then
+    log "  Namespace $RHACS_NAMESPACE still exists - force deleting..."
+    force_delete_namespace "$RHACS_NAMESPACE" || true
+fi
+
+if oc get namespace "$CLUSTER_OBSERVABILITY_NS" &>/dev/null 2>&1; then
+    log "  Namespace $CLUSTER_OBSERVABILITY_NS still exists - force deleting..."
+    force_delete_namespace "$CLUSTER_OBSERVABILITY_NS" || true
+fi
+
+if oc get namespace "$COMPLIANCE_NAMESPACE" &>/dev/null 2>&1; then
+    log "  Namespace $COMPLIANCE_NAMESPACE still exists - force deleting..."
+    force_delete_namespace "$COMPLIANCE_NAMESPACE" || true
+fi
+
+# Final pass for demo application namespaces
+DEMO_NAMESPACES_FINAL=$(oc get deployments -l "$DEMO_LABEL" -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' 2>/dev/null | sort -u || echo "")
+if [ -n "$DEMO_NAMESPACES_FINAL" ]; then
+    log "  Found remaining demo application namespaces - force deleting..."
+    for ns in $DEMO_NAMESPACES_FINAL; do
+        if [ -n "$ns" ] && [ "$ns" != "cert-manager-operator" ] && oc get namespace "$ns" &>/dev/null 2>&1; then
+            log "    Force deleting namespace: $ns"
+            force_delete_namespace "$ns" || true
+        fi
+    done
+fi
+
+set -e  # Re-enable exit on error
+
+log ""
+log "Final cleanup pass completed"
+sleep 5
 
 log ""
 log "========================================================="
