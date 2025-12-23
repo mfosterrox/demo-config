@@ -257,17 +257,21 @@ main() {
     
     log "✓ All parallel scripts completed successfully"
     
+    log ""
     log "========================================================="
     success "Demo Config setup completed successfully!"
     log "========================================================="
     log ""
+    
+    # Final Information Summary
+    log "========================================================="
+    log "Installation Summary"
+    log "========================================================="
     log ""
     
-    
     # RHACS Information
-    log "========================================================="
-    log "RHACS Access Information"
-    log "========================================================="
+    log "RHACS Access Information:"
+    log "------------------------"
     RHACS_NAMESPACE="rhacs-operator"
     
     # Get Central route
@@ -282,10 +286,10 @@ main() {
             ADMIN_PASSWORD=$(echo "$ADMIN_PASSWORD_B64" | base64 -d 2>/dev/null || echo "")
         fi
         
-        log "RHACS UI URL:     https://$CENTRAL_ROUTE"
-        log "Username:         admin"
+        log "  RHACS UI URL:     https://$CENTRAL_ROUTE"
+        log "  Username:         admin"
         if [ -n "$ADMIN_PASSWORD" ]; then
-            log "Password:         $ADMIN_PASSWORD"
+            log "  Password:         $ADMIN_PASSWORD"
             
             # Generate API token for debugging purposes
             if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
@@ -313,13 +317,58 @@ main() {
                 fi
             fi
         else
-            log "Password:         (retrieve with: oc get secret central-htpasswd -n $RHACS_NAMESPACE -o jsonpath='{.data.password}' | base64 -d)"
+            log "  Password:         (retrieve with: oc get secret central-htpasswd -n $RHACS_NAMESPACE -o jsonpath='{.data.password}' | base64 -d)"
         fi
     else
-        log "RHACS UI URL:     (not found - may still be deploying)"
-        log "Username:         admin"
-        log "Password:         (retrieve with: oc get secret central-htpasswd -n $RHACS_NAMESPACE -o jsonpath='{.data.password}' | base64 -d)"
+        log "  RHACS UI URL:     (not found - may still be deploying)"
+        log "  Username:         admin"
+        log "  Password:         (retrieve with: oc get secret central-htpasswd -n $RHACS_NAMESPACE -o jsonpath='{.data.password}' | base64 -d)"
     fi
+    log ""
+    
+    # Compliance Scan Information
+    log "Compliance Scan Status:"
+    log "----------------------"
+    COMPLIANCE_NAMESPACE="openshift-compliance"
+    if oc get namespace "$COMPLIANCE_NAMESPACE" &>/dev/null 2>&1; then
+        SCAN_CONFIGS=$(oc get scanconfiguration -n "$COMPLIANCE_NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d '[:space:]' || echo "0")
+        SCANS=$(oc get compliancescan -n "$COMPLIANCE_NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d '[:space:]' || echo "0")
+        log "  Scan Configurations: $SCAN_CONFIGS"
+        log "  Compliance Scans:     $SCANS"
+        log "  Namespace:           $COMPLIANCE_NAMESPACE"
+        log "  View scans:          oc get compliancescan -n $COMPLIANCE_NAMESPACE"
+    else
+        log "  Compliance Operator namespace not found"
+    fi
+    log ""
+    
+    # Monitoring Information
+    log "Monitoring & Observability:"
+    log "---------------------------"
+    if oc get monitoringstack rhacs-monitoring-stack -n "$RHACS_NAMESPACE" &>/dev/null 2>&1; then
+        log "  MonitoringStack:     Installed (rhacs-monitoring-stack)"
+    fi
+    if oc get datasource rhacs-datasource -n "$RHACS_NAMESPACE" &>/dev/null 2>&1; then
+        log "  Perses Datasource:   Installed (rhacs-datasource)"
+    fi
+    if oc get dashboard rhacs-dashboard -n "$RHACS_NAMESPACE" &>/dev/null 2>&1; then
+        log "  Perses Dashboard:    Installed (rhacs-dashboard)"
+        log "  Access via:          OpenShift Console -> Observe -> Dashboards"
+    fi
+    log ""
+    
+    # Demo Applications Information
+    log "Demo Applications:"
+    log "------------------"
+    DEMO_LABEL="demo=roadshow"
+    DEMO_DEPLOYMENTS=$(oc get deployments -l "$DEMO_LABEL" -A --no-headers 2>/dev/null | wc -l | tr -d '[:space:]' || echo "0")
+    DEMO_NAMESPACES=$(oc get deployments -l "$DEMO_LABEL" -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' 2>/dev/null | sort -u | wc -l | tr -d '[:space:]' || echo "0")
+    log "  Deployments:         $DEMO_DEPLOYMENTS"
+    log "  Namespaces:          $DEMO_NAMESPACES"
+    log "  Label:               $DEMO_LABEL"
+    log "  View apps:           oc get deployments -l $DEMO_LABEL -A"
+    log ""
+    
     log "========================================================="
     log ""
     
