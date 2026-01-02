@@ -269,10 +269,55 @@ main() {
     log "========================================================="
     log ""
     
+    # Initialize RHACS namespace variable (needed for later sections)
+    RHACS_NAMESPACE="rhacs-operator"
+    
+    # Compliance Scan Information
+    log "Compliance Scan Status:"
+    log "----------------------"
+    COMPLIANCE_NAMESPACE="openshift-compliance"
+    if oc get namespace "$COMPLIANCE_NAMESPACE" &>/dev/null 2>&1; then
+        SCAN_CONFIGS=$(oc get scanconfiguration -n "$COMPLIANCE_NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d '[:space:]' || echo "0")
+        SCANS=$(oc get compliancescan -n "$COMPLIANCE_NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d '[:space:]' || echo "0")
+        log "  Scan Configurations: $SCAN_CONFIGS"
+        log "  Compliance Scans:     $SCANS"
+        log "  Namespace:           $COMPLIANCE_NAMESPACE"
+        log "  View scans:          oc get compliancescan -n $COMPLIANCE_NAMESPACE"
+    else
+        log "  Compliance Operator namespace not found"
+    fi
+    log ""
+    
+    # Monitoring Information
+    log "Monitoring & Observability:"
+    log "---------------------------"
+    if oc get monitoringstack rhacs-monitoring-stack -n "$RHACS_NAMESPACE" &>/dev/null 2>&1; then
+        log "  MonitoringStack:     Installed (rhacs-monitoring-stack)"
+    fi
+    if oc get datasource rhacs-datasource -n "$RHACS_NAMESPACE" &>/dev/null 2>&1; then
+        log "  Perses Datasource:   Installed (rhacs-datasource)"
+    fi
+    if oc get dashboard rhacs-dashboard -n "$RHACS_NAMESPACE" &>/dev/null 2>&1; then
+        log "  Perses Dashboard:    Installed (rhacs-dashboard)"
+        log "  Access via:          OpenShift Console -> Observe -> Dashboards"
+    fi
+    log ""
+    
+    # Demo Applications Information
+    log "Demo Applications:"
+    log "------------------"
+    DEMO_LABEL="demo=roadshow"
+    DEMO_DEPLOYMENTS=$(oc get deployments -l "$DEMO_LABEL" -A --no-headers 2>/dev/null | wc -l | tr -d '[:space:]' || echo "0")
+    DEMO_NAMESPACES=$(oc get deployments -l "$DEMO_LABEL" -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' 2>/dev/null | sort -u | wc -l | tr -d '[:space:]' || echo "0")
+    log "  Deployments:         $DEMO_DEPLOYMENTS"
+    log "  Namespaces:          $DEMO_NAMESPACES"
+    log "  Label:               $DEMO_LABEL"
+    log "  View apps:           oc get deployments -l $DEMO_LABEL -A"
+    log ""
+    
     # RHACS Information
     log "RHACS Access Information:"
     log "------------------------"
-    RHACS_NAMESPACE="rhacs-operator"
     
     # Get Central route
     CENTRAL_ROUTE=$(oc get route central -n "$RHACS_NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
@@ -324,49 +369,6 @@ main() {
         log "  Username:         admin"
         log "  Password:         (retrieve with: oc get secret central-htpasswd -n $RHACS_NAMESPACE -o jsonpath='{.data.password}' | base64 -d)"
     fi
-    log ""
-    
-    # Compliance Scan Information
-    log "Compliance Scan Status:"
-    log "----------------------"
-    COMPLIANCE_NAMESPACE="openshift-compliance"
-    if oc get namespace "$COMPLIANCE_NAMESPACE" &>/dev/null 2>&1; then
-        SCAN_CONFIGS=$(oc get scanconfiguration -n "$COMPLIANCE_NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d '[:space:]' || echo "0")
-        SCANS=$(oc get compliancescan -n "$COMPLIANCE_NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d '[:space:]' || echo "0")
-        log "  Scan Configurations: $SCAN_CONFIGS"
-        log "  Compliance Scans:     $SCANS"
-        log "  Namespace:           $COMPLIANCE_NAMESPACE"
-        log "  View scans:          oc get compliancescan -n $COMPLIANCE_NAMESPACE"
-    else
-        log "  Compliance Operator namespace not found"
-    fi
-    log ""
-    
-    # Monitoring Information
-    log "Monitoring & Observability:"
-    log "---------------------------"
-    if oc get monitoringstack rhacs-monitoring-stack -n "$RHACS_NAMESPACE" &>/dev/null 2>&1; then
-        log "  MonitoringStack:     Installed (rhacs-monitoring-stack)"
-    fi
-    if oc get datasource rhacs-datasource -n "$RHACS_NAMESPACE" &>/dev/null 2>&1; then
-        log "  Perses Datasource:   Installed (rhacs-datasource)"
-    fi
-    if oc get dashboard rhacs-dashboard -n "$RHACS_NAMESPACE" &>/dev/null 2>&1; then
-        log "  Perses Dashboard:    Installed (rhacs-dashboard)"
-        log "  Access via:          OpenShift Console -> Observe -> Dashboards"
-    fi
-    log ""
-    
-    # Demo Applications Information
-    log "Demo Applications:"
-    log "------------------"
-    DEMO_LABEL="demo=roadshow"
-    DEMO_DEPLOYMENTS=$(oc get deployments -l "$DEMO_LABEL" -A --no-headers 2>/dev/null | wc -l | tr -d '[:space:]' || echo "0")
-    DEMO_NAMESPACES=$(oc get deployments -l "$DEMO_LABEL" -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' 2>/dev/null | sort -u | wc -l | tr -d '[:space:]' || echo "0")
-    log "  Deployments:         $DEMO_DEPLOYMENTS"
-    log "  Namespaces:          $DEMO_NAMESPACES"
-    log "  Label:               $DEMO_LABEL"
-    log "  View apps:           oc get deployments -l $DEMO_LABEL -A"
     log ""
     
     log "========================================================="
