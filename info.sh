@@ -23,6 +23,28 @@ echo -e "${GREEN}OpenShift Console:${NC}"
 CONSOLE_URL=$(oc whoami --show-console 2>/dev/null || echo "")
 if [ -n "$CONSOLE_URL" ]; then
     echo "  URL: $CONSOLE_URL"
+    
+    # Get current username
+    CURRENT_USER=$(oc whoami 2>/dev/null || echo "")
+    if [ -n "$CURRENT_USER" ]; then
+        echo "  Username: $CURRENT_USER"
+    fi
+    
+    # Try to get kubeadmin password (for initial admin user)
+    KUBEADMIN_PASSWORD=$(oc get secret kubeadmin -n kube-system -o jsonpath='{.data.password}' 2>/dev/null || echo "")
+    if [ -n "$KUBEADMIN_PASSWORD" ]; then
+        KUBEADMIN_PASSWORD_DECODED=$(echo "$KUBEADMIN_PASSWORD" | base64 -d 2>/dev/null || echo "")
+        if [ -n "$KUBEADMIN_PASSWORD_DECODED" ]; then
+            echo "  kubeadmin Password: $KUBEADMIN_PASSWORD_DECODED"
+        fi
+    fi
+    
+    # Note: If using other authentication methods (OAuth, LDAP, etc.), 
+    # the password may not be retrievable from cluster secrets
+    if [ -z "$KUBEADMIN_PASSWORD" ]; then
+        echo -e "  ${YELLOW}Note: Password not available in cluster secrets.${NC}"
+        echo -e "  ${YELLOW}If using OAuth/LDAP, use your identity provider credentials.${NC}"
+    fi
 else
     echo -e "  ${YELLOW}Console URL not available${NC}"
 fi
