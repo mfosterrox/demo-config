@@ -104,22 +104,10 @@ else
     log "  Progressing (installing): $PROGRESSING_COUNT"
     log "  Degraded or Unavailable: $DEGRADED_COUNT"
     
-    # Check for operators specifically installed by install.sh
+    # Note: Operators installed by install.sh are checked via namespace deployments in section 2
+    # (cert-manager, RHACS, Compliance operators may not appear as cluster operators)
     echo ""
-    log "Checking for operators installed by install.sh:"
-    INSTALLED_OPERATORS=()
-    
-    # Check cert-manager (may appear as cert-manager-operator or cert-manager)
-    if oc get clusteroperator cert-manager &>/dev/null || oc get clusteroperator cert-manager-operator &>/dev/null; then
-        INSTALLED_OPERATORS+=("cert-manager")
-        success "  ✓ cert-manager operator found in cluster operators"
-    else
-        warning "  ⚠ cert-manager not found in cluster operators (checking namespace deployment below)"
-    fi
-    
-    # Note: RHACS and Compliance operators may not appear as cluster operators
-    # They are installed via subscriptions and will be checked in section 2
-    log "  Note: RHACS and Compliance operators are checked via namespace deployments (see section 2)"
+    log "Note: Operators installed by install.sh are checked via namespace deployments (see section 2)"
 fi
 
 # ============================================================================
